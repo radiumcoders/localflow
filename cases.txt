@@ -19,3 +19,10 @@ let's meet in 3 hours wait in 2 hours => Let's meet in 2 hours.
 send the invoice on monday no tuesday => Send the invoice on Tuesday.
 i'll be there at noon actually make it one => I'll be there at one.
 we need three chairs sorry four chairs => We need four chairs.
+
+# Lists ("\n" = new line). Must produce exactly these lines.
+my tasks today are first buy milk second call the bank third fix the login bug => My tasks today are:\n1. Buy milk\n2. Call the bank\n3. Fix the login bug
+agenda first budget review next hiring plan and finally the offsite => Agenda:\n1. Budget review\n2. Hiring plan\n3. The offsite
+things to pack number one charger number two passport => Things to pack:\n1. Charger\n2. Passport
+she came second in the race and I came first => She came second in the race and I came first.
+first of all I want to say thank you => First of all, I want to say thank you.

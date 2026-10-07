@@ -15,15 +15,14 @@ ollama="$HOME/.local/ollama/bin/ollama"
 appimage="$HOME/.local/share/handy/Handy.AppImage"
 appdir="$HOME/.local/share/handy/app"
 store="$HOME/.local/share/com.pais.handy/settings_store.json"
-prompt='<dictation>${output}</dictation>'  # keep in sync with handy-clean
+prompt='<dictation>${output}</dictation>'  # handy-clean serve unwraps this
 
 [[ -x $ollama ]] || { echo "ollama not found at $ollama" >&2; exit 1; }
 [[ -x $appimage ]] || { echo "Handy not found at $appimage" >&2; exit 1; }
-mkdir -p ~/.local/bin
+mkdir -p ~/.local/bin ~/.config/systemd/user
 
 # --- Ollama: user service (skipped if some ollama already serves :11434) ---
 if ! curl -sf -m 2 127.0.0.1:11434/api/version >/dev/null; then
-  mkdir -p ~/.config/systemd/user
   ln -sf "$here/ollama.service" ~/.config/systemd/user/ollama.service
   systemctl --user daemon-reload
   systemctl --user enable --now ollama.service
@@ -31,11 +30,13 @@ if ! curl -sf -m 2 127.0.0.1:11434/api/version >/dev/null; then
 fi
 ln -sf "$ollama" ~/.local/bin/ollama
 
-# --- Cleanup model: base model + rules/examples/temperature from Modelfile ---
+# --- Cleanup proxy: Handy -> handy-clean (:11435) -> Ollama native API ---
 "$ollama" pull "$base_model"
-sed "s|^FROM .*|FROM $base_model|" "$here/Modelfile" >"$here/.Modelfile.build"
-"$ollama" create handy-clean -f "$here/.Modelfile.build"
-rm "$here/.Modelfile.build"
+sed -i "s|^Environment=HANDY_CLEAN_MODEL=.*|Environment=HANDY_CLEAN_MODEL=$base_model|" "$here/handy-clean.service"
+ln -sf "$here/handy-clean.service" ~/.config/systemd/user/handy-clean.service
+systemctl --user daemon-reload
+systemctl --user enable handy-clean.service
+systemctl --user restart handy-clean.service
 
 # --- Handy: extract the AppImage so each keypress skips a FUSE mount ---
 pkill -x handy 2>/dev/null && sleep 1 || true
@@ -66,10 +67,17 @@ s = data["settings"]
 s["post_process_enabled"] = True
 s["post_process_provider_id"] = "custom"
 s.setdefault("post_process_models", {})["custom"] = "handy-clean"
+for p in s.get("post_process_providers", []):
+    if p["id"] == "custom":
+        p["base_url"] = "http://127.0.0.1:11435/v1"
 prompts = [p for p in s.get("post_process_prompts", []) if p["id"] != "handy_clean"]
 prompts.append({"id": "handy_clean", "name": "Clean dictation (local)", "prompt": prompt})
 s["post_process_prompts"] = prompts
 s["post_process_selected_prompt_id"] = "handy_clean"
+# Paste instead of typing: typed newlines become Enter (sends chat messages,
+# runs shell commands). Shift+Insert pastes in terminals and GUI apps alike,
+# and Handy restores the previous clipboard afterwards.
+s["paste_method"] = "shift_insert"
 s["start_hidden"] = True  # started by Hyprland at login; lives in the tray
 json.dump(data, open(path, "w"), indent=2)
 print("patched", path)

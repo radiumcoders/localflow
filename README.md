@@ -2,65 +2,80 @@
 
 Local dictation cleanup for [Handy](https://handy.computer) on Omarchy.
 
-Handy transcribes speech (your selected model, e.g. Parakeet), then sends the text to a small local
-LLM in Ollama that keeps only what you meant:
+Handy transcribes speech (your selected model, e.g. Parakeet), then a small
+local LLM keeps only what you meant and formats lists:
 
-    "Let's meet in three hours. Wait, in two hours."  →  "Let's meet in two hours."
-    "Um, ship it on, uh, Monday."                      →  "Ship it on Monday."
+    "let's meet in 3 hours wait in 2 hours"        →  Let's meet in 2 hours.
+    "um I think we should uh ship it on Monday"    →  I think we should ship it on Monday.
+    "my tasks today are first buy milk second
+     call the bank third fix the login bug"        →  My tasks today are:
+                                                      1. Buy milk
+                                                      2. Call the bank
+                                                      3. Fix the login bug
 
-Everything runs on this machine; nothing leaves it.
+Everything runs on this machine (RX 9070 XT via Vulkan); nothing leaves it.
+
+## How it fits together
+
+    Handy ──(OpenAI API)──▶ handy-clean serve :11435 ──(native API)──▶ Ollama :11434 (qwen3.5:4b)
+
+Handy's **Custom** post-process provider points at `http://127.0.0.1:11435/v1`
+with model `handy-clean` and prompt `<dictation>${output}</dictation>`.
+The proxy exists because Ollama's OpenAI endpoint ignores Modelfile
+temperature (same dictation → different output each time) and few-shot
+history. The proxy calls Ollama's native API with temperature 0, the rules and
+examples in `handy-clean`, and falls back to the raw transcript if the model
+replies with something much longer than you said or Ollama is down.
+
+Handy pastes with **Shift+Insert** (works in terminals and GUI apps, keeps
+your clipboard). Typing via wtype would turn list newlines into Enter presses.
 
 ## Keys (Hyprland, `~/.config/hypr/bindings.lua`)
 
-| Key              | Action                         |
-| ---------------- | ------------------------------ |
-| `SUPER+CTRL+X`   | toggle dictation               |
-| `F9` (hold)      | push-to-talk                   |
+| Key            | Action             |
+| -------------- | ------------------ |
+| `SUPER+CTRL+X` | toggle dictation   |
+| `F9` (hold)    | push-to-talk       |
 
-Both call `handy --toggle-post-process`, which records, transcribes and then
-runs the cleanup model. Handy starts hidden at login from
+Both run `handy --toggle-post-process`. Handy starts hidden at login from
 `~/.config/hypr/autostart.lua`.
 
-## Pieces
+## Files
 
-| File             | What                                                              |
-| ---------------- | ----------------------------------------------------------------- |
-| `Modelfile`      | Ollama model `handy-clean`: base model + rules, examples, temp 0   |
-| `handy-clean`    | sends text to the model exactly as Handy does; `--eval` runs tests |
-| `cases.txt`      | eval cases (`raw => expected`)                                     |
-| `ollama.service` | user-level Ollama (ROCm build in `~/.local/ollama`)                |
-| `install.sh`     | sets everything up; safe to re-run                                 |
-
-Handy is configured with the **Custom** post-processing provider
-(`http://localhost:11434/v1`), model `handy-clean`, and the prompt
-`<dictation>${output}</dictation>`. The rules live in the Modelfile because
-Handy can't set temperature or few-shot examples itself.
+| File                  | What                                                     |
+| --------------------- | -------------------------------------------------------- |
+| `handy-clean`         | prompt + examples, `serve` proxy, stdin filter, `--eval` |
+| `cases.txt`           | eval cases (`raw => expected`, `\n` for list lines)      |
+| `handy-clean.service` | user service for the proxy                               |
+| `ollama.service`      | user-level Ollama from `~/.local/ollama`                 |
+| `install.sh`          | sets everything up; safe to re-run                       |
 
 ## Install
 
 ```sh
-# Ollama (no sudo): official release + ROCm add-on for the RX 9070
+# Ollama (no sudo): official release (includes Vulkan)
 mkdir -p ~/.local/ollama
-for f in ollama-linux-amd64 ollama-linux-amd64-rocm; do
-  curl -fsSL https://github.com/ollama/ollama/releases/latest/download/$f.tar.zst | zstd -d | tar -x -C ~/.local/ollama
-done
+curl -fsSL https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst \
+  | zstd -d | tar -x -C ~/.local/ollama
 
 # Handy AppImage
 mkdir -p ~/.local/share/handy
 curl -fL -o ~/.local/share/handy/Handy.AppImage \
-  https://github.com/cjpais/Handy/releases/latest/download/Handy_0.9.8_amd64.AppImage
+  https://github.com/cjpais/Handy/releases/download/v0.9.8/Handy_0.9.8_amd64.AppImage
 chmod +x ~/.local/share/handy/Handy.AppImage
 
-./install.sh
+./install.sh                         # qwen3.5:4b
+BASE_MODEL=qwen3.5:2b ./install.sh   # faster, a bit less accurate
 ```
 
 ## Tuning
 
 ```sh
 echo "call mom tomorrow actually tonight" | ./handy-clean
-./handy-clean --eval                        # current handy-clean model
-./handy-clean --eval qwen3.5:4b             # compare a raw base model
-BASE_MODEL=qwen3.5:4b ./install.sh          # rebuild handy-clean on a bigger base
+./handy-clean --eval                 # qwen3.5:4b: 18/21, ~270ms each
+./handy-clean --eval qwen3.5:2b      #             16/21, ~150ms each
+journalctl --user -u handy-clean -f  # per-request latency / Ollama errors
 ```
 
-Edit the rules/examples in `Modelfile`, re-run `./install.sh`, then `--eval`.
+Edit `SYSTEM` / `EXAMPLES` in `handy-clean`, run `--eval`, then
+`systemctl --user restart handy-clean`.

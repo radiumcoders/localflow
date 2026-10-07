@@ -1,0 +1,13 @@
+[Unit]
+Description=handy-clean: Ollama dictation cleanup proxy for Handy
+After=ollama.service
+Wants=ollama.service
+
+[Service]
+ExecStart=%h/Projects/handy-clean/handy-clean serve
+Environment=HANDY_CLEAN_MODEL=qwen3.5:4b
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
