@@ -20,9 +20,11 @@ send the invoice on monday no tuesday => Send the invoice on Tuesday.
 i'll be there at noon actually make it one => I'll be there at one.
 we need three chairs sorry four chairs => We need four chairs.
 
-# Lists ("\n" = new line). Must produce exactly these lines.
+# Lists ("\n" = new line). Numbered items must match; lead-in wording may vary.
 my tasks today are first buy milk second call the bank third fix the login bug => My tasks today are:\n1. Buy milk\n2. Call the bank\n3. Fix the login bug
 agenda first budget review next hiring plan and finally the offsite => Agenda:\n1. Budget review\n2. Hiring plan\n3. The offsite
 things to pack number one charger number two passport => Things to pack:\n1. Charger\n2. Passport
 she came second in the race and I came first => She came second in the race and I came first.
 first of all I want to say thank you => First of all, I want to say thank you.
+Okay, so the first thing that we want to do is clean up the whole repo code and everything, second, upgrade the design to be more minimal and clear, and third, this should be a much better code base than the current one. Everything is good, just push everything after you commit every change. => What we want to do:\n1. Clean up the whole repo code and everything\n2. Upgrade the design to be more minimal and clear\n3. This should be a much better code base than the current one\n\nEverything is good, just push everything after you commit every change.
+so today I want to first reply to the emails from the client then second I need to fix the build on CI and third maybe if there's time look at the analytics dashboard => Today I want to:\n1. Reply to the emails from the client\n2. Fix the build on CI\n3. Maybe if there's time look at the analytics dashboard
