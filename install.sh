@@ -78,6 +78,14 @@ s["post_process_selected_prompt_id"] = "handy_clean"
 # runs shell commands). Shift+Insert pastes in terminals and GUI apps alike,
 # and Handy restores the previous clipboard afterwards.
 s["paste_method"] = "shift_insert"
+# Hyprland owns the dictation keys. Handy's own global shortcuts (Ctrl+Space,
+# Ctrl+Shift+Space) grab common editor keys and start stray recordings that
+# block the Hyprland toggles, so park them on a combo nobody presses.
+# (Empty bindings get reset to defaults by Handy.)
+for bid, combo in {"transcribe": "ctrl+alt+shift+f24",
+                   "transcribe_with_post_process": "ctrl+alt+shift+f23"}.items():
+    if bid in s.get("bindings", {}):
+        s["bindings"][bid]["current_binding"] = combo
 s["start_hidden"] = True  # started by Hyprland at login; lives in the tray
 json.dump(data, open(path, "w"), indent=2)
 print("patched", path)
