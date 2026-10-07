@@ -8,6 +8,8 @@ GitHub
 Omarchy
 Hyprland
 Handy
+handy-clean: this project, often heard as "handy clean"
+Next.js
 Ollama
 Duolingo
 Japanese: the language I'm learning, often heard as "Javanese"

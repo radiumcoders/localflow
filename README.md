@@ -27,6 +27,8 @@ Two checkpoints:
    worked examples and your `words.txt`.
 2. **Review**: automatic checks look for concrete mistakes in the draft: a
    `words.txt` term still misheard ("Py script" left instead of Pine Script),
+   a retraction left in ("pretty good, actually this is not pretty good, this
+   is awesome"),
    or a qualifier you said ("maybe", "only", "never") that got dropped. If they
    find something, a fresh call (no examples, no history) repairs just that,
    and the repair is kept only if it clears the problem without adding new
@@ -140,7 +142,7 @@ on macOS, log out and in on Windows).
 case and punctuation; list cases compare the numbered items; `? +must; -must
 not; order: a < b < c` checks properties of long, open-ended dictation.
 
-Current results on an RX 9070 XT: `qwen3.5:4b` 30/33 (29 from the draft, +1 from review; review runs on ~1 in 15 dictations, +87 ms on average), ~0.3 s for short
+Current results on an RX 9070 XT: `qwen3.5:4b` 33/36 (31 from the draft, +2 from review; review runs on ~1 in 15 dictations, +72 ms on average), ~0.3 s for short
 dictation, ~1.5 s for long rambling ones; `qwen3.5:2b` is about twice as fast
 and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the latency.
 

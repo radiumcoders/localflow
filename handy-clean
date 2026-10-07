@@ -41,7 +41,7 @@ REVIEW_MODEL = os.environ.get("HANDY_CLEAN_REVIEW_MODEL", MODEL)
 SYSTEM = """You are a dictation cleanup filter. Each user message is a raw speech-to-text transcript inside <dictation> tags. Output the text the speaker actually meant to write.
 
 Rules:
-1. Self-corrections: when the speaker changes their mind ("wait", "actually", "no", "sorry", "I mean", "scratch that", "make that", "or rather", "I just remembered", "change of plan"), keep only the final version and drop both the replaced words and the correction phrase. This applies everywhere, including the very first words and in the middle of long speech. When a whole plan or order is revised, output only the revised plan. The transcript may have no punctuation, so look for these words anywhere.
+1. Self-corrections: when the speaker changes their mind ("wait", "actually", "no", "sorry", "I mean", "scratch that", "make that", "or rather", "I just remembered", "change of plan"), keep only the final version and drop both the replaced words and the correction phrase. A retraction like "actually it's not X, it's Y" or "this is not X, this is Y" also replaces X with Y. This applies everywhere, including the very first words and in the middle of long speech. When a whole plan or order is revised, output only the revised plan. The transcript may have no punctuation, so look for these words anywhere.
 2. Remove filler words (um, uh, er, "like", "so a", "you know", "means" used as filler), false starts, stutters and accidental repeated words.
 3. Fix punctuation and capitalization.
 4. Keep the speaker's words, tone and point of view, including phrases like "I think". Do not summarize, formalize or add anything. In long, rambling speech you may tighten wording inside list items, but keep every fact, condition and qualifier ("only", "maybe", "for one hour", "if time is left").
@@ -75,8 +75,14 @@ EXAMPLES = [
      "Book the room for the afternoon."),
     ("order two pizzas sorry I mean three pizzas",
      "Order three pizzas."),
+    ("the demo went okay actually it didn't go okay it went great",
+     "The demo went great."),
+    ("the food here is decent actually this is not decent this is amazing",
+     "The food here is amazing."),
     ("I think the meeting went well actually make that really well",
      "I think the meeting went really well."),
+    ("1st x y z 2nd 5 6 7 8 3rd hello world",
+     "1. X, y, z\n2. 5, 6, 7, 8\n3. Hello world"),
     ("for the trip we need first sunscreen second a tent and third some snacks",
      "For the trip we need:\n1. Sunscreen\n2. A tent\n3. Some snacks"),
     ("steps to deploy one run the tests two build the image three push it",
@@ -204,6 +210,13 @@ def find_problems(text, out):
         if q in raw_words and q not in out_words:
             problems.append(f'The speaker said "{q}" but it was dropped. Put it back where it belongs, '
                             "unless it was part of a correction the speaker took back.")
+    # A retraction left in place: "... pretty good, actually this is not pretty good, this is awesome".
+    low = out.lower()
+    for m in re.finditer(r"\b(?:actually|wait|no|sorry)\b[^.!?\n]{0,25}?\bnot ((?:[a-z']+ ?){1,4}?)\b[,.]", low):
+        said = m.group(1).strip()
+        if said and low.find(said) < m.start():
+            problems.append(f'The speaker took back "{said}" ("{m.group(0).strip(" ,.")}"). Remove the retracted '
+                            "version and the retraction itself, keeping only what they said instead.")
     for term, heard in misheard_hints():
         for h in heard:
             # Flag when the misheard form survived, or the right term never appeared.
