@@ -118,8 +118,10 @@ python3 install.py                      # Windows: py install.py
 1. installs Ollama if missing: Homebrew on macOS, winget on Windows, a per-user
    install in `~/.local/ollama` on Linux (no sudo; adds the ROCm build when an
    AMD GPU is found, `--no-rocm` to skip)
-2. pulls the cleanup model, **qwen3.5:4b** (~3.3 GB). Optional: `--model qwen3.5:2b`
-   for a faster, less accurate one
+2. pulls the cleanup model, **qwen3.5:4b** (~3.3 GB). On Apple Silicon Macs it
+   pulls Ollama's MLX build, **qwen3.5:4b-mlx**, which runs faster there, and
+   falls back to the regular one if that can't run. Optional: `--model
+   qwen3.5:2b` for a faster, less accurate one
 3. runs the proxy at login: launchd on macOS, the Startup folder on Windows,
    a systemd user service on Linux
 4. installs Handy if missing: Homebrew cask, winget, or the AppImage on Linux

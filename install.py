@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install localflow on macOS, Windows or Linux. Safe to re-run.
 
-    python3 install.py                     # default model qwen3.5:4b
+    python3 install.py                     # qwen3.5:4b (MLX build on Apple Silicon)
     python3 install.py --model qwen3.5:2b  # smaller, faster, less accurate
 
 Steps: install Ollama and Handy if missing, pull the model, run the
@@ -142,6 +142,36 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 """)
+
+
+def model_works(model):
+    """One tiny request with the same load options localflow uses."""
+    body = {"model": model, "messages": [{"role": "user", "content": "Say ok."}], "stream": False,
+            "think": False, "options": {"num_predict": 4, "use_mmap": False}}
+    try:
+        req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=300).read()
+        return True
+    except OSError as e:
+        print(f"   {model} didn't run: {e}")
+        return False
+
+
+def pull_model(requested):
+    """Pull the cleanup model. On Apple Silicon, prefer Ollama's MLX build
+    (faster there) and fall back to the regular one if it can't run."""
+    if requested:
+        candidates = [requested]
+    elif SYSTEM == "Darwin" and platform.machine() == "arm64":
+        candidates = ["qwen3.5:4b-mlx", "qwen3.5:4b"]
+    else:
+        candidates = ["qwen3.5:4b"]
+    for model in candidates:
+        step(f"Model {model}")
+        if run(ollama_bin() or "ollama", "pull", model, check=False).returncode == 0 and model_works(model):
+            return model
+    sys.exit(f"couldn't pull and run {' or '.join(candidates)}; check Ollama, then re-run install.py")
 
 
 def has_amd_gpu():
@@ -371,7 +401,8 @@ def require(cmd, hint):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", default="qwen3.5:4b", help="Ollama model for cleanup (default: qwen3.5:4b)")
+    ap.add_argument("--model", help="Ollama model for cleanup (default: qwen3.5:4b, or "
+                                    "qwen3.5:4b-mlx on Apple Silicon)")
     ap.add_argument("--rocm", action=argparse.BooleanOptionalAction, default=None,
                     help="Linux: also install Ollama's ROCm build (default: auto-detect AMD GPU)")
     args = ap.parse_args()
@@ -379,13 +410,12 @@ def main():
     hyprland = SYSTEM == "Linux" and have("hyprctl") and bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
 
     install_ollama(rocm)
-    step(f"Model {args.model}")
-    run(ollama_bin() or "ollama", "pull", args.model)
-    install_proxy(args.model, hyprland)
+    model = pull_model(args.model)
+    install_proxy(model, hyprland)
     install_handy()
     configure_handy(hyprland)
 
-    step("Done")
+    step(f"Done (cleanup model: {model})")
     if SYSTEM == "Darwin":
         print("   Dictate with Option+Shift+Space (Handy's post-process shortcut).")
     elif SYSTEM == "Windows":
