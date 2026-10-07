@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Set up Handy + local Ollama dictation cleanup. Safe to re-run.
 #
-#   ./install.sh                      # base model qwen3.5:2b
-#   BASE_MODEL=qwen3.5:4b ./install.sh
+#   ./install.sh                      # base model qwen3.5:4b
+#   BASE_MODEL=qwen3.5:2b ./install.sh   # smaller, faster, less accurate
 #
 # Expects Ollama extracted to ~/.local/ollama and the Handy AppImage at
 # ~/.local/share/handy/Handy.AppImage (see README.md).
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-base_model="${BASE_MODEL:-qwen3.5:2b}"
+base_model="${BASE_MODEL:-qwen3.5:4b}"
 ollama="$HOME/.local/ollama/bin/ollama"
 appimage="$HOME/.local/share/handy/Handy.AppImage"
 appdir="$HOME/.local/share/handy/app"
