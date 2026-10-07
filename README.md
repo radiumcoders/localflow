@@ -73,13 +73,16 @@ cores; Radeon RX 9070 XT, 16 GB VRAM) with the default `qwen3.5:4b`.
 
 | What | With a GPU | CPU only |
 | --- | --- | --- |
-| Cleanup model | ~3.1 GB of VRAM + ~1.6 GB RAM | ~3.6 GB RAM |
+| Cleanup model | ~3.1 GB of VRAM + ~1.1 GB RAM | ~3.6 GB RAM |
 | Handy (with its speech model) | ~0.3 GB RAM | ~0.3 GB RAM + speech model |
 | Ollama server + localflow proxy | ~0.1 GB RAM | ~0.1 GB RAM |
 
-The model stays loaded for 1 hour after your last dictation, then the memory
-is freed. The first dictation after that waits 2-3 s while it loads again
-(`LOCALFLOW_KEEP_ALIVE` changes the hour).
+In total that's about 1.5 GB of RAM (plus VRAM) while the model is loaded,
+and about 0.4 GB once it unloads. The model stays loaded for 1 hour after
+your last dictation; the first dictation after that waits ~1.5-3 s while it
+loads again (`LOCALFLOW_KEEP_ALIVE` changes the hour, e.g. `5m` to free the
+memory sooner). Cloud dictation apps use less RAM because their models run on
+their servers; here everything runs on your machine.
 
 **Speed** (time from releasing the key to text appearing, after transcription)
 

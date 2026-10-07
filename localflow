@@ -19,6 +19,7 @@ Environment:
     LOCALFLOW_OLLAMA      Ollama base URL     (default: http://127.0.0.1:11434)
     LOCALFLOW_PORT        port for `serve`    (default: 11435)
     LOCALFLOW_KEEP_ALIVE  how long the model stays in VRAM (default: 1h)
+    LOCALFLOW_USE_MMAP    1 to also keep the model file mapped in RAM (default: off)
 """
 
 import json
@@ -37,6 +38,9 @@ KEEP_ALIVE = os.environ.get("LOCALFLOW_KEEP_ALIVE", "1h")
 # problems, a fresh call (no examples, no history) repairs just those. "off"
 # skips the repair call (checks and deterministic fixes still run).
 REVIEW_MODEL = os.environ.get("LOCALFLOW_REVIEW_MODEL", MODEL)
+# Load the model into GPU/CPU buffers instead of also keeping the file mapped
+# in RAM: halves RAM use (2.1 -> 1.1 GB on GPU) at the same speed.
+USE_MMAP = os.environ.get("LOCALFLOW_USE_MMAP") == "1"
 
 SYSTEM = """You are a dictation cleanup filter. Each user message is a raw speech-to-text transcript inside <dictation> tags. Output the text the speaker actually meant to write.
 
@@ -148,7 +152,7 @@ def ollama_chat(model, messages, num_predict, fmt=None):
         "stream": False,
         "think": False,
         "keep_alive": KEEP_ALIVE,
-        "options": {"temperature": 0, "num_predict": num_predict},
+        "options": {"temperature": 0, "num_predict": num_predict, "use_mmap": USE_MMAP},
     }
     if fmt:
         body["format"] = fmt
