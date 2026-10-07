@@ -19,9 +19,11 @@ Environment:
     LOCALFLOW_REVIEW_MODEL  model for the repair pass (default: same; "off" to skip)
     LOCALFLOW_OLLAMA      Ollama base URL     (default: http://127.0.0.1:11434)
     LOCALFLOW_PORT        port for `serve`    (default: 11435)
-    LOCALFLOW_KEEP_ALIVE  how long the model stays loaded after use (default: 1h;
-                          the installer sets 2m on Hyprland, where --warm loads it per dictation)
-    LOCALFLOW_USE_MMAP    1 to also keep the model file mapped in RAM (default: off)
+    LOCALFLOW_KEEP_ALIVE  how long the model stays loaded after use (default: 1h, 2m on
+                          macOS; the installer sets 2m on Hyprland, where --warm loads it per dictation)
+    LOCALFLOW_USE_MMAP    1 to also keep the model file mapped in RAM (default: off, on on macOS)
+    LOCALFLOW_HANDY_LOG   Handy log `serve` watches to warm the model when you start
+                          dictating (default: Handy's log on macOS; "" for none)
 """
 
 import json
@@ -36,14 +38,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 MODEL = os.environ.get("LOCALFLOW_MODEL", "qwen3.5:4b")
 OLLAMA = os.environ.get("LOCALFLOW_OLLAMA", "http://127.0.0.1:11434").rstrip("/")
 PORT = int(os.environ.get("LOCALFLOW_PORT", "11435"))
-KEEP_ALIVE = os.environ.get("LOCALFLOW_KEEP_ALIVE", "1h")
+MAC = sys.platform == "darwin"
+# On macOS `serve` warms the model when Handy starts recording, so it can unload soon after.
+KEEP_ALIVE = os.environ.get("LOCALFLOW_KEEP_ALIVE", "2m" if MAC else "1h")
 # Second checkpoint: automatic checks on the draft; when they find concrete
 # problems, a fresh call (no examples, no history) repairs just those. "off"
 # skips the repair call (checks and deterministic fixes still run).
 REVIEW_MODEL = os.environ.get("LOCALFLOW_REVIEW_MODEL", MODEL)
 # Load the model into GPU/CPU buffers instead of also keeping the file mapped
-# in RAM: halves RAM use (2.1 -> 1.1 GB on GPU) at the same speed.
-USE_MMAP = os.environ.get("LOCALFLOW_USE_MMAP") == "1"
+# in RAM: halves RAM use (2.1 -> 1.1 GB on GPU) at the same speed. Apple
+# Silicon is the opposite: CPU and GPU share memory, so the GPU reads the mapped
+# file directly (1.3 instead of 4.8 GB for qwen3.5:4b, same speed).
+USE_MMAP = os.environ.get("LOCALFLOW_USE_MMAP", "1" if MAC else "0") == "1"
+# Handy's log, watched by `serve` to warm the model when a recording starts.
+# Defaults to Handy's log on macOS; "" turns it off.
+HANDY_LOG = os.environ.get("LOCALFLOW_HANDY_LOG", os.path.expanduser(
+    "~/Library/Logs/com.pais.handy/handy.log") if MAC else "")
 
 SYSTEM = """You are a dictation cleanup filter. Each user message is a raw speech-to-text transcript inside <dictation> tags. Output the text the speaker actually meant to write.
 
@@ -155,8 +165,16 @@ def ollama_options(num_predict):
 
 
 def warm(model=MODEL):
-    """Load the model (no generation) so it's ready when the dictation arrives."""
-    body = {"model": model, "messages": [], "keep_alive": KEEP_ALIVE, "options": ollama_options(1)}
+    """Load the model and read the rules and examples so they're ready when the
+    dictation arrives.
+
+    qwen3.5 has recurrent layers, so Ollama can't reuse a cached prompt prefix
+    by trimming it; it can only resume from a checkpoint saved at the end of an
+    earlier prompt. Every dictation shares the same ~2,800-token start (rules +
+    examples), so sending exactly that start saves a checkpoint the dictation
+    then resumes from: ~1.1 s less per dictation on an M4."""
+    body = {"model": model, "messages": prefix_messages(rules()), "stream": False, "think": False,
+            "keep_alive": KEEP_ALIVE, "options": ollama_options(1)}
     req = urllib.request.Request(f"{OLLAMA}/api/chat", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as resp:
@@ -198,12 +216,18 @@ def plausible(out, text):
     return bool(out) and len(out) <= len(text) * 1.5 + 40
 
 
-def draft(text, model, system):
-    """Checkpoint 1: few-shot cleanup and formatting."""
+def prefix_messages(system):
+    """The part of every draft request that doesn't depend on the dictation."""
     messages = [{"role": "system", "content": system}]
     for raw, cleaned in EXAMPLES:
         messages += [{"role": "user", "content": f"<dictation>{raw}</dictation>"},
                      {"role": "assistant", "content": cleaned}]
+    return messages
+
+
+def draft(text, model, system):
+    """Checkpoint 1: few-shot cleanup and formatting."""
+    messages = prefix_messages(system)
     messages.append({"role": "user", "content": f"<dictation>{text}</dictation>"})
     out = ollama_chat(model, messages, int(len(text) * 1.5) + 64)
     return re.sub(r"</?dictation>", "", out).strip()
@@ -357,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path.rstrip("/") == "/warm":
-            threading.Thread(target=self._warm, daemon=True).start()
+            warm_in_background()
             return self._json(202, {"status": "loading"})
         if self.path.rstrip("/") != "/v1/chat/completions":
             return self._json(404, {"error": "not found"})
@@ -380,22 +404,69 @@ class Handler(BaseHTTPRequestHandler):
                          "message": {"role": "assistant", "content": out}}],
         })
 
-    @staticmethod
-    def _warm():
+    def log_message(self, *args):  # keep dictated text out of the journal
+        pass
+
+
+_warming = threading.Lock()
+
+
+def warm_in_background():
+    """Start warm() unless one is already running (a key press can arrive twice)."""
+    if not _warming.acquire(blocking=False):
+        return
+
+    def run():
         start = time.monotonic()
         try:
             warm()
             print(f"warm {round((time.monotonic() - start) * 1000)}ms", file=sys.stderr)
         except Exception as e:
             print(f"warm failed: {e}", file=sys.stderr)
+        finally:
+            _warming.release()
 
-    def log_message(self, *args):  # keep dictated text out of the journal
-        pass
+    threading.Thread(target=run, daemon=True).start()
+
+
+# Handy logs this (at debug level) the moment its post-process shortcut is
+# pressed, before any audio is recorded.
+HANDY_RECORDING = "TranscribeAction::start called for binding: transcribe_with_post_process"
+
+
+def watch_handy_log(path):
+    """Warm the model as soon as Handy starts a post-process recording, the way
+    `localflow --warm` does from a compositor keybinding on Linux. Handy on
+    macOS and Windows owns its own shortcut, so its log is the only signal."""
+    f, inode, partial = None, None, ""
+    while True:
+        try:
+            st = os.stat(path)
+            if f is None or st.st_ino != inode or st.st_size < f.tell():
+                fresh = f is None  # first open: skip history; after rotation: read it all
+                if f:
+                    f.close()
+                f, inode, partial = open(path, errors="replace"), st.st_ino, ""
+                if fresh:
+                    f.seek(0, os.SEEK_END)
+            while line := f.readline():
+                if not line.endswith("\n"):
+                    partial += line  # Handy is mid-write; finish the line next time
+                    break
+                line, partial = partial + line, ""
+                if HANDY_RECORDING in line:
+                    warm_in_background()
+        except OSError:
+            f = None  # not there yet (Handy never started) or being rotated
+        time.sleep(0.2)
 
 
 def serve():
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"localflow: http://127.0.0.1:{PORT}/v1 -> {OLLAMA} ({MODEL})", file=sys.stderr)
+    if HANDY_LOG:
+        print(f"localflow: warming on Handy recordings ({HANDY_LOG})", file=sys.stderr)
+        threading.Thread(target=watch_handy_log, args=(HANDY_LOG,), daemon=True).start()
     server.serve_forever()
 
 
@@ -447,6 +518,7 @@ def run_eval(model, review_model):
     ms_draft = ms_review = 0
     print(f"model: {model}, review: {review_model}\n")
     for raw, expected in cases:
+        warm(model)  # as when dictating: the shortcut warms the model while you speak
         r = clean_detailed(raw, model, review_model)
         d_ok, f_ok = grade(r["draft"], expected), grade(r["final"], expected)
         drafts_ok += d_ok
