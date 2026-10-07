@@ -10,6 +10,7 @@ Hyprland
 Handy
 Ollama
 Duolingo
+Japanese: the language I'm learning, often heard as "Javanese"
 TradingView
 Pine Script: TradingView's scripting language, often heard as "Py script" or "pie script"
 Python

@@ -42,3 +42,5 @@ hi everyone here's the weekly report on sales we closed twelve new deals this we
 heading project goals new paragraph we want faster builds new line and fewer flaky tests => ? +## project goals; -heading; -new paragraph; -new line; +faster builds
 bullet point milk bullet point eggs bullet point bread => ? count:- >= 3; -bullet point; +milk; +eggs; +bread
 can you send me the slides from yesterday's meeting => ? -#; +slides
+the world is a vast area of land and water it has seven continents and five oceans and billions of people live on it => ? +## the world; +vast area of land; order: ## < vast
+hey can you pick up the kids today I'm stuck at work and won't be back until seven => ? -#; +pick up the kids
