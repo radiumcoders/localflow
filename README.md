@@ -21,7 +21,7 @@ dictated question stays a question. Nothing leaves your machine.
 
 ## How it works
 
-Three checkpoints:
+Two checkpoints:
 
 1. **Draft**: the model cleans and formats the transcript, guided by the rules,
    worked examples and your `words.txt`.
@@ -33,11 +33,6 @@ Three checkpoints:
    find something, a fresh call (no examples, no history) repairs just that,
    and the repair is kept only if it clears the problem without adding new
    ones. Otherwise the draft goes out untouched, at no extra cost.
-3. **Polish** (default; `HANDY_CLEAN_STYLE=verbatim` to skip): a fresh call
-   fixes grammar and awkward phrasing ("this is pretty working out" → "this is
-   working out pretty well") without swapping words that are fine. It's kept
-   only if the layout (headings, list items, line breaks) is identical and
-   the length barely changes, so it can't break the formatting. ~0.7 s.
 
 A free-form "review this draft" pass was tried first and measured worse: the
 same 4b model fixed nothing and undid two correct self-corrections, and
@@ -147,7 +142,7 @@ on macOS, log out and in on Windows).
 case and punctuation; list cases compare the numbered items; `? +must; -must
 not; order: a < b < c` checks properties of long, open-ended dictation.
 
-Current results on an RX 9070 XT: `qwen3.5:4b` 33/36 (31 from the draft, +2 from review; review runs on ~1 in 15 dictations, +72 ms on average; polish adds ~0.7 s and rewords ~1 in 9), ~0.3 s for short
+Current results on an RX 9070 XT: `qwen3.5:4b` 33/36 (31 from the draft, +2 from review; review runs on ~1 in 15 dictations, +72 ms on average), ~0.3 s for short
 dictation, ~1.5 s for long rambling ones; `qwen3.5:2b` is about twice as fast
 and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the latency.
 

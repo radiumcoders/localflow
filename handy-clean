@@ -16,8 +16,6 @@ messages, and a sanity check that falls back to the raw transcript.
 Environment:
     HANDY_CLEAN_MODEL       Ollama model        (default: qwen3.5:4b)
     HANDY_CLEAN_REVIEW_MODEL  model for the repair pass (default: same; "off" to skip)
-    HANDY_CLEAN_STYLE       "polish" (default) also smooths grammar and phrasing;
-                            "verbatim" only cleans up
     HANDY_CLEAN_OLLAMA      Ollama base URL     (default: http://127.0.0.1:11434)
     HANDY_CLEAN_PORT        port for `serve`    (default: 11435)
     HANDY_CLEAN_KEEP_ALIVE  how long the model stays in VRAM (default: 1h)
@@ -39,17 +37,6 @@ KEEP_ALIVE = os.environ.get("HANDY_CLEAN_KEEP_ALIVE", "1h")
 # problems, a fresh call (no examples, no history) repairs just those. "off"
 # skips the repair call (checks and deterministic fixes still run).
 REVIEW_MODEL = os.environ.get("HANDY_CLEAN_REVIEW_MODEL", MODEL)
-# "polish": a third pass smooths grammar and awkward phrasing without touching
-# the layout. "verbatim": only clean up.
-STYLE = os.environ.get("HANDY_CLEAN_STYLE", "polish")
-
-POLISH_SYSTEM = """You polish cleaned-up dictation so it reads well. Fix grammar, broken or awkward phrasing and run-on sentences ("this is pretty working out" becomes "this is working out pretty well"). Only change what is grammatically wrong or hard to read; don't swap words that are already fine ("whole" stays "whole", "kind of" stays "kind of"). Keep the speaker's meaning, tone, vocabulary and point of view; it should still sound like them. Don't formalize, summarize, or add or drop information, and keep every fact, condition and qualifier.
-
-Keep the layout exactly: the same headings, the same list items in the same order, the same line breaks and blank lines. Only reword within lines. If the text already reads well, return it unchanged. Answer {"text": "<the polished text>"}."""
-
-WORDING = {
-    "verbatim": """Keep the speaker's words, tone and point of view, including phrases like "I think". Do not summarize, formalize or add anything. In long, rambling speech you may tighten wording inside list items, but keep every fact, condition and qualifier ("only", "maybe", "for one hour", "if time is left").""",
-}
 
 SYSTEM = """You are a dictation cleanup filter. Each user message is a raw speech-to-text transcript inside <dictation> tags. Output the text the speaker actually meant to write.
 
@@ -57,7 +44,7 @@ Rules:
 1. Self-corrections: when the speaker changes their mind ("wait", "actually", "no", "sorry", "I mean", "scratch that", "make that", "or rather", "I just remembered", "change of plan"), keep only the final version and drop both the replaced words and the correction phrase. A retraction like "actually it's not X, it's Y" or "this is not X, this is Y" also replaces X with Y. This applies everywhere, including the very first words and in the middle of long speech. When a whole plan or order is revised, output only the revised plan. The transcript may have no punctuation, so look for these words anywhere.
 2. Remove filler words (um, uh, er, "like", "so a", "you know", "means" used as filler), false starts, stutters and accidental repeated words.
 3. Fix punctuation and capitalization.
-4. {wording}
+4. Keep the speaker's words, tone and point of view, including phrases like "I think". Do not summarize, formalize or add anything. In long, rambling speech you may tighten wording inside list items, but keep every fact, condition and qualifier ("only", "maybe", "for one hour", "if time is left").
 5. Lists: when the speaker enumerates two or more items ("first ... second ... third", "the first thing ... second ... and third", "first ... then ... after that", "one ... two ...", "number one ... number two", "next", "and finally"), even inside long, run-on speech, write a numbered list with one item per line ("1. ", "2. ", ...), capitalized, without the counting words or trailing commas.
    - Turn the lead-in into a short line ending with a colon ("the first thing we want to do is X" becomes "What we want to do:" then "1. X"), directly followed by the list.
    - When an item has its own steps, put them in a sub-list indented by 3 spaces under that item, and keep them there; don't scatter them into the main list.
@@ -171,12 +158,8 @@ def ollama_chat(model, messages, num_predict, fmt=None):
         return json.load(resp)["message"]["content"]
 
 
-def examples():
-    return EXAMPLES
-
-
 def rules():
-    system = SYSTEM.replace("{wording}", WORDING["verbatim"])
+    system = SYSTEM
     if words := vocabulary():
         system += "\n\nSpeaker's vocabulary (use these exact spellings):\n" + "\n".join(f"- {w}" for w in words)
     return system
@@ -191,7 +174,7 @@ def plausible(out, text):
 def draft(text, model, system):
     """Checkpoint 1: few-shot cleanup and formatting."""
     messages = [{"role": "system", "content": system}]
-    for raw, cleaned in examples():
+    for raw, cleaned in EXAMPLES:
         messages += [{"role": "user", "content": f"<dictation>{raw}</dictation>"},
                      {"role": "assistant", "content": cleaned}]
     messages.append({"role": "user", "content": f"<dictation>{text}</dictation>"})
@@ -266,46 +249,10 @@ def review(text, first, model, system):
     return f"kept ({len(problems)})", None
 
 
-def layout(t):
-    """The structural skeleton of a text: per line, its kind (blank, heading,
-    bullet, numbered item with indent, text)."""
-    kinds = []
-    for line in t.split("\n"):
-        stripped = line.strip()
-        if not stripped:
-            kinds.append("blank")
-        elif stripped.startswith("#"):
-            kinds.append("heading")
-        elif re.match(r"[-*] ", stripped):
-            kinds.append(f"bullet{len(line) - len(line.lstrip())}")
-        elif re.match(r"\d+\. ", stripped):
-            kinds.append(f"item{len(line) - len(line.lstrip())}")
-        else:
-            kinds.append("text")
-    return kinds
-
-
-def polish(text, current, model):
-    """Checkpoint 3 (style "polish"): reword for grammar and flow. Kept only if
-    the layout is unchanged and nothing much was dropped or added."""
-    out = ollama_chat(model, [{"role": "system", "content": POLISH_SYSTEM},
-                              {"role": "user", "content": current}],
-                      len(current) // 2 + 96, fmt=REVIEW_FORMAT)
-    try:
-        polished = (json.loads(out).get("text") or "").strip()
-    except ValueError:
-        return None
-    if not polished or polished == current or layout(polished) != layout(current):
-        return None
-    if not 0.7 <= len(polished) / len(current) <= 1.3:
-        return None
-    return polished
-
-
-def clean_detailed(text, model=MODEL, review_model=REVIEW_MODEL, style=None):
+def clean_detailed(text, model=MODEL, review_model=REVIEW_MODEL):
     """Run both checkpoints. Returns a dict with draft, final, verdict, timings."""
     text = text.strip()
-    result = {"draft": text, "final": text, "verdict": "skipped", "ms_draft": 0, "ms_review": 0, "ms_polish": 0}
+    result = {"draft": text, "final": text, "verdict": "skipped", "ms_draft": 0, "ms_review": 0}
     if not text:
         return result
     system = rules()
@@ -326,23 +273,12 @@ def clean_detailed(text, model=MODEL, review_model=REVIEW_MODEL, style=None):
         result["final"] = markdown_headings(fixed)
     elif fixed:
         result["verdict"] = "fix rejected"
-    result["ms_polish"] = 0
-    if (style or STYLE) == "polish":
-        start = time.monotonic()
-        try:
-            polished = polish(text, result["final"], model)
-        except Exception:
-            polished = None
-        result["ms_polish"] = round((time.monotonic() - start) * 1000)
-        result["polished"] = polished is not None
-        if polished:
-            result["final"] = polished
     return result
 
 
-def clean(text, model=MODEL, review_model=REVIEW_MODEL, style=None):
+def clean(text, model=MODEL, review_model=REVIEW_MODEL):
     """Return the cleaned transcript, or the original if anything looks off."""
-    return clean_detailed(text, model, review_model, style)["final"]
+    return clean_detailed(text, model, review_model)["final"]
 
 
 SECTION_LEADIN = re.compile(r"(?:on|for|about|regarding) (?:the )?([\w'&/ -]{1,30}?)(?: side| front)?:", re.I)
@@ -401,8 +337,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             r = clean_detailed(transcript)
             out = r["final"]
-            print(f"draft {r['ms_draft']}ms, review {r['ms_review']}ms: {r['verdict']}, "
-                  f"polish {r['ms_polish']}ms", file=sys.stderr)
+            print(f"draft {r['ms_draft']}ms, review {r['ms_review']}ms: {r['verdict']}", file=sys.stderr)
         except Exception as e:  # Ollama down or slow: never lose the dictation
             print(f"ollama error: {e}", file=sys.stderr)
             out = transcript.strip()
@@ -467,8 +402,8 @@ def run_eval(model, review_model):
 
     clean("warm up", model, review_model)  # load the models so the first case isn't timed cold
     drafts_ok = finals_ok = fixed = broke = changed = 0
-    ms_draft = ms_review = ms_polish = polished = 0
-    print(f"model: {model}, review: {review_model}, style: {STYLE}\n")
+    ms_draft = ms_review = 0
+    print(f"model: {model}, review: {review_model}\n")
     for raw, expected in cases:
         r = clean_detailed(raw, model, review_model)
         d_ok, f_ok = grade(r["draft"], expected), grade(r["final"], expected)
@@ -479,8 +414,6 @@ def run_eval(model, review_model):
         broke += d_ok and not f_ok
         ms_draft += r["ms_draft"]
         ms_review += r["ms_review"]
-        ms_polish += r["ms_polish"]
-        polished += bool(r.get("polished"))
         tag = "PASS" if f_ok else "FAIL"
         if d_ok != f_ok:
             tag += " (review fixed)" if f_ok else " (review broke)"
@@ -494,8 +427,7 @@ def run_eval(model, review_model):
     n = max(len(cases), 1)
     print(f"\ndraft {drafts_ok}/{len(cases)}, final {finals_ok}/{len(cases)} "
           f"(review changed {changed}: fixed {fixed}, broke {broke}); "
-          f"avg {ms_draft // n}ms draft + {ms_review // n}ms review + {ms_polish // n}ms polish "
-          f"(polished {polished})")
+          f"avg {ms_draft // n}ms draft + {ms_review // n}ms review")
 
 
 if __name__ == "__main__":
