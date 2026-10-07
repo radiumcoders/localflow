@@ -123,7 +123,7 @@ not; order: a < b < c` checks properties of long, open-ended dictation.
 
 Current results on an RX 9070 XT: `qwen3.5:4b` 28/31, ~0.3 s for short
 dictation, ~1.5 s for long rambling ones; `qwen3.5:2b` is about twice as fast
-and misses more corrections.
+and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the latency.
 
 ## Files
 
