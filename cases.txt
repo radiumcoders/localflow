@@ -35,3 +35,10 @@ Hello guys So my plan for today is I will wake up at 6 a.m. and then I will go t
 
 # Mishearings fixed from context / words.txt
 So what we want to do is create up a new project then generate some code using Claw and push it to GitHub => ? +claude; -claw; order: project < claude < github
+
+# Paragraphs, headings and spoken formatting commands
+so about the trip planning for the flights we should book them this week because prices keep going up and we need four seats together and for the hotel I found two options near the beach one is cheaper but the other has a pool and breakfast included and for the budget let's keep it under two thousand dollars total including food => ? +flights; +hotel; order: flight < hotel < budget; -so about the trip planning for the flights
+hi everyone here's the weekly report on sales we closed twelve new deals this week which is our best week so far and the enterprise pipeline is looking strong for next month as well on hiring we interviewed five engineers and made two offers one of them already accepted and she starts on monday on the product side the new dashboard launched on tuesday and customers are giving really positive feedback especially about the export feature => ? count:## >= 3; order: sales < hiring < product; -on hiring we
+heading project goals new paragraph we want faster builds new line and fewer flaky tests => ? +## project goals; -heading; -new paragraph; -new line; +faster builds
+bullet point milk bullet point eggs bullet point bread => ? count:- >= 3; -bullet point; +milk; +eggs; +bread
+can you send me the slides from yesterday's meeting => ? -#; +slides

@@ -14,7 +14,9 @@ Handy turns speech into text; handy-clean turns that text into what you meant:
 
 It handles self-corrections ("wait", "actually", "sorry I mean", "scratch that",
 "I just remembered"), filler words, punctuation, numbered and nested lists in
-long rambling speech, and misheard names. It never answers what you say: a
+long rambling speech, paragraphs and `## ` section headings for long
+multi-topic dictation, spoken commands ("new paragraph", "new line",
+"heading …", "bullet point …"), and misheard names. It never answers what you say: a
 dictated question stays a question. Nothing leaves your machine.
 
 ## How it works
@@ -119,7 +121,7 @@ on macOS, log out and in on Windows).
 case and punctuation; list cases compare the numbered items; `? +must; -must
 not; order: a < b < c` checks properties of long, open-ended dictation.
 
-Current results on an RX 9070 XT: `qwen3.5:4b` 23/26, ~0.3 s for short
+Current results on an RX 9070 XT: `qwen3.5:4b` 28/31, ~0.3 s for short
 dictation, ~1.5 s for long rambling ones; `qwen3.5:2b` is about twice as fast
 and misses more corrections.
 

@@ -188,6 +188,14 @@ def start_handy():
     if not cmd:
         print("   start Handy yourself (couldn't find it to launch)")
         return
+    if SYSTEM == "Linux" and have("hyprctl"):
+        # Let Hyprland spawn it so Handy gets the desktop session's
+        # environment, not this shell's (which may be a terminal sandbox).
+        line = " ".join(cmd)
+        for dispatch in (f'hl.dsp.exec_cmd("{line}")', f"exec {line}"):  # Lua config, then classic
+            r = subprocess.run(["hyprctl", "dispatch", dispatch], capture_output=True, text=True)
+            if r.stdout.strip() == "ok":
+                return
     flags = 0x00000008 if SYSTEM == "Windows" else 0
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=SYSTEM != "Windows", creationflags=flags)
