@@ -304,9 +304,13 @@ def systemd_unit(name, text):
     run("systemctl", "--user", "restart", f"{name}.service")
 
 
-def install_proxy(model):
+def install_proxy(model, hyprland):
     step("localflow proxy (runs at login)")
     py = sys.executable
+    # On Hyprland the dictation keys also run `localflow --warm`, which loads
+    # the model as you start speaking, so it can unload soon after instead of
+    # holding ~1 GB RAM + ~3 GB VRAM for an hour.
+    keep_alive = "2m" if hyprland else "1h"
     if SYSTEM == "Linux":
         systemd_unit("localflow", f"""[Unit]
 Description=localflow: Ollama dictation cleanup proxy for Handy
@@ -316,6 +320,7 @@ Wants=ollama.service
 [Service]
 ExecStart={py} {SCRIPT} serve
 Environment=LOCALFLOW_MODEL={model}
+Environment=LOCALFLOW_KEEP_ALIVE={keep_alive}
 Restart=on-failure
 RestartSec=3
 
@@ -376,7 +381,7 @@ def main():
     install_ollama(rocm)
     step(f"Model {args.model}")
     run(ollama_bin() or "ollama", "pull", args.model)
-    install_proxy(args.model)
+    install_proxy(args.model, hyprland)
     install_handy()
     configure_handy(hyprland)
 
@@ -386,7 +391,7 @@ def main():
     elif SYSTEM == "Windows":
         print("   Dictate with Ctrl+Shift+Space (Handy's post-process shortcut).")
     elif hyprland:
-        print("   Bind your dictation keys to `handy --toggle-post-process` (see README).")
+        print("   Bind your dictation keys to `handy --toggle-post-process & localflow --warm` (see README).")
     else:
         print("   Add a desktop shortcut running `handy --toggle-post-process` (see README).")
     print(f"   Test the model: echo \"let's meet at 3 wait at 4\" | {SCRIPT}")

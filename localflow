@@ -8,6 +8,7 @@ and calls Ollama's native API with temperature 0, few-shot examples as real
 messages, and a sanity check that falls back to the raw transcript.
 
     localflow serve                  # OpenAI-compatible server for Handy
+    localflow --warm                 # start loading the model now (bind to your dictation key)
     echo "meet at 3 wait at 2" | localflow
     localflow --eval                 # run cases.txt
     localflow --eval qwen3.5:2b      # ...against another Ollama model
@@ -18,11 +19,13 @@ Environment:
     LOCALFLOW_REVIEW_MODEL  model for the repair pass (default: same; "off" to skip)
     LOCALFLOW_OLLAMA      Ollama base URL     (default: http://127.0.0.1:11434)
     LOCALFLOW_PORT        port for `serve`    (default: 11435)
-    LOCALFLOW_KEEP_ALIVE  how long the model stays in VRAM (default: 1h)
+    LOCALFLOW_KEEP_ALIVE  how long the model stays loaded after use (default: 1h;
+                          the installer sets 2m on Hyprland, where --warm loads it per dictation)
     LOCALFLOW_USE_MMAP    1 to also keep the model file mapped in RAM (default: off)
 """
 
 import json
+import threading
 import os
 import re
 import sys
@@ -145,6 +148,21 @@ REVIEW_FORMAT = {"type": "object", "properties": {"text": {"type": "string"}}, "
 QUALIFIERS = ["maybe", "only", "never", "except", "unless"]
 
 
+def ollama_options(num_predict):
+    # Load-time options (use_mmap) must match between warm-up and real
+    # requests, or Ollama reloads the model and the warm-up is wasted.
+    return {"temperature": 0, "num_predict": num_predict, "use_mmap": USE_MMAP}
+
+
+def warm(model=MODEL):
+    """Load the model (no generation) so it's ready when the dictation arrives."""
+    body = {"model": model, "messages": [], "keep_alive": KEEP_ALIVE, "options": ollama_options(1)}
+    req = urllib.request.Request(f"{OLLAMA}/api/chat", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        resp.read()
+
+
 def ollama_chat(model, messages, num_predict, fmt=None):
     body = {
         "model": model,
@@ -152,7 +170,7 @@ def ollama_chat(model, messages, num_predict, fmt=None):
         "stream": False,
         "think": False,
         "keep_alive": KEEP_ALIVE,
-        "options": {"temperature": 0, "num_predict": num_predict, "use_mmap": USE_MMAP},
+        "options": ollama_options(num_predict),
     }
     if fmt:
         body["format"] = fmt
@@ -320,7 +338,8 @@ def markdown_headings(out):
 
 
 class Handler(BaseHTTPRequestHandler):
-    """Just enough of the OpenAI API for Handy: GET /v1/models, POST /v1/chat/completions."""
+    """Just enough of the OpenAI API for Handy: GET /v1/models, POST /v1/chat/completions,
+    plus POST /warm to start loading the model in the background."""
 
     def _json(self, code, obj):
         data = json.dumps(obj).encode()
@@ -337,6 +356,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path.rstrip("/") == "/warm":
+            threading.Thread(target=self._warm, daemon=True).start()
+            return self._json(202, {"status": "loading"})
         if self.path.rstrip("/") != "/v1/chat/completions":
             return self._json(404, {"error": "not found"})
         req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
@@ -357,6 +379,15 @@ class Handler(BaseHTTPRequestHandler):
             "choices": [{"index": 0, "finish_reason": "stop",
                          "message": {"role": "assistant", "content": out}}],
         })
+
+    @staticmethod
+    def _warm():
+        start = time.monotonic()
+        try:
+            warm()
+            print(f"warm {round((time.monotonic() - start) * 1000)}ms", file=sys.stderr)
+        except Exception as e:
+            print(f"warm failed: {e}", file=sys.stderr)
 
     def log_message(self, *args):  # keep dictated text out of the journal
         pass
@@ -445,6 +476,13 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if args[:1] == ["serve"]:
         serve()
+    elif args[:1] == ["--warm"]:
+        # Ask the running proxy (which has the service's settings) to load the
+        # model; returns immediately so the dictation key isn't held up.
+        try:
+            urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{PORT}/warm", data=b""), timeout=2).read()
+        except OSError:
+            pass
     elif args[:1] == ["--eval"]:
         run_eval(args[1] if len(args) > 1 else MODEL, args[2] if len(args) > 2 else REVIEW_MODEL)
     elif args[:1] in (["-h"], ["--help"]):

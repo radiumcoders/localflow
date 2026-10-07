@@ -69,20 +69,25 @@ cores; Radeon RX 9070 XT, 16 GB VRAM) with the default `qwen3.5:4b`.
 | Handy | ~0.5 GB |
 | Handy speech model (you pick it in Handy) | ~0.5–0.7 GB for the Parakeet models |
 
-**Memory while it's running**
+**Memory** (on Hyprland, where the dictation key also loads the cleanup model)
 
-| What | With a GPU | CPU only |
+| State | RAM | GPU memory |
 | --- | --- | --- |
-| Cleanup model | ~3.1 GB of VRAM + ~1.1 GB RAM | ~3.6 GB RAM |
-| Handy (speech model loaded only while dictating) | ~0.3 GB RAM | ~0.3 GB RAM |
-| Ollama server + localflow proxy | ~0.1 GB RAM | ~0.1 GB RAM |
+| Idle (between dictations) | ~0.4 GB (Handy 0.3 + Ollama/proxy 0.08) | none |
+| While dictating | ~1.4 GB | ~4.5 GB (cleanup model ~3.8 + speech model ~0.7) |
+| Up to 2 min after the last dictation | ~1.5 GB | ~3.8 GB, then freed |
 
-In total that's about 1.5 GB of RAM (plus VRAM) while the model is loaded,
-and about 0.4 GB once it unloads. The model stays loaded for 1 hour after
-your last dictation; the first dictation after that waits ~1.5-3 s while it
-loads again (`LOCALFLOW_KEEP_ALIVE` changes the hour, e.g. `5m` to free the
-memory sooner). Cloud dictation apps use less RAM because their models run on
-their servers; here everything runs on your machine.
+Pressing the dictation key runs `localflow --warm`, which loads the cleanup
+model (~1.5 s) while you speak, so it's ready when you stop; it unloads 2
+minutes after your last dictation. Handy's speech model loads in ~0.2 s and
+unloads right after each dictation. Without a GPU, the cleanup model takes
+~3.6 GB of RAM instead of GPU memory while loaded.
+
+On macOS and Windows (no warm-up key yet) the model stays loaded for 1 hour
+after your last dictation (`LOCALFLOW_KEEP_ALIVE` changes that); the first
+dictation after it unloads waits ~1.5-3 s extra. Cloud dictation apps use less
+RAM because their models run on their servers; here everything runs on your
+machine.
 
 **Speed** (time from releasing the key to text appearing, after transcription)
 
@@ -147,8 +152,9 @@ paste, restoring your clipboard after. In `~/.config/hypr/bindings.lua`:
 ```lua
 hl.unbind("SUPER + CTRL + X")
 hl.unbind("F9")
-o.bind("SUPER + CTRL + X", "Toggle dictation", "~/.local/bin/handy --toggle-post-process")
-o.bind("F9", "Start dictation (push-to-talk)", "~/.local/bin/handy --toggle-post-process")
+-- `localflow --warm` loads the cleanup model while you speak (see Memory)
+o.bind("SUPER + CTRL + X", "Toggle dictation", "~/.local/bin/handy --toggle-post-process & ~/Projects/localflow/localflow --warm")
+o.bind("F9", "Start dictation (push-to-talk)", "~/.local/bin/handy --toggle-post-process & ~/Projects/localflow/localflow --warm")
 o.bind("F9", "Stop dictation (push-to-talk)", "~/.local/bin/handy --toggle-post-process", { release = true })
 -- raw Handy output, no cleanup
 o.bind("F10", "Start raw dictation (push-to-talk)", "~/.local/bin/handy --toggle-transcription")
