@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""handy-clean: test the dictation-cleanup model exactly the way Handy calls it.
+
+Handy's post-processing (Custom provider) sends one user message to Ollama's
+OpenAI-compatible endpoint: its prompt template with ${output} replaced by the
+transcript. The cleanup rules and examples live in the Ollama model itself
+(see Modelfile), so the Handy prompt is just PROMPT below.
+
+    echo "let's meet in 3 hours wait in 2 hours" | handy-clean
+    handy-clean --eval                 # run cases.txt against handy-clean
+    handy-clean --eval qwen3.5:4b      # ...or against another Ollama model
+
+Environment:
+    HANDY_CLEAN_MODEL  Ollama model (default: handy-clean)
+    HANDY_CLEAN_URL    OpenAI-compatible base URL (default: http://localhost:11434/v1)
+"""
+
+import json
+import os
+import re
+import sys
+import time
+import urllib.request
+
+PROMPT = "<dictation>${output}</dictation>"  # keep in sync with install.sh
+MODEL = os.environ.get("HANDY_CLEAN_MODEL", "handy-clean")
+URL = os.environ.get("HANDY_CLEAN_URL", "http://localhost:11434/v1").rstrip("/")
+
+
+def clean(text, model=MODEL):
+    # Same request body Handy builds: one user message, reasoning disabled.
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": PROMPT.replace("${output}", text)}],
+        "reasoning_effort": "none",
+    }
+    req = urllib.request.Request(
+        f"{URL}/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        content = json.load(resp)["choices"][0]["message"]["content"]
+    # Handy strips a leading <think> block the same way.
+    return re.sub(r"^\s*<think>.*?</think>", "", content, flags=re.S).strip()
+
+
+def run_eval(model):
+    cases_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cases.txt")
+    cases = []
+    with open(cases_path) as f:
+        for line in f:
+            if line.strip() and not line.startswith("#") and "=>" in line:
+                raw, expected = (s.strip() for s in line.split("=>", 1))
+                cases.append((raw, expected))
+
+    norm = lambda s: re.sub(r"[^\w\s]", "", s.lower()).split()
+    clean("warm up", model)  # load the model so the first case isn't timed cold
+    passed, total_ms = 0, 0
+    print(f"model: {model}\n")
+    for raw, expected in cases:
+        start = time.monotonic()
+        out = clean(raw, model)
+        ms = round((time.monotonic() - start) * 1000)
+        total_ms += ms
+        ok = norm(out) == norm(expected)  # ignore punctuation/case differences
+        passed += ok
+        print(f"{'PASS' if ok else 'FAIL'} {ms:5d}ms  {raw}")
+        if not ok:
+            print(f"           want: {expected}\n           got:  {out}")
+    print(f"\n{passed}/{len(cases)} passed, avg {total_ms // max(len(cases), 1)}ms")
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if args[:1] == ["--eval"]:
+        run_eval(args[1] if len(args) > 1 else MODEL)
+    elif args[:1] in (["-h"], ["--help"]):
+        print(__doc__.strip())
+    else:
+        sys.stdout.write(clean(sys.stdin.read().strip()))

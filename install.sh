@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
-# Install voxclean: user-level Ollama service + model + voxtype post-process hook.
-# Ollama itself must already be extracted to ~/.local/ollama (see README).
+# Set up Handy + local Ollama dictation cleanup. Safe to re-run.
+#
+#   ./install.sh                      # base model qwen3.5:2b
+#   BASE_MODEL=qwen3.5:4b ./install.sh
+#
+# Expects Ollama extracted to ~/.local/ollama and the Handy AppImage at
+# ~/.local/share/handy/Handy.AppImage (see README.md).
+# Hyprland keybinds/autostart live in ~/.config/hypr (see README.md).
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-model="${VOXCLEAN_MODEL:-qwen3.5:2b}"
+base_model="${BASE_MODEL:-qwen3.5:2b}"
 ollama="$HOME/.local/ollama/bin/ollama"
-voxconf="$HOME/.config/voxtype/config.toml"
+appimage="$HOME/.local/share/handy/Handy.AppImage"
+appdir="$HOME/.local/share/handy/app"
+store="$HOME/.local/share/com.pais.handy/settings_store.json"
+prompt='<dictation>${output}</dictation>'  # keep in sync with handy-clean
 
 [[ -x $ollama ]] || { echo "ollama not found at $ollama" >&2; exit 1; }
+[[ -x $appimage ]] || { echo "Handy not found at $appimage" >&2; exit 1; }
+mkdir -p ~/.local/bin
 
-# Skip the user service if a system-wide ollama is already serving.
+# --- Ollama: user service (skipped if some ollama already serves :11434) ---
 if ! curl -sf -m 2 127.0.0.1:11434/api/version >/dev/null; then
   mkdir -p ~/.config/systemd/user
   ln -sf "$here/ollama.service" ~/.config/systemd/user/ollama.service
@@ -18,20 +29,63 @@ if ! curl -sf -m 2 127.0.0.1:11434/api/version >/dev/null; then
   systemctl --user enable --now ollama.service
   for _ in $(seq 30); do curl -sf -m 1 127.0.0.1:11434/api/version >/dev/null && break; sleep 0.5; done
 fi
+ln -sf "$ollama" ~/.local/bin/ollama
 
-"$ollama" pull "$model"
+# --- Cleanup model: base model + rules/examples/temperature from Modelfile ---
+"$ollama" pull "$base_model"
+sed "s|^FROM .*|FROM $base_model|" "$here/Modelfile" >"$here/.Modelfile.build"
+"$ollama" create handy-clean -f "$here/.Modelfile.build"
+rm "$here/.Modelfile.build"
 
-# Hook voxclean into voxtype, once.
-if ! grep -q '^\[output.post_process\]' "$voxconf"; then
-  cp "$voxconf" "$voxconf.pre-voxclean"
-  cat >>"$voxconf" <<EOF
+# --- Handy: extract the AppImage so each keypress skips a FUSE mount ---
+pkill -x handy 2>/dev/null && sleep 1 || true
+rm -rf "$appdir" "$(dirname "$appimage")/squashfs-root"
+(cd "$(dirname "$appimage")" && "$appimage" --appimage-extract >/dev/null && mv squashfs-root "$appdir")
+printf '#!/bin/sh\nexec "%s/AppRun" "$@"\n' "$appdir" >~/.local/bin/handy
+chmod +x ~/.local/bin/handy
 
-[output.post_process]
-command = "VOXCLEAN_MODEL=$model $here/voxclean"
-timeout_ms = 10000
-EOF
-  echo "added [output.post_process] to $voxconf (backup: $voxconf.pre-voxclean)"
+mkdir -p ~/.local/share/applications
+printf '%s\n' "[Desktop Entry]" "Type=Application" "Name=Handy" "Comment=Speech to text" \
+  "Exec=$HOME/.local/bin/handy" "Icon=$appdir/handy.png" "Categories=Utility;" \
+  >~/.local/share/applications/handy.desktop
+
+# Speech model: Parakeet V3 (Handy's recommended model), fetched once.
+models="$HOME/.local/share/com.pais.handy/models"
+if [[ ! -d $models/parakeet-tdt-0.6b-v3-int8 ]]; then
+  mkdir -p "$models"
+  curl -fL https://blob.handy.computer/parakeet-v3-int8.tar.gz -o "$models/parakeet.tgz"
+  echo "43d37191602727524a7d8c6da0eef11c4ba24320f5b4730f1a2497befc2efa77  $models/parakeet.tgz" | sha256sum -c
+  tar -xzf "$models/parakeet.tgz" -C "$models" 2>/dev/null
+  rm "$models/parakeet.tgz"
 fi
-systemctl --user restart voxtype.service
 
-echo "done. test: echo \"let's meet in 3 hours wait in 2 hours\" | $here/voxclean"
+# Handy writes its settings store on first launch; create it, then patch it.
+if [[ ! -f $store ]]; then
+  ~/.local/bin/handy --start-hidden >/dev/null 2>&1 &
+  for _ in $(seq 40); do [[ -f $store ]] && break; sleep 0.5; done
+  sleep 2
+  pkill -x handy || true
+  sleep 1
+fi
+
+PROMPT="$prompt" STORE="$store" python3 - <<'EOF'
+import json, os
+path, prompt = os.environ["STORE"], os.environ["PROMPT"]
+data = json.load(open(path))
+s = data["settings"]
+s["post_process_enabled"] = True
+s["post_process_provider_id"] = "custom"
+s.setdefault("post_process_models", {})["custom"] = "handy-clean"
+prompts = [p for p in s.get("post_process_prompts", []) if p["id"] != "handy_clean"]
+prompts.append({"id": "handy_clean", "name": "Clean dictation (local)", "prompt": prompt})
+s["post_process_prompts"] = prompts
+s["post_process_selected_prompt_id"] = "handy_clean"
+s["selected_model"] = "parakeet-tdt-0.6b-v3"
+s["onboarding_completed"] = True
+s["start_hidden"] = True  # started by Hyprland at login; lives in the tray
+json.dump(data, open(path, "w"), indent=2)
+print("patched", path)
+EOF
+
+setsid ~/.local/bin/handy --start-hidden >/dev/null 2>&1 &
+echo "done. test the model: echo \"let's meet in 3 hours wait in 2 hours\" | $here/handy-clean"

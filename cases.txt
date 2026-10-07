@@ -1,5 +1,5 @@
-# Eval cases for `voxclean --eval`:  raw transcript => expected output
-# Comparison ignores case and punctuation. None of these appear in the prompt's examples.
+# Eval cases for `handy-clean --eval`:  raw transcript => expected output
+# Comparison ignores case and punctuation. None of these appear in the Modelfile examples.
 
 Let's meet at 5. Wait, no, at 6. => Let's meet at 6.
 Call mom tomorrow. Actually, call her tonight. => Call mom tonight.
