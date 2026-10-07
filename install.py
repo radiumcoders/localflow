@@ -303,6 +303,10 @@ def configure_handy(hyprland):
     # Load the speech model only while dictating: it loads in under a second,
     # in the background as recording starts, and frees its memory right after.
     s["model_unload_timeout"] = "immediately"
+    if SYSTEM == "Darwin":
+        # The proxy warms the cleanup model when Handy logs that the
+        # post-process shortcut was pressed, which Handy logs at debug level.
+        s["log_level"] = "debug"
     if hyprland:
         # Hyprland owns the dictation keys (see README). Handy's own global
         # shortcuts grab Ctrl+Space and start stray recordings that block the
@@ -339,8 +343,9 @@ def install_proxy(model, hyprland):
     py = sys.executable
     # On Hyprland the dictation keys also run `localflow --warm`, which loads
     # the model as you start speaking, so it can unload soon after instead of
-    # holding ~1 GB RAM + ~3 GB VRAM for an hour.
-    keep_alive = "2m" if hyprland else "1h"
+    # holding ~1 GB RAM + ~3 GB VRAM for an hour. On macOS the proxy does the
+    # same by watching Handy's log for the post-process shortcut.
+    keep_alive = "2m" if hyprland or SYSTEM == "Darwin" else "1h"
     if SYSTEM == "Linux":
         systemd_unit("localflow", f"""[Unit]
 Description=localflow: Ollama dictation cleanup proxy for Handy
@@ -369,7 +374,13 @@ WantedBy=default.target
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>LOCALFLOW_MODEL</key><string>{model}</string>
+    <key>LOCALFLOW_KEEP_ALIVE</key><string>{keep_alive}</string>
+    <!-- Apple Silicon shares memory between CPU and GPU, so the GPU can read
+         the mapped model file directly: 1.3 GB instead of 4.8 GB of app
+         memory for qwen3.5:4b, at the same speed. -->
+    <key>LOCALFLOW_USE_MMAP</key><string>1</string>
   </dict>
+  <key>StandardErrorPath</key><string>{HOME}/Library/Logs/localflow.log</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
