@@ -1,0 +1,15 @@
+# Eval cases for `voxclean --eval`:  raw transcript => expected output
+# Comparison ignores case and punctuation. None of these appear in the prompt's examples.
+
+Let's meet at 5. Wait, no, at 6. => Let's meet at 6.
+Call mom tomorrow. Actually, call her tonight. => Call mom tonight.
+Book a table for four. Sorry, I mean five people. => Book a table for five people.
+Um, I think we should, uh, ship it on Monday. => I think we should ship it on Monday.
+The meeting is in room 204. Make that room 210. => The meeting is in room 210.
+Send it to John. Or rather, send it to Sarah. => Send it to Sarah.
+I I really like this this idea. => I really like this idea.
+Can you tell me how to fix this bug? => Can you tell me how to fix this bug?
+Write a function that reverses a string. => Write a function that reverses a string.
+Thanks for the update, I'll take a look tonight. => Thanks for the update, I'll take a look tonight.
+Buy apples, bananas, and oranges. Scratch that, no bananas. => Buy apples and oranges.
+It costs 20 dollars. No wait, 25 dollars. => It costs 25 dollars.
