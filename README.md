@@ -1,9 +1,11 @@
-# handy-clean
+# localflow
+
+_(formerly handy-clean)_
 
 Local, private dictation cleanup for [Handy](https://handy.computer), backed by
 a small LLM in [Ollama](https://ollama.com). Works on macOS, Windows and Linux.
 
-Handy turns speech into text; handy-clean turns that text into what you meant:
+Handy turns speech into text; localflow turns that text into what you meant:
 
 | You say | You get |
 | --- | --- |
@@ -42,14 +44,14 @@ words) were removed.
 
 
 ```
-Handy ──(OpenAI API)──▶ handy-clean serve :11435 ──(native API)──▶ Ollama :11434 (qwen3.5:4b)
+Handy ──(OpenAI API)──▶ localflow serve :11435 ──(native API)──▶ Ollama :11434 (qwen3.5:4b)
 ```
 
-Handy's **Custom** post-processing provider points at the handy-clean proxy.
+Handy's **Custom** post-processing provider points at the localflow proxy.
 The proxy exists because Ollama's OpenAI-compatible endpoint ignores Modelfile
 temperature (the same dictation came back different each time) and few-shot
 history. The proxy calls Ollama's native API with temperature 0, the rules and
-examples in `handy-clean`, your vocabulary from `words.txt`, and falls back to
+examples in `localflow`, your vocabulary from `words.txt`, and falls back to
 the raw transcript if the model replies with something much longer than you
 said or Ollama is down. You never lose a dictation.
 
@@ -58,8 +60,8 @@ said or Ollama is down. You never lose a dictation.
 Needs Python 3.9+ (standard library only) and git.
 
 ```sh
-git clone https://github.com/radiumcoders/handy-clean
-cd handy-clean
+git clone https://github.com/radiumcoders/localflow
+cd localflow
 python3 install.py                      # Windows: py install.py
 ```
 
@@ -127,15 +129,15 @@ It's read on every dictation; no restart needed.
 ## Tuning
 
 ```sh
-echo "call mom tomorrow actually tonight" | ./handy-clean
-./handy-clean --eval                 # run cases.txt against the current model
-./handy-clean --eval qwen3.5:2b      # compare another Ollama model
-./handy-clean --eval qwen3.5:4b off  # draft only (no repair call)
+echo "call mom tomorrow actually tonight" | ./localflow
+./localflow --eval                 # run cases.txt against the current model
+./localflow --eval qwen3.5:2b      # compare another Ollama model
+./localflow --eval qwen3.5:4b off  # draft only (no repair call)
 ```
 
-Rules and examples live in `SYSTEM` / `EXAMPLES` in `handy-clean`. After
+Rules and examples live in `SYSTEM` / `EXAMPLES` in `localflow`. After
 editing, run `--eval`, then restart the proxy (`systemctl --user restart
-handy-clean` on Linux, `launchctl kickstart -k gui/$(id -u)/computer.handy-clean`
+localflow` on Linux, `launchctl kickstart -k gui/$(id -u)/computer.localflow`
 on macOS, log out and in on Windows).
 
 `cases.txt` holds `raw => expected` cases. Expected text is compared ignoring
@@ -150,7 +152,7 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
 
 | File | What |
 | --- | --- |
-| `handy-clean` | rules + examples, `serve` proxy, stdin filter, `--eval` |
+| `localflow` | rules + examples, `serve` proxy, stdin filter, `--eval` |
 | `install.py` | cross-platform installer |
 | `words.txt` | your names/terms, with optional mishearing hints |
 | `cases.txt` | eval cases |

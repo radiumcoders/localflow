@@ -1,4 +1,4 @@
-# Names and terms you say often. handy-clean fixes near-miss transcriptions to
+# Names and terms you say often. localflow fixes near-miss transcriptions to
 # these spellings ("Claw" -> Claude, "Py script" in TradingView -> Pine Script).
 # One per line, optionally "Term: hint" to say how it gets misheard or where
 # it's used. Edits apply to the next dictation, no restart needed.
@@ -8,7 +8,7 @@ GitHub
 Omarchy
 Hyprland
 Handy
-handy-clean: this project, often heard as "handy clean"
+localflow: this project, often heard as "local flow" or "handy clean"
 Next.js
 Ollama
 Duolingo

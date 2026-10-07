@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Install handy-clean on macOS, Windows or Linux. Safe to re-run.
+"""Install localflow on macOS, Windows or Linux. Safe to re-run.
 
     python3 install.py                     # default model qwen3.5:4b
     python3 install.py --model qwen3.5:2b  # smaller, faster, less accurate
 
 Steps: install Ollama and Handy if missing, pull the model, run the
-handy-clean proxy at login, and point Handy's post-processing at it.
+localflow proxy at login, and point Handy's post-processing at it.
 Uses only the Python standard library.
 """
 
@@ -22,12 +22,12 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SCRIPT = HERE / "handy-clean"
+SCRIPT = HERE / "localflow"
 SYSTEM = platform.system()  # "Linux", "Darwin", "Windows"
 HOME = Path.home()
 OLLAMA_URL = "http://127.0.0.1:11434"
 PROXY_URL = "http://127.0.0.1:11435/v1"
-PROMPT = "<dictation>${output}</dictation>"  # handy-clean serve unwraps this
+PROMPT = "<dictation>${output}</dictation>"  # localflow serve unwraps this
 
 # Linux installs everything per-user (no sudo) under these paths.
 LINUX_OLLAMA = HOME / ".local/ollama"
@@ -126,7 +126,7 @@ def install_ollama_linux(rocm):
     if not link.exists():
         link.symlink_to(LINUX_OLLAMA / "bin/ollama")
     systemd_unit("ollama", f"""[Unit]
-Description=Ollama (user-level, for handy-clean)
+Description=Ollama (user-level, for localflow)
 After=network.target
 
 [Service]
@@ -257,14 +257,15 @@ def configure_handy(hyprland):
     s = data["settings"]
     s["post_process_enabled"] = True
     s["post_process_provider_id"] = "custom"
-    s.setdefault("post_process_models", {})["custom"] = "handy-clean"
+    s.setdefault("post_process_models", {})["custom"] = "localflow"
     for p in s.get("post_process_providers", []):
         if p["id"] == "custom":
             p["base_url"] = PROXY_URL
-    prompts = [p for p in s.get("post_process_prompts", []) if p["id"] != "handy_clean"]
-    prompts.append({"id": "handy_clean", "name": "Clean dictation (local)", "prompt": PROMPT})
+    # "handy_clean" was this project's prompt id before it was renamed.
+    prompts = [p for p in s.get("post_process_prompts", []) if p["id"] not in ("localflow", "handy_clean")]
+    prompts.append({"id": "localflow", "name": "Clean dictation (local)", "prompt": PROMPT})
     s["post_process_prompts"] = prompts
-    s["post_process_selected_prompt_id"] = "handy_clean"
+    s["post_process_selected_prompt_id"] = "localflow"
     if hyprland:
         # Hyprland owns the dictation keys (see README). Handy's own global
         # shortcuts grab Ctrl+Space and start stray recordings that block the
@@ -283,7 +284,7 @@ def configure_handy(hyprland):
     start_handy()
 
 
-# --- handy-clean proxy -------------------------------------------------------
+# --- localflow proxy -------------------------------------------------------
 
 def systemd_unit(name, text):
     unit = HOME / ".config/systemd/user" / f"{name}.service"
@@ -297,17 +298,17 @@ def systemd_unit(name, text):
 
 
 def install_proxy(model):
-    step("handy-clean proxy (runs at login)")
+    step("localflow proxy (runs at login)")
     py = sys.executable
     if SYSTEM == "Linux":
-        systemd_unit("handy-clean", f"""[Unit]
-Description=handy-clean: Ollama dictation cleanup proxy for Handy
+        systemd_unit("localflow", f"""[Unit]
+Description=localflow: Ollama dictation cleanup proxy for Handy
 After=ollama.service
 Wants=ollama.service
 
 [Service]
 ExecStart={py} {SCRIPT} serve
-Environment=HANDY_CLEAN_MODEL={model}
+Environment=LOCALFLOW_MODEL={model}
 Restart=on-failure
 RestartSec=3
 
@@ -315,17 +316,17 @@ RestartSec=3
 WantedBy=default.target
 """)
     elif SYSTEM == "Darwin":
-        plist = HOME / "Library/LaunchAgents/computer.handy-clean.plist"
+        plist = HOME / "Library/LaunchAgents/computer.localflow.plist"
         plist.parent.mkdir(parents=True, exist_ok=True)
         plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>computer.handy-clean</string>
+  <key>Label</key><string>computer.localflow</string>
   <key>ProgramArguments</key><array>
     <string>{py}</string><string>{SCRIPT}</string><string>serve</string>
   </array>
   <key>EnvironmentVariables</key><dict>
-    <key>HANDY_CLEAN_MODEL</key><string>{model}</string>
+    <key>LOCALFLOW_MODEL</key><string>{model}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -339,15 +340,15 @@ WantedBy=default.target
         pyw = Path(py).with_name("pythonw.exe")
         pyw = pyw if pyw.exists() else Path(py)
         startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
-        (startup / "handy-clean.cmd").write_text(
-            f'@echo off\r\nset HANDY_CLEAN_MODEL={model}\r\nstart "" "{pyw}" "{SCRIPT}" serve\r\n')
+        (startup / "localflow.cmd").write_text(
+            f'@echo off\r\nset LOCALFLOW_MODEL={model}\r\nstart "" "{pyw}" "{SCRIPT}" serve\r\n')
         if http_ok(f"{PROXY_URL}/models"):
             print("   already running; log out and in (or end pythonw.exe) to pick up changes")
         else:
-            env = dict(os.environ, HANDY_CLEAN_MODEL=model)
+            env = dict(os.environ, LOCALFLOW_MODEL=model)
             subprocess.Popen([str(pyw), str(SCRIPT), "serve"], env=env, creationflags=0x00000008)
     if not wait_for(f"{PROXY_URL}/models", 15):
-        sys.exit("handy-clean proxy didn't start; try `python3 handy-clean serve` to see why")
+        sys.exit("localflow proxy didn't start; try `python3 localflow serve` to see why")
 
 
 def require(cmd, hint):

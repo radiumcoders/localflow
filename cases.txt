@@ -1,4 +1,4 @@
-# Eval cases for `handy-clean --eval`:  raw transcript => expected output
+# Eval cases for `localflow --eval`:  raw transcript => expected output
 # Comparison ignores case and punctuation. None of these appear in the Modelfile examples.
 
 Let's meet at 5. Wait, no, at 6. => Let's meet at 6.
@@ -46,6 +46,6 @@ the world is a vast area of land and water it has seven continents and five ocea
 hey can you pick up the kids today I'm stuck at work and won't be back until seven => ? -#; +pick up the kids
 
 # From real dictation (2026-10-07)
-So this is me testing out the new thing that I am building up the thing is called handy clean it is using handy as the back end for the voice to text and then a local 4 billion pyramidal model is fixing the all the text that it is generating to be more precise formatted and better => ? +handy-clean; +parameter; -pyramidal
+So this is me testing out the new thing that I am building up the thing is called handy clean it is using handy as the back end for the voice to text and then a local 4 billion pyramidal model is fixing the all the text that it is generating to be more precise formatted and better => ? +localflow; +parameter; -pyramidal
 and this is this is this is working out working out working out pretty good actually this is not pretty good this is awesome => ? +awesome; -pretty good; -this is this
 First, 1, 2, 3, 2nd, 2, 3, 4, 5, 6, 7, 8, 9, 3rd, ABCD => 1. 1, 2, 3\n2. 2, 3, 4, 5, 6, 7, 8, 9\n3. ABCD
