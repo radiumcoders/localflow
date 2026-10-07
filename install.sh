@@ -50,7 +50,8 @@ printf '%s\n' "[Desktop Entry]" "Type=Application" "Name=Handy" "Comment=Speech 
   "Exec=$HOME/.local/bin/handy" "Icon=$appdir/handy.png" "Categories=Utility;" \
   >~/.local/share/applications/handy.desktop
 
-# Handy writes its settings store on first launch; create it, then patch it.
+# Handy writes its settings store on first launch; create it, then patch it
+# (with Handy stopped, or it overwrites the patch).
 if [[ ! -f $store ]]; then
   ~/.local/bin/handy --start-hidden >/dev/null 2>&1 &
   for _ in $(seq 40); do [[ -f $store ]] && break; sleep 0.5; done
@@ -59,7 +60,7 @@ if [[ ! -f $store ]]; then
   sleep 1
 fi
 
-PROMPT="$prompt" STORE="$store" python3 - <<'EOF'
+PASTE="$here/paste" PROMPT="$prompt" STORE="$store" python3 - <<'EOF'
 import json, os
 path, prompt = os.environ["STORE"], os.environ["PROMPT"]
 data = json.load(open(path))
@@ -75,9 +76,10 @@ prompts.append({"id": "handy_clean", "name": "Clean dictation (local)", "prompt"
 s["post_process_prompts"] = prompts
 s["post_process_selected_prompt_id"] = "handy_clean"
 # Paste instead of typing: typed newlines become Enter (sends chat messages,
-# runs shell commands). Shift+Insert pastes in terminals and GUI apps alike,
-# and Handy restores the previous clipboard afterwards.
-s["paste_method"] = "shift_insert"
+# runs shell commands). ./paste picks Ctrl+V or Shift+Insert per window,
+# like Omarchy's universal paste, and restores the previous clipboard.
+s["paste_method"] = "external_script"
+s["external_script_path"] = os.environ["PASTE"]
 # Hyprland owns the dictation keys. Handy's own global shortcuts (Ctrl+Space,
 # Ctrl+Shift+Space) grab common editor keys and start stray recordings that
 # block the Hyprland toggles, so park them on a combo nobody presses.

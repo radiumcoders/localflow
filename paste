@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Handy "external script" paste method: Handy runs `paste "<text>"`.
+#
+# Pastes like Omarchy's universal paste: Shift+Insert in terminals, Ctrl+V
+# everywhere else (Shift+Insert doesn't paste in browsers). Pasting instead of
+# typing keeps list newlines from pressing Enter. The previous clipboard is
+# restored a moment later, once the app has had time to read the new one.
+set -u
+text="$1"
+
+old=$(mktemp)
+old_type=$(wl-paste --list-types 2>/dev/null | head -n1)
+[[ -n $old_type ]] && wl-paste --no-newline --type "$old_type" >"$old" 2>/dev/null
+
+printf '%s' "$text" | wl-copy
+sleep 0.05
+
+# Same test Omarchy uses: the window carries the "terminal" tag (dynamic tags end in *).
+if hyprctl activewindow -j 2>/dev/null | grep -qE '"terminal\*?"'; then
+  wtype -M shift -k Insert -m shift
+else
+  wtype -M ctrl -k v -m ctrl
+fi
+
+(
+  sleep 1
+  if [[ -n $old_type ]]; then wl-copy --type "$old_type" <"$old"; fi
+  rm -f "$old"
+) >/dev/null 2>&1 &
+disown

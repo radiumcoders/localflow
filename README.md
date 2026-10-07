@@ -27,8 +27,10 @@ history. The proxy calls Ollama's native API with temperature 0, the rules and
 examples in `handy-clean`, and falls back to the raw transcript if the model
 replies with something much longer than you said or Ollama is down.
 
-Handy pastes with **Shift+Insert** (works in terminals and GUI apps, keeps
-your clipboard). Typing via wtype would turn list newlines into Enter presses.
+Handy pastes through `./paste` (its "external script" paste method): Ctrl+V
+in apps, Shift+Insert in terminals, the same rule as Omarchy's universal
+paste, then restores your clipboard. Shift+Insert alone doesn't paste in
+browsers, and typing via wtype would turn list newlines into Enter presses.
 
 ## Keys (Hyprland, `~/.config/hypr/bindings.lua`)
 
@@ -45,6 +47,7 @@ Both run `handy --toggle-post-process`. Handy starts hidden at login from
 | File                  | What                                                     |
 | --------------------- | -------------------------------------------------------- |
 | `handy-clean`         | prompt + examples, `serve` proxy, stdin filter, `--eval` |
+| `paste`               | Handy paste helper: Ctrl+V or Shift+Insert per window    |
 | `cases.txt`           | eval cases (`raw => expected`, `\n` for list lines)      |
 | `handy-clean.service` | user service for the proxy                               |
 | `ollama.service`      | user-level Ollama from `~/.local/ollama`                 |
