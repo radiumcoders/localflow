@@ -49,16 +49,6 @@ printf '%s\n' "[Desktop Entry]" "Type=Application" "Name=Handy" "Comment=Speech 
   "Exec=$HOME/.local/bin/handy" "Icon=$appdir/handy.png" "Categories=Utility;" \
   >~/.local/share/applications/handy.desktop
 
-# Speech model: Parakeet V3 (Handy's recommended model), fetched once.
-models="$HOME/.local/share/com.pais.handy/models"
-if [[ ! -d $models/parakeet-tdt-0.6b-v3-int8 ]]; then
-  mkdir -p "$models"
-  curl -fL https://blob.handy.computer/parakeet-v3-int8.tar.gz -o "$models/parakeet.tgz"
-  echo "43d37191602727524a7d8c6da0eef11c4ba24320f5b4730f1a2497befc2efa77  $models/parakeet.tgz" | sha256sum -c
-  tar -xzf "$models/parakeet.tgz" -C "$models" 2>/dev/null
-  rm "$models/parakeet.tgz"
-fi
-
 # Handy writes its settings store on first launch; create it, then patch it.
 if [[ ! -f $store ]]; then
   ~/.local/bin/handy --start-hidden >/dev/null 2>&1 &
@@ -80,8 +70,6 @@ prompts = [p for p in s.get("post_process_prompts", []) if p["id"] != "handy_cle
 prompts.append({"id": "handy_clean", "name": "Clean dictation (local)", "prompt": prompt})
 s["post_process_prompts"] = prompts
 s["post_process_selected_prompt_id"] = "handy_clean"
-s["selected_model"] = "parakeet-tdt-0.6b-v3"
-s["onboarding_completed"] = True
 s["start_hidden"] = True  # started by Hyprland at login; lives in the tray
 json.dump(data, open(path, "w"), indent=2)
 print("patched", path)

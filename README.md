@@ -2,7 +2,7 @@
 
 Local dictation cleanup for [Handy](https://handy.computer) on Omarchy.
 
-Handy transcribes speech (Parakeet V3), then sends the text to a small local
+Handy transcribes speech (your selected model, e.g. Parakeet), then sends the text to a small local
 LLM in Ollama that keeps only what you meant:
 
     "Let's meet in three hours. Wait, in two hours."  →  "Let's meet in two hours."
