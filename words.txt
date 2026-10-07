@@ -1,0 +1,17 @@
+# Names and terms you say often. handy-clean fixes near-miss transcriptions to
+# these spellings ("Claw" -> Claude, "Py script" in TradingView -> Pine Script).
+# One per line, optionally "Term: hint" to say how it gets misheard or where
+# it's used. Edits apply to the next dictation, no restart needed.
+Claude: the AI assistant, often heard as "Claw" or "clawed"
+Claude Code
+GitHub
+Omarchy
+Hyprland
+Handy
+Ollama
+Duolingo
+TradingView
+Pine Script: TradingView's scripting language, often heard as "Py script" or "pie script"
+Python
+HTML
+CSS

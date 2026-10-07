@@ -50,6 +50,7 @@ F9 and SUPER+CTRL+X run `handy --toggle-post-process`; F10 runs
 | --------------------- | -------------------------------------------------------- |
 | `handy-clean`         | prompt + examples, `serve` proxy, stdin filter, `--eval` |
 | `paste`               | Handy paste helper: Ctrl+V or Shift+Insert per window    |
+| `words.txt`           | your names/terms (+ optional "how it gets misheard" hint) |
 | `cases.txt`           | eval cases (`raw => expected`, `\n` for list lines)      |
 | `handy-clean.service` | user service for the proxy                               |
 | `ollama.service`      | user-level Ollama from `~/.local/ollama`                 |
