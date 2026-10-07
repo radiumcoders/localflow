@@ -270,6 +270,9 @@ def configure_handy(hyprland):
     prompts.append({"id": "localflow", "name": "Clean dictation (local)", "prompt": PROMPT})
     s["post_process_prompts"] = prompts
     s["post_process_selected_prompt_id"] = "localflow"
+    # Load the speech model only while dictating: it loads in under a second,
+    # in the background as recording starts, and frees its memory right after.
+    s["model_unload_timeout"] = "immediately"
     if hyprland:
         # Hyprland owns the dictation keys (see README). Handy's own global
         # shortcuts grab Ctrl+Space and start stray recordings that block the

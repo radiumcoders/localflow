@@ -74,7 +74,7 @@ cores; Radeon RX 9070 XT, 16 GB VRAM) with the default `qwen3.5:4b`.
 | What | With a GPU | CPU only |
 | --- | --- | --- |
 | Cleanup model | ~3.1 GB of VRAM + ~1.1 GB RAM | ~3.6 GB RAM |
-| Handy (with its speech model) | ~0.3 GB RAM | ~0.3 GB RAM + speech model |
+| Handy (speech model loaded only while dictating) | ~0.3 GB RAM | ~0.3 GB RAM |
 | Ollama server + localflow proxy | ~0.1 GB RAM | ~0.1 GB RAM |
 
 In total that's about 1.5 GB of RAM (plus VRAM) while the model is loaded,
@@ -118,7 +118,9 @@ python3 install.py                      # Windows: py install.py
 3. runs the proxy at login: launchd on macOS, the Startup folder on Windows,
    a systemd user service on Linux
 4. installs Handy if missing: Homebrew cask, winget, or the AppImage on Linux
-5. points Handy's post-processing at the proxy
+5. points Handy's post-processing at the proxy, and sets Handy to load its
+   speech model only while you dictate (it loads in under a second, in the
+   background as recording starts, and frees the memory right after)
 
 Pick a speech model in Handy's settings the first time you open it.
 
