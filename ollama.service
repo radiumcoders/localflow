@@ -1,0 +1,12 @@
+[Unit]
+Description=Ollama (user-level, for voxclean)
+After=network.target
+
+[Service]
+ExecStart=%h/.local/ollama/bin/ollama serve
+Environment=OLLAMA_HOST=127.0.0.1:11434
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
