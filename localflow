@@ -124,7 +124,7 @@ WORDS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "words.txt")
 def vocabulary():
     try:
         with open(WORDS) as f:
-            return [w.strip() for w in f if w.strip() and not w.startswith("#")]
+            return [w.strip() for w in f if w.strip() and not w.strip().startswith("#")]
     except OSError:
         return []
 
@@ -154,8 +154,13 @@ def ollama_chat(model, messages, num_predict, fmt=None):
         body["format"] = fmt
     req = urllib.request.Request(f"{OLLAMA}/api/chat", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.load(resp)["message"]["content"]
+    # CPU-only machines take ~20 s on a long dictation; Handy waits as long as needed.
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        answer = json.load(resp)
+    if answer.get("done_reason") == "length":
+        # Hit num_predict: the text is cut off, so don't use it.
+        raise RuntimeError("model output was cut off")
+    return answer["message"]["content"]
 
 
 def rules():
@@ -178,7 +183,7 @@ def draft(text, model, system):
         messages += [{"role": "user", "content": f"<dictation>{raw}</dictation>"},
                      {"role": "assistant", "content": cleaned}]
     messages.append({"role": "user", "content": f"<dictation>{text}</dictation>"})
-    out = ollama_chat(model, messages, len(text) // 2 + 64)
+    out = ollama_chat(model, messages, int(len(text) * 1.5) + 64)
     return re.sub(r"</?dictation>", "", out).strip()
 
 
@@ -219,6 +224,8 @@ def find_problems(text, out):
                             "version and the retraction itself, keeping only what they said instead.")
     for term, heard in misheard_hints():
         for h in heard:
+            if h.lower() == term.lower():
+                continue
             # Flag when the misheard form survived, or the right term never appeared.
             if has_phrase(text, h) and (has_phrase(out, h) or term.lower() not in out.lower()):
                 problems.append(f'The speaker\'s "{h}" means "{term}". Use that exact spelling.')
@@ -236,7 +243,7 @@ def review(text, first, model, system):
     prompt = f"RULES:\n{system}\n\nRAW:\n{text}\n\nDRAFT:\n{first}\n\nPROBLEMS:\n{listed}"
     out = ollama_chat(model, [{"role": "system", "content": REVIEW_SYSTEM},
                               {"role": "user", "content": prompt}],
-                      len(text) // 2 + 128, fmt=REVIEW_FORMAT)
+                      len(text) * 2 + 128, fmt=REVIEW_FORMAT)
     try:
         fixed = (json.loads(out).get("text") or "").strip()
     except ValueError:
@@ -439,4 +446,9 @@ if __name__ == "__main__":
     elif args[:1] in (["-h"], ["--help"]):
         print(__doc__.strip())
     else:
-        sys.stdout.write(clean(sys.stdin.read()))
+        text = sys.stdin.read()
+        try:
+            sys.stdout.write(clean(text))
+        except Exception as e:  # Ollama down: pass the text through, like serve does
+            print(f"localflow: {e}; passing text through unchanged", file=sys.stderr)
+            sys.stdout.write(text.strip())

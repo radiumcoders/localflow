@@ -16,7 +16,6 @@ import platform
 import shutil
 import subprocess
 import sys
-import tarfile
 import time
 import urllib.request
 from pathlib import Path
@@ -94,10 +93,13 @@ def install_ollama(rocm):
         print("   already running")
         return
     if SYSTEM == "Darwin":
-        if not ollama_bin():
+        if Path("/Applications/Ollama.app").exists():
+            run("open", "-a", "Ollama")  # the app starts the server and keeps it running
+        else:
             require("brew", "Install Homebrew (https://brew.sh) or Ollama from https://ollama.com/download")
-            run("brew", "install", "ollama")
-        run("brew", "services", "start", "ollama")
+            if subprocess.run(["brew", "list", "ollama"], capture_output=True).returncode != 0:
+                run("brew", "install", "ollama")
+            run("brew", "services", "start", "ollama")
     elif SYSTEM == "Windows":
         if not ollama_bin():
             require("winget", "Install Ollama from https://ollama.com/download")
@@ -123,6 +125,8 @@ def install_ollama_linux(rocm):
             run("sh", "-c", f'curl -fsSL "{url}" | zstd -d | tar -x -C "{LINUX_OLLAMA}"')
     LINUX_BIN.mkdir(parents=True, exist_ok=True)
     link = LINUX_BIN / "ollama"
+    if link.is_symlink() and not link.exists():
+        link.unlink()  # dangling link from an older install
     if not link.exists():
         link.symlink_to(LINUX_OLLAMA / "bin/ollama")
     systemd_unit("ollama", f"""[Unit]
@@ -334,6 +338,7 @@ WantedBy=default.target
 """)
         domain = f"gui/{os.getuid()}"
         subprocess.run(["launchctl", "bootout", domain, str(plist)], capture_output=True)
+        time.sleep(1)  # bootstrap right after bootout can fail with "Input/output error"
         run("launchctl", "bootstrap", domain, plist)
     else:
         # A hidden pythonw process started from the Startup folder.

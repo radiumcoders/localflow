@@ -55,9 +55,49 @@ examples in `localflow`, your vocabulary from `words.txt`, and falls back to
 the raw transcript if the model replies with something much longer than you
 said or Ollama is down. You never lose a dictation.
 
-## Install
+## Requirements & resource use
 
-Needs Python 3.9+ (standard library only) and git.
+Check these before installing. Numbers measured on Linux (Ryzen 5 5600, 6
+cores; Radeon RX 9070 XT, 16 GB VRAM) with the default `qwen3.5:4b`.
+
+**Disk** (about 4.5–7 GB in total)
+
+| What | Size |
+| --- | --- |
+| Cleanup model `qwen3.5:4b` | 3.3 GB (`qwen3.5:2b`: 2.7 GB) |
+| Ollama | ~2.4 GB on Linux, +2.2 GB for the ROCm (AMD GPU) build |
+| Handy | ~0.5 GB |
+| Handy speech model (you pick it in Handy) | ~0.5–0.7 GB for the Parakeet models |
+
+**Memory while it's running**
+
+| What | With a GPU | CPU only |
+| --- | --- | --- |
+| Cleanup model | ~3.1 GB of VRAM + ~1.6 GB RAM | ~3.6 GB RAM |
+| Handy (with its speech model) | ~0.3 GB RAM | ~0.3 GB RAM + speech model |
+| Ollama server + localflow proxy | ~0.1 GB RAM | ~0.1 GB RAM |
+
+The model stays loaded for 1 hour after your last dictation, then the memory
+is freed. The first dictation after that waits 2-3 s while it loads again
+(`LOCALFLOW_KEEP_ALIVE` changes the hour).
+
+**Speed** (time from releasing the key to text appearing, after transcription)
+
+| | Short sentence | Long ramble (~1 min of speech) |
+| --- | --- | --- |
+| GPU (RX 9070 XT) | ~0.4 s | ~1.5 s |
+| CPU only (Ryzen 5 5600) | ~0.9 s | ~20 s |
+
+**Recommended:** 8 GB RAM minimum, 16 GB comfortable; a GPU with 4 GB+ of
+VRAM (NVIDIA, AMD or Apple Silicon) for fast long dictation. Without a GPU,
+`--model qwen3.5:2b` roughly halves the wait.
+
+**Software:** Python 3.9+ and git. On Linux also `curl` and `zstd` (to unpack
+Ollama), an x86-64 CPU, and Handy's own needs (`webkit2gtk-4.1`,
+`gtk-layer-shell`); on Hyprland the paste helper needs `wl-clipboard` and
+`wtype` (Omarchy ships all of these).
+
+## Install
 
 ```sh
 git clone https://github.com/radiumcoders/localflow
@@ -113,6 +153,8 @@ o.bind("F10", "Stop raw dictation (push-to-talk)", "~/.local/bin/handy --toggle-
 and in `autostart.lua`: `o.launch_on_start("~/.local/bin/handy --start-hidden")`.
 
 On GNOME/KDE, add a custom shortcut running `handy --toggle-post-process`.
+There Handy keeps typing its output, so a dictated list's line breaks become
+Enter presses; switch Handy's paste method to a clipboard paste if that bites.
 If a recording ever gets stuck, `handy --cancel`.
 
 ## Your vocabulary
@@ -145,9 +187,20 @@ on macOS, log out and in on Windows).
 case and punctuation; list cases compare the numbered items; `? +must; -must
 not; order: a < b < c` checks properties of long, open-ended dictation.
 
-Current results on an RX 9070 XT: `qwen3.5:4b` 33/36 (31 from the draft, +2 from review; review runs on ~1 in 15 dictations, +72 ms on average), ~0.3 s for short
+Current results on an RX 9070 XT: `qwen3.5:4b` 32–33/36 (30–31 from the draft, +2 from review; review runs on ~1 in 15 dictations, +72 ms on average), ~0.3 s for short
 dictation, ~1.5 s for long rambling ones; `qwen3.5:2b` is about twice as fast
 and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the latency.
+
+## Known limitations
+
+- Moving the project folder breaks the proxy service and the Hyprland paste
+  helper (both point at it); re-run `install.py` from the new place.
+- On Linux, Handy runs from an extracted AppImage, so Handy's in-app updates
+  don't apply. To update: delete `~/.local/share/handy` and re-run `install.py`.
+- The macOS and Windows install paths are written but not yet tested on real
+  machines; Linux (Arch/Omarchy) is.
+- Misheard words are only fixed reliably when they're in `words.txt` with a
+  hint; from context alone a 4b model often can't tell (Javanese vs Japanese).
 
 ## Files
 

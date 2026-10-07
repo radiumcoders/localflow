@@ -8,6 +8,7 @@ GitHub
 Omarchy
 Hyprland
 Handy
+Handy Clean
 localflow: this project, often heard as "local flow"
 Next.js
 Ollama

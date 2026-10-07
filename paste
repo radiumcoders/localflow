@@ -16,11 +16,15 @@ printf '%s' "$text" | wl-copy
 sleep 0.05
 
 # Same test Omarchy uses: the window carries the "terminal" tag (dynamic tags end in *).
-if hyprctl activewindow -j 2>/dev/null | grep -qE '"terminal\*?"'; then
+if hyprctl activewindow -j 2>/dev/null | grep -qE '"tags": \[[^]]*"terminal\*?"'; then
   wtype -M shift -k Insert -m shift
 else
   wtype -M ctrl -k v -m ctrl
-fi
+fi || {
+  # Couldn't send the keys: leave the dictation on the clipboard to paste by hand.
+  rm -f "$old"
+  exit 1
+}
 
 (
   sleep 1

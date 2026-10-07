@@ -1,5 +1,5 @@
 # Eval cases for `localflow --eval`:  raw transcript => expected output
-# Comparison ignores case and punctuation. None of these appear in the Modelfile examples.
+# Comparison ignores case and punctuation. None of these appear in EXAMPLES in localflow.
 
 Let's meet at 5. Wait, no, at 6. => Let's meet at 6.
 Call mom tomorrow. Actually, call her tonight. => Call mom tonight.
