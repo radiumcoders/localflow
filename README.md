@@ -38,8 +38,10 @@ browsers, and typing via wtype would turn list newlines into Enter presses.
 | -------------- | ------------------ |
 | `SUPER+CTRL+X` | toggle dictation   |
 | `F9` (hold)    | push-to-talk       |
+| `F10` (hold)   | push-to-talk, raw (no cleanup) |
 
-Both run `handy --toggle-post-process`. Handy starts hidden at login from
+F9 and SUPER+CTRL+X run `handy --toggle-post-process`; F10 runs
+`handy --toggle-transcription` (no LLM step), handy for comparing. Handy starts hidden at login from
 `~/.config/hypr/autostart.lua`.
 
 ## Files
