@@ -24,7 +24,7 @@ loader.exec_module(lf)
 
 rng = random.Random(7)
 cases = []
-for line in (ROOT / "cases.txt").read_text().splitlines():
+for line in (ROOT / "cases.txt").read_text(encoding="utf-8").splitlines():
     if line.strip() and not line.startswith("#") and "=>" in line:
         raw, expected = (s.strip() for s in line.split("=>", 1))
         cases.append((raw, expected.replace("\\n", "\n")))
@@ -147,5 +147,5 @@ def grade(o, e):
 
 out["grade"] = [[o, e, grade(o, e)] for o, e in grade_cases]
 path = Path(__file__).with_name("parity.json")
-path.write_text(json.dumps(out, ensure_ascii=False, indent=0))
+path.write_bytes(json.dumps(out, ensure_ascii=False, indent=0).encode())  # UTF-8 and \n on Windows too
 print(f"{path}: {sum(len(v) for v in out.values())} cases, hints {len(hints)}")
