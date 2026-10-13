@@ -126,7 +126,7 @@ VRAM (NVIDIA, AMD or Apple Silicon) for fast long dictation. Without a GPU,
 
 **Software:** Python 3.9+ with Tk (python.org and winget Pythons include
 it; Homebrew: `brew install python-tk@3.x`; Arch: `tk`; Debian/Ubuntu:
-`python3-tk`); the Windows and macOS installers need neither. On Linux also `curl` and `zstd` (to unpack Ollama, not needed with
+`python3-tk`); the installers below need neither. On Linux also `curl` and `zstd` (to unpack Ollama, not needed with
 `--api`), PipeWire (`pw-record`) or ALSA (`arecord`) for recording, Handy's
 own needs (`webkit2gtk-4.1`), and for pasting `wl-clipboard` + `wtype` on
 Wayland or `xclip` + `xdotool` on X11 (Omarchy ships all of these).
@@ -169,6 +169,24 @@ app and `~/Library/LaunchAgents/computer.localflow.dictate.plist`.
 It isn't signed with an Apple Developer ID yet, so the first time macOS says
 it can't check it for malware: open **System Settings > Privacy & Security**
 and click **Open Anyway** next to localflow.
+
+### Linux: the AppImage
+
+Download `localflow-<version>-x86_64.AppImage` from
+[Releases](https://github.com/radiumcoders/localflow/releases), make it
+executable and run it:
+
+```sh
+chmod +x localflow-*-x86_64.AppImage
+./localflow-*-x86_64.AppImage
+```
+
+It needs no Python. Setup copies localflow to `~/.local/share/localflow/app`
+(your key bindings run it from there, so the AppImage can go anywhere,
+or away), adds it to your app launcher, and shows the key bindings to add,
+with a Copy button (the `bindings.lua` lines on Hyprland). Open localflow from
+the launcher to change the settings. It uses your system's recording and
+paste tools (see Software above).
 
 ### Any OS: `install.py`
 
@@ -492,9 +510,9 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
   transcription, the cleanup and the paste. CI machines have no microphone,
   so recording (AudioQueue or sox on macOS, winmm on Windows) is the one piece
   only a person can check there: `dictate --selftest` on your machine does.
-  The same CI also builds the Windows `.msi` and the macOS `.dmg`, installs
-  each on a fresh machine, sets it up and self-tests the installed app
-  (`tests/msi.py`, `tests/dmg.py`).
+  The same CI also builds the Windows `.msi`, the macOS `.dmg` and the Linux
+  AppImage, installs each on a fresh machine, sets it up and self-tests the
+  installed app (`tests/msi.py`, `tests/dmg.py`, `tests/appimage.py`).
 - `dictate` needs a Handy version with the headless `--transcribe-file` option
   (check with `handy --help`).
 - On Hyprland, apps running through XWayland (Tk's own windows, some older
@@ -515,6 +533,6 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
 | `words.txt` | your names/terms, with optional mishearing hints |
 | `cases.txt` | eval cases |
 | `dictate` | the dictation app: overlay, hotkey, recording, transcription, cleanup, paste |
-| `tests/` | `python -m unittest discover -s tests` (no key, model or microphone needed); `e2e.py`, the install-and-dictate test CI runs; `msi.py` and `dmg.py`, the installer tests |
+| `tests/` | `python -m unittest discover -s tests` (no key, model or microphone needed); `e2e.py`, the install-and-dictate test CI runs; `msi.py`, `dmg.py` and `appimage.py`, the installer tests |
 | `paste` | Linux/Hyprland paste helper for Handy and `dictate` |
-| `pkg/` | the packaged app: `build.py` (PyInstaller, then the `.msi` with WiX or the `.dmg`), its setup window and entry point |
+| `pkg/` | the packaged app: `build.py` (PyInstaller, then the `.msi` with WiX, the `.dmg` or the AppImage), its setup window and entry point |
