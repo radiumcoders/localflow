@@ -153,7 +153,8 @@ def background_app():
 
 def stop_background():
     if SYSTEM == "Windows":
-        subprocess.run(["taskkill", "/IM", "pythonw.exe", "/F"], capture_output=True)
+        for exe in ("pythonw.exe", "localflow.exe"):  # install.py's, or the packaged app (tests/msi.py)
+            subprocess.run(["taskkill", "/IM", exe, "/F"], capture_output=True)
     else:
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/computer.localflow.dictate"],
                        capture_output=True)

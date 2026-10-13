@@ -858,8 +858,7 @@ def run_eval(model, review_model):
           f"avg {ms_draft // n}ms draft + {ms_review // n}ms review")
 
 
-if __name__ == "__main__":
-    args = sys.argv[1:]
+def main(args):
     if args[:1] == ["serve"]:
         serve()
     elif args[:1] == ["--warm"]:
@@ -886,3 +885,7 @@ if __name__ == "__main__":
         except Exception as e:  # Ollama/API down: pass the text through, like serve does
             print(f"localflow: {e}; passing text through unchanged", file=sys.stderr)
             sys.stdout.write(text.strip())
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

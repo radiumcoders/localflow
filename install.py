@@ -36,6 +36,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "localflow"
 DICTATE = HERE / "dictate"
+# In the packaged app (PyInstaller), one executable runs dictate's commands and
+# `localflow <args>` for the cleanup script; there are no scripts to point at.
+FROZEN = getattr(sys, "frozen", False)
 SYSTEM = platform.system()  # "Linux", "Darwin", "Windows"
 HOME = Path.home()
 OLLAMA_URL = "http://127.0.0.1:11434"
@@ -59,13 +62,37 @@ KEY_FILE = (Path(os.environ["APPDATA"]) if SYSTEM == "Windows" else
             Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")) / "localflow/api_key"
 
 
+# The app's setup window sets these: show downloads as they go (PROGRESS(done,
+# total bytes)), and capture commands' output into print() (CAPTURE).
+PROGRESS = None
+CAPTURE = False
+
+
 def step(msg):
     print(f"\n==> {msg}", flush=True)
 
 
 def run(*cmd, check=True):
     print("   $", " ".join(str(c) for c in cmd), flush=True)
-    return subprocess.run([str(c) for c in cmd], check=check)
+    if not CAPTURE:
+        return subprocess.run([str(c) for c in cmd], check=check)
+    p = subprocess.Popen([str(c) for c in cmd], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, creationflags=0x08000000 if SYSTEM == "Windows" else 0)
+    for line in p.stdout:
+        line = line.decode("utf-8", "replace").rstrip()
+        if line.strip():
+            print(f"   {line.split(chr(13))[-1]}", flush=True)  # last of any \r progress redraws
+    if p.wait() and check:
+        raise subprocess.CalledProcessError(p.returncode, cmd)
+    return subprocess.CompletedProcess(cmd, p.returncode)
+
+
+def localflow_cmd(*args):
+    return [sys.executable, "localflow", *args] if FROZEN else [sys.executable, str(SCRIPT), *args]
+
+
+def dictate_cmd(*args):
+    return [sys.executable, *args] if FROZEN else [sys.executable, str(DICTATE), *args]
 
 
 def have(cmd):
@@ -88,10 +115,17 @@ def wait_for(url, seconds=30):
     return False
 
 
-def download(url, dest):
+def download(url, dest, hasher=None):
     print(f"   downloading {url}", flush=True)
     with urllib.request.urlopen(url) as resp, open(dest, "wb") as f:
-        shutil.copyfileobj(resp, f)
+        total, done = int(resp.headers.get("Content-Length") or 0), 0
+        while chunk := resp.read(1 << 20):
+            f.write(chunk)
+            if hasher:
+                hasher.update(chunk)
+            done += len(chunk)
+            if PROGRESS:
+                PROGRESS(done, total)
 
 
 def q(path):
@@ -122,7 +156,7 @@ def fetch_app():
     """With only install.py (no clone), download the rest into app_dir() and
     install from there. Startup entries and key bindings point at that folder."""
     global HERE, SCRIPT, DICTATE
-    if all((HERE / name).exists() for name in APP_FILES):
+    if FROZEN or all((HERE / name).exists() for name in APP_FILES):
         return
     dest = app_dir()
     step(f"localflow files (into {dest})")
@@ -159,11 +193,16 @@ def install_ollama(rocm):
                 run("brew", "install", "ollama")
             run("brew", "services", "start", "ollama")
     elif SYSTEM == "Windows":
-        if not ollama_bin():
-            require("winget", "Install Ollama from https://ollama.com/download")
-            run("winget", "install", "--id", "Ollama.Ollama", "-e", "--accept-package-agreements",
-                "--accept-source-agreements")
         exe = shutil.which("ollama") or Path(os.environ["LOCALAPPDATA"]) / "Programs/Ollama/ollama.exe"
+        if not Path(exe).exists() and have("winget"):
+            run("winget", "install", "--id", "Ollama.Ollama", "-e", "--accept-package-agreements",
+                "--accept-source-agreements", check=False)
+        if not Path(exe).exists():  # no winget, or it didn't take: the installer from GitHub
+            setup = Path(os.environ["TEMP"]) / "OllamaSetup.exe"
+            download(latest_asset("ollama/ollama", "OllamaSetup.exe"), setup)
+            run(setup, "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES")  # per-user (Inno Setup)
+        if not Path(exe).exists():
+            sys.exit("Ollama didn't install; install it from https://ollama.com/download, then re-run")
         subprocess.Popen([str(exe), "serve"], creationflags=0x00000008)  # DETACHED_PROCESS
     else:
         install_ollama_linux(rocm)
@@ -202,6 +241,34 @@ WantedBy=default.target
 """)
 
 
+def pull(model):
+    """`ollama pull` through the API, reporting progress. True if it worked."""
+    req = urllib.request.Request(f"{OLLAMA_URL}/api/pull", data=json.dumps({"model": model}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    shown = -1
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            for line in resp:
+                msg = json.loads(line)
+                if msg.get("error"):
+                    print(f"   {msg['error']}")
+                    return False
+                done, total = msg.get("completed") or 0, msg.get("total") or 0
+                if total and PROGRESS:
+                    PROGRESS(done, total)
+                pct = done * 10 // total * 10 if total else -1
+                if pct != shown and total > 50_000_000:  # the model's big layer, every 10%
+                    print(f"   {msg.get('status', 'pulling')}: {pct}% of {total // 1_000_000} MB", flush=True)
+                    shown = pct
+                elif not total and msg.get("status"):
+                    print(f"   {msg['status']}", flush=True)
+                    shown = -1
+    except (OSError, ValueError) as e:
+        print(f"   pull failed: {e}")
+        return False
+    return True
+
+
 def model_works(model):
     """One tiny request with the same load options localflow uses."""
     body = {"model": model, "messages": [{"role": "user", "content": "Say ok."}], "stream": False,
@@ -227,7 +294,7 @@ def pull_model(requested):
         candidates = ["qwen3.5:4b"]
     for model in candidates:
         step(f"Model {model}")
-        if run(ollama_bin() or "ollama", "pull", model, check=False).returncode == 0 and model_works(model):
+        if pull(model) and model_works(model):
             return model
     sys.exit(f"couldn't pull and run {' or '.join(candidates)}; check Ollama, then re-run install.py")
 
@@ -259,7 +326,11 @@ def setup_api(api, model):
         print(f"   saved the key to {KEY_FILE}", flush=True)
     env = dict(os.environ, LOCALFLOW_API_URL=api, LOCALFLOW_MODEL=model)
     env.pop("LOCALFLOW_API_KEY", None)  # check the saved key, which the proxy will use
-    if subprocess.run([sys.executable, str(SCRIPT), "--check"], env=env).returncode != 0:
+    r = subprocess.run(localflow_cmd("--check"), env=env, capture_output=True, text=True,
+                       creationflags=0x08000000 if SYSTEM == "Windows" else 0)
+    for line in (r.stdout + r.stderr).splitlines():
+        print(f"   {line}")
+    if r.returncode != 0:
         sys.exit(f"the API check failed (see above); fix the provider or model, or the key (delete {KEY_FILE} "
                  "to be asked again), then re-run")
 
@@ -586,10 +657,7 @@ def download_speech_model(model):
     part = root / "blobs" / f"{name}.part"
     print(f"   downloading {model['name']} ({model.get('size_mb', '?')} MB)", flush=True)
     sha = hashlib.sha256()
-    with urllib.request.urlopen(f"https://huggingface.co/{repo}/resolve/{rev}/{name}") as resp, open(part, "wb") as f:
-        while chunk := resp.read(1 << 20):
-            sha.update(chunk)
-            f.write(chunk)
+    download(f"https://huggingface.co/{repo}/resolve/{rev}/{name}", part, sha)
     blob = root / "blobs" / sha.hexdigest()
     part.replace(blob)
     link = root / "snapshots" / rev / name
@@ -670,9 +738,9 @@ def has_tk(py):
 def install_dictate(hyprland):
     step("dictate")
     py = Path(sys.executable)
-    if SYSTEM != "Windows":
+    if SYSTEM != "Windows" and not FROZEN:
         DICTATE.chmod(0o755)
-    if not has_tk(py):
+    if not FROZEN and not has_tk(py):
         hint = {"Darwin": f"brew install python-tk@{sys.version_info.major}.{sys.version_info.minor}",
                 "Windows": "re-run the Python installer with 'tcl/tk and IDLE' ticked"}.get(
             SYSTEM, "sudo pacman -S tk  /  sudo apt install python3-tk  /  sudo dnf install python3-tkinter")
@@ -703,9 +771,13 @@ def install_dictate(hyprland):
               "   paste) and Microphone (asked on first use), then: launchctl kickstart -k "
               f"{domain}/computer.localflow.dictate")
     elif SYSTEM == "Windows":
+        startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
+        if FROZEN:  # the .msi starts the app at sign-in; drop a script install's entry
+            (startup / "localflow-dictate.cmd").unlink(missing_ok=True)
+            subprocess.Popen([sys.executable], creationflags=0x00000008)  # already running: it exits
+            return
         pyw = py.with_name("pythonw.exe")
         pyw = pyw if pyw.exists() else py
-        startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
         (startup / "localflow-dictate.cmd").write_text(f'@echo off\r\nstart "" "{pyw}" "{DICTATE}"\r\n')
         subprocess.Popen([str(pyw), str(DICTATE)], creationflags=0x00000008)  # already running: it exits
     elif hyprland:
@@ -727,7 +799,30 @@ def require(cmd, hint):
         sys.exit(f"`{cmd}` not found. {hint}, then re-run install.py")
 
 
-def main():
+def install(api, model, speech_model=None, handy_app=False, rocm=False, hyprland=False):
+    """Everything but printing how to use it. Returns the cleanup model."""
+    if api:
+        setup_api(api, model)
+    else:
+        install_ollama(rocm)
+        model = pull_model(model)
+    install_handy()
+    if handy_app:
+        install_proxy(model, hyprland, api)
+        configure_handy(hyprland)
+    else:
+        speech = prepare_handy(speech_model)
+        # dictate warms the model as you start speaking, so it can unload soon after.
+        env = cleanup_env(model, api, keep_alive="2m")
+        if speech:
+            env["LOCALFLOW_SPEECH_MODEL"] = speech
+        write_env(env)
+        remove_proxy()
+        install_dictate(hyprland)
+    return model
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", help="model for cleanup (default: qwen3.5:4b, or "
                                     "qwen3.5:4b-mlx on Apple Silicon; --api anthropic always uses "
@@ -743,7 +838,7 @@ def main():
                          "instead of dictate")
     ap.add_argument("--rocm", action=argparse.BooleanOptionalAction, default=None,
                     help="Linux: also install Ollama's ROCm build (default: auto-detect AMD GPU)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.api and args.api.lower() == "anthropic":
         if args.model not in (None, HAIKU):
             ap.error(f"--api anthropic always uses {HAIKU}; drop --model")
@@ -754,25 +849,7 @@ def main():
     hyprland = SYSTEM == "Linux" and have("hyprctl") and bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
 
     fetch_app()
-    if args.api:
-        model = args.model
-        setup_api(args.api, model)
-    else:
-        install_ollama(rocm)
-        model = pull_model(args.model)
-    install_handy()
-    if args.handy_app:
-        install_proxy(model, hyprland, args.api)
-        configure_handy(hyprland)
-    else:
-        speech = prepare_handy(args.speech_model)
-        # dictate warms the model as you start speaking, so it can unload soon after.
-        env = cleanup_env(model, args.api, keep_alive="2m")
-        if speech:
-            env["LOCALFLOW_SPEECH_MODEL"] = speech
-        write_env(env)
-        remove_proxy()
-        install_dictate(hyprland)
+    model = install(args.api, args.model, args.speech_model, args.handy_app, rocm, hyprland)
 
     step(f"Done (cleanup model: {model}{f' via {args.api}' if args.api else ''})")
     if args.api and SYSTEM == "Linux" and subprocess.run(["systemctl", "--user", "is-active", "--quiet",
@@ -782,7 +859,7 @@ def main():
         keys = {"Darwin": "Option+Shift+Space", "Windows": "Ctrl+Shift+Space"}.get(SYSTEM)
         if keys:
             print(f"   Dictate: hold {keys} and talk (or tap it, talk, tap again). Esc cancels.")
-        print(f"   Check everything: {q(sys.executable)} {q(DICTATE)} --selftest")
+        print(f"   Check everything: {' '.join(q(c) for c in dictate_cmd('--selftest'))}")
     elif SYSTEM == "Darwin":
         print("   Dictate with Option+Shift+Space (Handy's post-process shortcut).")
     elif SYSTEM == "Windows":
@@ -791,7 +868,7 @@ def main():
         print("   Bind your dictation keys to `handy --toggle-post-process & localflow --warm` (see README).")
     else:
         print("   Add a desktop shortcut running `handy --toggle-post-process` (see README).")
-    print(f"   Test the model: echo \"let's meet at 3 wait at 4\" | {q(sys.executable)} {q(SCRIPT)}")
+    print(f"   Test the model: echo \"let's meet at 3 wait at 4\" | {' '.join(q(c) for c in localflow_cmd())}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,45 @@
+<!--
+  The Windows installer (WiX 5), built by pkg/build.py: installs the app to
+  Program Files, adds it to the Start menu, and starts it at sign-in. Its
+  first launch opens setup. Uninstalling removes all three.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="localflow" Manufacturer="localflow" Version="$(var.Version)"
+           UpgradeCode="5d6f3a0e-8c1b-4f7a-9e2d-3b4c5a6d7e8f" Scope="perMachine" Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of localflow is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="localflow.ico" SourceFile="$(var.Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="localflow.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/radiumcoders/localflow" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="localflow" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.AppDir)\**" />
+    </ComponentGroup>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="StartMenu" Name="localflow" Description="Talk, and get clean text where you type"
+                  Target="[INSTALLFOLDER]localflow.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKLM" Key="Software\localflow" Name="StartMenuShortcut" Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <!-- For whoever installs it: dictate runs in the background from sign-in. -->
+    <Component Id="RunAtSignIn" Directory="INSTALLFOLDER" Guid="8a1f0c52-6b3d-4e9a-b7c4-1d2e3f4a5b6c">
+      <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="localflow"
+                     Type="string" Value="&quot;[INSTALLFOLDER]localflow.exe&quot;" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="RunAtSignIn" />
+    </Feature>
+  </Package>
+</Wix>

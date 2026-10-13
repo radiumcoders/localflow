@@ -65,7 +65,11 @@ import wave
 from pathlib import Path
 
 SYSTEM = platform.system()  # "Linux", "Darwin", "Windows"
-HERE = Path(__file__).resolve().parent
+# The packaged app (PyInstaller) unpacks its data files and runs dictate as a module.
+FROZEN = getattr(sys, "frozen", False)
+HERE = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parent
+# How to run this script again: the app's executable takes dictate's commands.
+ME = [sys.executable] if FROZEN else [sys.executable, str(Path(__file__).resolve())]
 RATE = 16000  # 16 kHz mono 16-bit: what --transcribe-file takes
 HOME = Path.home()
 NO_WINDOW = 0x08000000 if SYSTEM == "Windows" else 0  # CREATE_NO_WINDOW
@@ -160,6 +164,8 @@ _localflow = None
 def localflow():
     """The localflow script as a module, so cleanup runs in this process."""
     global _localflow
+    if _localflow is None and FROZEN:
+        import localflow as _localflow
     if _localflow is None:
         loader = importlib.machinery.SourceFileLoader("localflow", str(HERE / "localflow"))
         spec = importlib.util.spec_from_loader("localflow", loader)
@@ -1900,7 +1906,7 @@ def start_watching(text, target, stamp, ui):
     if SYSTEM == "Linux":
         STATE.mkdir(parents=True, exist_ok=True)
         with open(STATE / "dictate.log", "a") as out:
-            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_watch", str(pid or 0), repr(stamp)],
+            subprocess.Popen(ME + ["_watch", str(pid or 0), repr(stamp)],
                              stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
     else:
         threading.Thread(target=watch, args=(text, pid, stamp, lambda m: ui.put(("message", m, 3000))),
@@ -1934,7 +1940,7 @@ def cmd_start(raw):
         return
     STATE.mkdir(parents=True, exist_ok=True)
     with open(STATE / "dictate.log", "a") as out:
-        p = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_session"] + (["raw"] if raw else []),
+        p = subprocess.Popen(ME + ["_session"] + (["raw"] if raw else []),
                              stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
     (RUN / "current").write_text(str(p.pid))
 
@@ -2194,12 +2200,12 @@ def cmd_selftest(seconds):
             subprocess.run(["wl-copy"], input=old, **quiet)
         assert got == sample, repr(got)
         if SYSTEM == "Windows":  # a file, as for an attachment
-            WinClipboard.set_files([__file__])
+            WinClipboard.set_files([sys.executable if FROZEN else __file__])
             has_file = bool(ctypes.windll.user32.IsClipboardFormatAvailable(15))  # CF_HDROP
             if old is not None:
                 WinClipboard.set(old)
         elif SYSTEM == "Darwin":
-            Mac.copy_file(__file__)
+            Mac.copy_file(sys.executable if FROZEN else __file__)
             info = subprocess.run(["osascript", "-e", "clipboard info"], capture_output=True, text=True).stdout
             has_file = "furl" in info
             subprocess.run(["pbcopy"], input=old, env=env)
