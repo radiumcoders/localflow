@@ -381,6 +381,10 @@ def configure_handy(hyprland):
     # Load the speech model only while dictating: it loads in under a second,
     # in the background as recording starts, and frees its memory right after.
     s["model_unload_timeout"] = "immediately"
+    if SYSTEM == "Darwin":
+        # The proxy warms the cleanup model when Handy logs that the
+        # post-process shortcut was pressed, which Handy logs at debug level.
+        s["log_level"] = "debug"
     if hyprland:
         # Hyprland owns the dictation keys (see README). Handy's own global
         # shortcuts grab Ctrl+Space and start stray recordings that block the
@@ -431,8 +435,9 @@ def install_proxy(model, hyprland, api):
     env = {"LOCALFLOW_MODEL": model, **({"LOCALFLOW_API_URL": api} if api else {})}
     # On Hyprland the dictation keys also run `localflow --warm`, which loads
     # the model as you start speaking, so it can unload soon after instead of
-    # holding ~1 GB RAM + ~3 GB VRAM for an hour.
-    if hyprland and not api:
+    # holding ~1 GB RAM + ~3 GB VRAM for an hour. On macOS the proxy does the
+    # same by watching Handy's log for the post-process shortcut.
+    if (hyprland or SYSTEM == "Darwin") and not api:
         env["LOCALFLOW_KEEP_ALIVE"] = "2m"
     write_env(env)
     if SYSTEM == "Linux":
@@ -462,6 +467,7 @@ WantedBy=default.target
   </array>
   <key>EnvironmentVariables</key><dict>
 {"".join(f"    <key>{k}</key><string>{v}</string>\n" for k, v in env.items())}  </dict>
+  <key>StandardErrorPath</key><string>{HOME}/Library/Logs/localflow.log</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>

@@ -84,9 +84,31 @@ minutes after your last dictation. Handy's speech model loads in ~0.2 s and
 unloads right after each dictation. Without a GPU, the cleanup model takes
 ~3.6 GB of RAM instead of GPU memory while loaded.
 
-On macOS and Windows (no warm-up key yet) the model stays loaded for 1 hour
-after your last dictation (`LOCALFLOW_KEEP_ALIVE` changes that); the first
-dictation after it unloads waits ~1.5-3 s extra. Cloud dictation apps use less
+**Memory on macOS** with the local model and the Handy app setup
+(`--handy-app`; MacBook Air M4, 16 GB; Activity Monitor's "Memory" column)
+
+| State | Total | Breakdown |
+| --- | --- | --- |
+| Idle, after login | ~225 MB | Handy 52 + its WebKit helpers 67, Ollama app 69 + server 22, proxy 13 |
+| Idle, after dictating | ~360 MB | Handy and its WebKit helpers grow to ~255 after first use |
+| Up to 2 min after the last dictation | ~1.5 GB | + cleanup model 1.27 GB, then freed |
+
+On macOS the proxy watches Handy's log and starts the warm-up the moment you
+press `Option+Shift+Space`, so the model unloads 2 minutes after your last
+dictation instead of staying loaded. On Apple Silicon the CPU and GPU share
+memory, so the model file is mapped rather than copied (the default on
+macOS): 1.27 GB instead of 4.8 GB for `qwen3.5:4b`, at the same speed.
+
+qwen3.5 reads its ~2,800-token prompt slowly on Apple Silicon (~240
+tokens/s), so the first dictation after the model unloads needs ~11–14 s
+from the key press; whatever you say in that time hides it. After that, the
+warm-up leaves a checkpoint of the prompt and a short dictation takes ~0.5 s.
+Set a longer `LOCALFLOW_KEEP_ALIVE` (in `~/.config/localflow/env` for
+`dictate`, or `~/Library/LaunchAgents/computer.localflow.plist` with
+`--handy-app`) to trade memory for fewer slow starts.
+
+On Windows (no warm-up yet) the model stays loaded for 1 hour after your last
+dictation (`LOCALFLOW_KEEP_ALIVE` changes that). Cloud dictation apps use less
 RAM because their models run on their servers; here everything runs on your
 machine.
 
@@ -96,6 +118,7 @@ machine.
 | --- | --- | --- |
 | GPU (RX 9070 XT) | ~0.4 s | ~1.5 s |
 | CPU only (Ryzen 5 5600) | ~0.9 s | ~20 s |
+| Apple M4 (MacBook Air), model loaded | ~0.5 s | ~5–7 s |
 
 **Recommended:** 8 GB RAM minimum, 16 GB comfortable; a GPU with 4 GB+ of
 VRAM (NVIDIA, AMD or Apple Silicon) for fast long dictation. Without a GPU,
@@ -332,14 +355,14 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
   the proxy service (they point at it); re-run `install.py` from the new place.
 - On Linux, Handy runs from an extracted AppImage, so Handy's in-app updates
   don't apply. To update: delete `~/.local/share/handy` and re-run `install.py`.
-- Tested by hand on Linux (Arch/Omarchy, Hyprland). CI tests every push on
-  fresh Ubuntu, macOS and Windows machines: the unit tests, `dictate
-  --selftest`, and `tests/e2e.py`, which runs `install.py`, speaks a sentence
-  with the OS's text-to-speech and dictates it into a text box through the
-  hotkey, the overlay, Handy's transcription, the cleanup and the paste.
-  CI machines have no microphone, so recording (sox on macOS, winmm on
-  Windows) is the one piece only a person can check there:
-  `dictate --selftest` on your machine does.
+- Tested by hand on Linux (Arch/Omarchy, Hyprland), and the Handy app setup
+  on macOS (MacBook Air M4). CI tests every push on fresh Ubuntu, macOS and
+  Windows machines: the unit tests, `dictate --selftest`, and `tests/e2e.py`,
+  which runs `install.py`, speaks a sentence with the OS's text-to-speech and
+  dictates it into a text box through the hotkey, the overlay, Handy's
+  transcription, the cleanup and the paste. CI machines have no microphone,
+  so recording (sox on macOS, winmm on Windows) is the one piece only a person
+  can check there: `dictate --selftest` on your machine does.
 - `dictate` needs a Handy version with the headless `--transcribe-file` option
   (check with `handy --help`).
 - Misheard words are only fixed reliably when they're in `words.txt` with a
