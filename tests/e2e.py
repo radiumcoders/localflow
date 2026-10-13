@@ -46,7 +46,8 @@ def step(name, fn):
     print(f"\n--- {name}", flush=True)
     try:
         detail = fn()
-        print(f"PASS {name}{': ' + str(detail) if detail else ''}", flush=True)
+        shown = f"{len(detail) / 32000:.1f}s of audio" if isinstance(detail, bytes) else detail
+        print(f"PASS {name}{': ' + str(shown) if shown else ''}", flush=True)
         return detail
     except Exception as e:
         failures.append(name)
@@ -136,9 +137,13 @@ def background_app():
         s.close()
     stop_background()
     assert running, f"not running; log:\n{text[-1500:]}"
-    if "ready: hold" not in text:
-        raise AssertionError(f"running but the hotkey isn't ready; log:\n{text[-1500:]}")
-    return "running at login, hotkey ready (stopped it for the next test)"
+    if "ready: hold" in text:
+        return "running at login, hotkey ready (stopped it for the next test)"
+    if SYSTEM == "Darwin" and "Accessibility" in text:
+        # Expected until the user allows it (System Settings > Privacy & Security > Accessibility);
+        # CI machines don't grant it to apps started at login.
+        return "running at login; hotkey waits for the Accessibility permission (as on a new Mac)"
+    raise AssertionError(f"running but the hotkey isn't ready; log:\n{text[-1500:]}")
 
 
 def stop_background():
