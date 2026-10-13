@@ -126,7 +126,7 @@ VRAM (NVIDIA, AMD or Apple Silicon) for fast long dictation. Without a GPU,
 
 **Software:** Python 3.9+ with Tk (python.org and winget Pythons include
 it; Homebrew: `brew install python-tk@3.x`; Arch: `tk`; Debian/Ubuntu:
-`python3-tk`) and git. On macOS, `install.py` adds `sox` for recording
+`python3-tk`). On macOS, `install.py` adds `sox` for recording
 (Homebrew). On Linux also `curl` and `zstd` (to unpack Ollama, not needed with
 `--api`), PipeWire (`pw-record`) or ALSA (`arecord`) for recording, Handy's
 own needs (`webkit2gtk-4.1`), and for pasting `wl-clipboard` + `wtype` on
@@ -134,11 +134,25 @@ Wayland or `xclip` + `xdotool` on X11 (Omarchy ships all of these).
 
 ## Install
 
+Download just [`install.py`](https://raw.githubusercontent.com/radiumcoders/localflow/master/install.py)
+and run it:
+
 ```sh
-git clone https://github.com/radiumcoders/localflow
-cd localflow
-python3 install.py                      # Windows: py install.py
+curl -O https://raw.githubusercontent.com/radiumcoders/localflow/master/install.py
+python3 install.py
 ```
+
+On Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/radiumcoders/localflow/master/install.py -OutFile install.py
+py install.py
+```
+
+On its own, `install.py` downloads the rest of localflow into
+`~/.local/share/localflow` (Linux), `~/Library/Application Support/localflow`
+(macOS) or `%LOCALAPPDATA%\localflow` (Windows) and runs it from there;
+re-running it updates those files. Run from a `git clone`, it uses the clone.
 
 `install.py` is safe to re-run. It:
 
@@ -427,7 +441,7 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
 
 ## Known limitations
 
-- Moving the project folder breaks `dictate` at login, your key bindings and
+- Moving a cloned project folder breaks `dictate` at login, your key bindings and
   the proxy service (they point at it); re-run `install.py` from the new place.
 - On Linux, Handy runs from an extracted AppImage, so Handy's in-app updates
   don't apply. To update: delete `~/.local/share/handy` and re-run `install.py`.

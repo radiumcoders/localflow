@@ -15,7 +15,9 @@ Space); on Linux you bind keys to `dictate start` / `dictate stop`.
 the localflow proxy as its post-processing step.
 With --api, skip Ollama and send the cleanup to that provider instead; the key
 comes from LOCALFLOW_API_KEY, the key saved by an earlier run, or a prompt.
-Uses only the Python standard library.
+Uses only the Python standard library. Run on its own (just this file), it
+first downloads the rest of localflow into a per-user folder and installs from
+there; re-running it updates them.
 """
 
 import argparse
@@ -48,6 +50,10 @@ LINUX_BIN = HOME / ".local/bin"
 # Where localflow reads the API key (see LOCALFLOW_API_URL in localflow).
 # On Anthropic, cleanup always runs on Claude Haiku 5.5 (HAIKU in localflow).
 HAIKU = "claude-haiku-5-5"
+
+# The rest of localflow, fetched by fetch_app() when install.py runs on its own.
+SOURCE = os.environ.get("LOCALFLOW_SOURCE", "https://raw.githubusercontent.com/radiumcoders/localflow/master")
+APP_FILES = ("localflow", "dictate", "paste", "words.txt", "cases.txt")
 
 KEY_FILE = (Path(os.environ["APPDATA"]) if SYSTEM == "Windows" else
             Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")) / "localflow/api_key"
@@ -88,6 +94,11 @@ def download(url, dest):
         shutil.copyfileobj(resp, f)
 
 
+def q(path):
+    """A path to show in a command line, quoted if it has spaces."""
+    return f'"{path}"' if " " in str(path) else str(path)
+
+
 def latest_asset(repo, suffix):
     api = f"https://api.github.com/repos/{repo}/releases/latest"
     release = json.load(urllib.request.urlopen(api))
@@ -95,6 +106,34 @@ def latest_asset(repo, suffix):
         if asset["name"].endswith(suffix):
             return asset["browser_download_url"]
     sys.exit(f"no release asset ending in {suffix} for {repo}")
+
+
+# --- localflow files -----------------------------------------------------------
+
+def app_dir():
+    if SYSTEM == "Windows":
+        return Path(os.environ["LOCALAPPDATA"]) / "localflow"
+    if SYSTEM == "Darwin":
+        return HOME / "Library/Application Support/localflow"
+    return Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "localflow"
+
+
+def fetch_app():
+    """With only install.py (no clone), download the rest into app_dir() and
+    install from there. Startup entries and key bindings point at that folder."""
+    global HERE, SCRIPT, DICTATE
+    if all((HERE / name).exists() for name in APP_FILES):
+        return
+    dest = app_dir()
+    step(f"localflow files (into {dest})")
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in APP_FILES:
+        part = dest / f"{name}.part"
+        download(f"{SOURCE}/{name}", part)
+        if SYSTEM != "Windows" and "." not in name:
+            part.chmod(0o755)
+        os.replace(part, dest / name)
+    HERE, SCRIPT, DICTATE = dest, dest / "localflow", dest / "dictate"
 
 
 # --- Ollama ------------------------------------------------------------------
@@ -490,7 +529,7 @@ WantedBy=default.target
             subprocess.Popen([str(pyw), str(SCRIPT), "serve"], env=dict(os.environ, **env),
                              creationflags=0x00000008)
     if not wait_for(f"{PROXY_URL}/models", 15):
-        sys.exit("localflow proxy didn't start; try `python3 localflow serve` to see why")
+        sys.exit(f"localflow proxy didn't start; try `{q(py)} {q(SCRIPT)} serve` to see why")
 
 
 # --- dictate --------------------------------------------------------------------
@@ -714,6 +753,7 @@ def main():
     rocm = has_amd_gpu() if args.rocm is None else args.rocm
     hyprland = SYSTEM == "Linux" and have("hyprctl") and bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
 
+    fetch_app()
     if args.api:
         model = args.model
         setup_api(args.api, model)
@@ -742,7 +782,7 @@ def main():
         keys = {"Darwin": "Option+Shift+Space", "Windows": "Ctrl+Shift+Space"}.get(SYSTEM)
         if keys:
             print(f"   Dictate: hold {keys} and talk (or tap it, talk, tap again). Esc cancels.")
-        print(f"   Check everything: {sys.executable} {DICTATE} --selftest")
+        print(f"   Check everything: {q(sys.executable)} {q(DICTATE)} --selftest")
     elif SYSTEM == "Darwin":
         print("   Dictate with Option+Shift+Space (Handy's post-process shortcut).")
     elif SYSTEM == "Windows":
@@ -751,7 +791,7 @@ def main():
         print("   Bind your dictation keys to `handy --toggle-post-process & localflow --warm` (see README).")
     else:
         print("   Add a desktop shortcut running `handy --toggle-post-process` (see README).")
-    print(f"   Test the model: echo \"let's meet at 3 wait at 4\" | {SCRIPT}")
+    print(f"   Test the model: echo \"let's meet at 3 wait at 4\" | {q(sys.executable)} {q(SCRIPT)}")
 
 
 if __name__ == "__main__":

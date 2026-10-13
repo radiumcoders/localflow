@@ -449,5 +449,37 @@ class DictateTest(unittest.TestCase):
             del os.environ["DICTATE_HANDY"]
 
 
+class InstallTest(unittest.TestCase):
+    def test_install_py_on_its_own_fetches_the_rest(self):
+        import functools
+        import shutil
+        from http.server import SimpleHTTPRequestHandler
+        handler = functools.partial(SimpleHTTPRequestHandler, directory=str(ROOT))
+        handler.log_message = lambda *a: None
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        tmp = Path(tempfile.mkdtemp())
+        shutil.copy(ROOT / "install.py", tmp / "install.py")
+        loader = importlib.machinery.SourceFileLoader("lone_install", str(tmp / "install.py"))
+        inst = importlib.util.module_from_spec(importlib.util.spec_from_loader("lone_install", loader))
+        loader.exec_module(inst)
+        inst.SOURCE = f"http://127.0.0.1:{server.server_address[1]}"
+        inst.app_dir = lambda: tmp / "app"
+        inst.fetch_app()
+        self.assertEqual(inst.DICTATE, tmp / "app/dictate")
+        for name in inst.APP_FILES:
+            self.assertEqual((tmp / "app" / name).read_bytes(), (ROOT / name).read_bytes())
+        if os.name != "nt":
+            self.assertTrue(os.access(tmp / "app/paste", os.X_OK))
+        self.assertEqual(list((tmp / "app").glob("*.part")), [])
+
+    def test_install_py_in_a_clone_uses_the_clone(self):
+        inst = load("install.py")
+        inst.app_dir = lambda: self.fail("shouldn't download in a clone")
+        inst.fetch_app()
+        self.assertEqual(inst.DICTATE, ROOT / "dictate")
+
+
 if __name__ == "__main__":
     unittest.main()
