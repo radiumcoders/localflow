@@ -177,11 +177,17 @@ def target_window(out, flag):
         root.lift()
         root.attributes("-topmost", True)
         if SYSTEM == "Windows":
-            u = ctypes.windll.user32
+            # Windows only lets the foreground app hand over the foreground; borrow its
+            # input queue for a moment. (A lone Alt press would open the window menu.)
+            u, k = ctypes.windll.user32, ctypes.windll.kernel32
             hwnd = int(root.wm_frame(), 16)
-            u.keybd_event(0x12, 0, 0, 0)  # an Alt press lets this process take the foreground
-            u.keybd_event(0x12, 0, 2, 0)
+            fg_thread = u.GetWindowThreadProcessId(u.GetForegroundWindow(), None)
+            me = k.GetCurrentThreadId()
+            u.AttachThreadInput(me, fg_thread, True)
             u.SetForegroundWindow(hwnd)
+            u.BringWindowToTop(hwnd)
+            u.AttachThreadInput(me, fg_thread, False)
+            say(f"foreground is ours: {u.GetForegroundWindow() == hwnd}")
         root.focus_force()
         text.focus_set()
         say(f"focus: {root.focus_get()}")
