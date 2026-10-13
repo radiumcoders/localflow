@@ -3,13 +3,23 @@
 
     python3 install.py                     # qwen3.5:4b (MLX build on Apple Silicon)
     python3 install.py --model qwen3.5:2b  # smaller, faster, less accurate
+    python3 install.py --api anthropic     # Claude Haiku with your own API key, no Ollama
+    python3 install.py --api openai --model <model>  # any other provider: name its model
 
-Steps: install Ollama and Handy if missing, pull the model, run the
-localflow proxy at login, and point Handy's post-processing at it.
+Steps: install Ollama (or check your API key) and Handy, pull the model, and
+set up `dictate`: a bottom-of-screen pill that records while you hold the
+hotkey, transcribes with Handy's speech engine, cleans up and pastes. On
+Windows and macOS it starts at login (hotkey Ctrl+Shift+Space / Option+Shift+
+Space); on Linux you bind keys to `dictate start` / `dictate stop`.
+--handy-app sets up the older way instead: Handy's own app and hotkeys, with
+the localflow proxy as its post-processing step.
+With --api, skip Ollama and send the cleanup to that provider instead; the key
+comes from LOCALFLOW_API_KEY, the key saved by an earlier run, or a prompt.
 Uses only the Python standard library.
 """
 
 import argparse
+import getpass
 import json
 import os
 import platform
@@ -22,6 +32,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "localflow"
+DICTATE = HERE / "dictate"
 SYSTEM = platform.system()  # "Linux", "Darwin", "Windows"
 HOME = Path.home()
 OLLAMA_URL = "http://127.0.0.1:11434"
@@ -32,6 +43,13 @@ PROMPT = "<dictation>${output}</dictation>"  # localflow serve unwraps this
 LINUX_OLLAMA = HOME / ".local/ollama"
 LINUX_HANDY = HOME / ".local/share/handy"
 LINUX_BIN = HOME / ".local/bin"
+
+# Where localflow reads the API key (see LOCALFLOW_API_URL in localflow).
+# On Anthropic, cleanup always runs on Claude Haiku 5.5 (HAIKU in localflow).
+HAIKU = "claude-haiku-5-5"
+
+KEY_FILE = (Path(os.environ["APPDATA"]) if SYSTEM == "Windows" else
+            Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")) / "localflow/api_key"
 
 
 def step(msg):
@@ -180,6 +198,30 @@ def has_amd_gpu():
     except OSError:
         return False
     return any(("VGA" in l or "3D" in l) and ("AMD" in l or "ATI" in l) for l in out.splitlines())
+
+
+def setup_api(api, model):
+    """Save the API key where only you can read it, then check that the model answers."""
+    step(f"API {api} ({model})")
+    key = os.environ.get("LOCALFLOW_API_KEY", "").strip()
+    if not key and KEY_FILE.exists():
+        print(f"   using the key saved in {KEY_FILE}", flush=True)
+    else:
+        key = key or getpass.getpass("   API key (not shown): ").strip()
+        if not key:
+            sys.exit("no API key given")
+        KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if KEY_FILE.exists():
+            KEY_FILE.unlink()
+        fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(key + "\n")
+        print(f"   saved the key to {KEY_FILE}", flush=True)
+    env = dict(os.environ, LOCALFLOW_API_URL=api, LOCALFLOW_MODEL=model)
+    env.pop("LOCALFLOW_API_KEY", None)  # check the saved key, which the proxy will use
+    if subprocess.run([sys.executable, str(SCRIPT), "--check"], env=env).returncode != 0:
+        sys.exit(f"the API check failed (see above); fix the provider or model, or the key (delete {KEY_FILE} "
+                 "to be asked again), then re-run")
 
 
 # --- Handy -------------------------------------------------------------------
@@ -334,24 +376,39 @@ def systemd_unit(name, text):
     run("systemctl", "--user", "restart", f"{name}.service")
 
 
-def install_proxy(model, hyprland):
+def cleanup_env(model, api, keep_alive=None):
+    env = {"LOCALFLOW_MODEL": model, **({"LOCALFLOW_API_URL": api} if api else {})}
+    if keep_alive and not api:
+        env["LOCALFLOW_KEEP_ALIVE"] = keep_alive
+    return env
+
+
+def write_env(env):
+    """Settings for `dictate` and the stdin filter, which don't run under a service."""
+    KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    (KEY_FILE.parent / "env").write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+
+
+def install_proxy(model, hyprland, api):
     step("localflow proxy (runs at login)")
     py = sys.executable
+    env = {"LOCALFLOW_MODEL": model, **({"LOCALFLOW_API_URL": api} if api else {})}
     # On Hyprland the dictation keys also run `localflow --warm`, which loads
     # the model as you start speaking, so it can unload soon after instead of
     # holding ~1 GB RAM + ~3 GB VRAM for an hour.
-    keep_alive = "2m" if hyprland else "1h"
+    if hyprland and not api:
+        env["LOCALFLOW_KEEP_ALIVE"] = "2m"
+    write_env(env)
     if SYSTEM == "Linux":
+        after = "" if api else "After=ollama.service\nWants=ollama.service\n"
+        lines = "".join(f"Environment={k}={v}\n" for k, v in env.items())
         systemd_unit("localflow", f"""[Unit]
-Description=localflow: Ollama dictation cleanup proxy for Handy
-After=ollama.service
-Wants=ollama.service
-
+Description=localflow: dictation cleanup proxy for Handy
+After=network-online.target
+{after}
 [Service]
 ExecStart={py} {SCRIPT} serve
-Environment=LOCALFLOW_MODEL={model}
-Environment=LOCALFLOW_KEEP_ALIVE={keep_alive}
-Restart=on-failure
+{lines}Restart=on-failure
 RestartSec=3
 
 [Install]
@@ -368,8 +425,7 @@ WantedBy=default.target
     <string>{py}</string><string>{SCRIPT}</string><string>serve</string>
   </array>
   <key>EnvironmentVariables</key><dict>
-    <key>LOCALFLOW_MODEL</key><string>{model}</string>
-  </dict>
+{"".join(f"    <key>{k}</key><string>{v}</string>\n" for k, v in env.items())}  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
@@ -384,14 +440,142 @@ WantedBy=default.target
         pyw = pyw if pyw.exists() else Path(py)
         startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
         (startup / "localflow.cmd").write_text(
-            f'@echo off\r\nset LOCALFLOW_MODEL={model}\r\nstart "" "{pyw}" "{SCRIPT}" serve\r\n')
+            "@echo off\r\n" + "".join(f"set {k}={v}\r\n" for k, v in env.items())
+            + f'start "" "{pyw}" "{SCRIPT}" serve\r\n')
         if http_ok(f"{PROXY_URL}/models"):
             print("   already running; log out and in (or end pythonw.exe) to pick up changes")
         else:
-            env = dict(os.environ, LOCALFLOW_MODEL=model)
-            subprocess.Popen([str(pyw), str(SCRIPT), "serve"], env=env, creationflags=0x00000008)
+            subprocess.Popen([str(pyw), str(SCRIPT), "serve"], env=dict(os.environ, **env),
+                             creationflags=0x00000008)
     if not wait_for(f"{PROXY_URL}/models", 15):
         sys.exit("localflow proxy didn't start; try `python3 localflow serve` to see why")
+
+
+# --- dictate --------------------------------------------------------------------
+
+def handy_cli():
+    """Handy's executable, for its headless --transcribe-file / --list-models."""
+    if SYSTEM == "Darwin":
+        import plistlib
+        app = Path("/Applications/Handy.app")
+        try:
+            with open(app / "Contents/Info.plist", "rb") as f:
+                return app / "Contents/MacOS" / plistlib.load(f)["CFBundleExecutable"]
+        except (OSError, KeyError, ValueError):
+            return None
+    cmd = handy_launch_cmd()
+    return Path(cmd[0]) if cmd else None
+
+
+def speech_models():
+    """Ids of the speech models Handy has downloaded."""
+    exe = handy_cli()
+    if not exe:
+        return []
+    try:
+        r = subprocess.run([str(exe), "--list-models", "--json"], capture_output=True, timeout=30,
+                           creationflags=0x08000000 if SYSTEM == "Windows" else 0)
+        out = r.stdout
+    except subprocess.TimeoutExpired as e:  # it can linger after printing
+        out = e.stdout or b""
+    try:
+        return [m["id"] for m in json.loads(out) if m.get("is_downloaded")]
+    except (ValueError, TypeError):
+        return []
+
+
+def prepare_handy():
+    """dictate uses Handy's engine, not its app: make sure a speech model is
+    downloaded, then keep the app from running (its hotkeys would clash)."""
+    step("Handy speech model")
+    models = speech_models()
+    if not models:
+        start_handy()
+        sys.exit("   Handy is open: pick and download a speech model there (Parakeet is a good default),\n"
+                 "   quit Handy, then re-run install.py.")
+    print(f"   using Handy's speech model ({len(models)} downloaded; pick another in Handy's settings)")
+    stop_handy()
+    store = handy_data_dir() / "settings_store.json"
+    if store.exists():
+        data = json.loads(store.read_text())
+        data.setdefault("settings", {})["autostart_enabled"] = False
+        store.write_text(json.dumps(data, indent=2))
+
+
+def remove_proxy():
+    """The proxy only serves Handy's app; dictate cleans up in-process."""
+    if SYSTEM == "Linux":
+        unit = HOME / ".config/systemd/user/localflow.service"
+        if unit.exists():
+            run("systemctl", "--user", "disable", "--now", "localflow.service", check=False)
+    elif SYSTEM == "Darwin":
+        plist = HOME / "Library/LaunchAgents/computer.localflow.plist"
+        if plist.exists():
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(plist)], capture_output=True)
+            plist.unlink()
+    else:
+        cmd = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup/localflow.cmd"
+        if cmd.exists():
+            cmd.unlink()
+            print("   removed the proxy from Startup (it stops at your next sign-in)")
+
+
+def has_tk(py):
+    return subprocess.run([str(py), "-c", "import tkinter; tkinter.Tk().destroy()"],
+                          capture_output=True, timeout=30).returncode == 0
+
+
+def install_dictate(hyprland):
+    step("dictate")
+    py = Path(sys.executable)
+    if SYSTEM != "Windows":
+        DICTATE.chmod(0o755)
+    if not has_tk(py):
+        hint = {"Darwin": f"brew install python-tk@{sys.version_info.major}.{sys.version_info.minor}",
+                "Windows": "re-run the Python installer with 'tcl/tk and IDLE' ticked"}.get(
+            SYSTEM, "sudo pacman -S tk  /  sudo apt install python3-tk  /  sudo dnf install python3-tkinter")
+        print(f"   no Tk for {py}: dictate will use notifications instead of the overlay ({hint})")
+    if SYSTEM == "Darwin":
+        if not have("rec") and not have("ffmpeg"):
+            require("brew", "Install sox (https://sox.sourceforge.net) for recording")
+            run("brew", "install", "sox")
+        plist = HOME / "Library/LaunchAgents/computer.localflow.dictate.plist"
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        path = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])
+        plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>computer.localflow.dictate</string>
+  <key>ProgramArguments</key><array><string>{py}</string><string>{DICTATE}</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+</dict></plist>
+""")
+        domain = f"gui/{os.getuid()}"
+        subprocess.run(["launchctl", "bootout", domain, str(plist)], capture_output=True)
+        time.sleep(1)
+        run("launchctl", "bootstrap", domain, plist)
+        print(f"   allow {py} in System Settings > Privacy & Security > Accessibility (hotkey and\n"
+              "   paste) and Microphone (asked on first use), then: launchctl kickstart -k "
+              f"{domain}/computer.localflow.dictate")
+    elif SYSTEM == "Windows":
+        pyw = py.with_name("pythonw.exe")
+        pyw = pyw if pyw.exists() else py
+        startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
+        (startup / "localflow-dictate.cmd").write_text(f'@echo off\r\nstart "" "{pyw}" "{DICTATE}"\r\n')
+        subprocess.Popen([str(pyw), str(DICTATE)], creationflags=0x00000008)  # already running: it exits
+    elif hyprland:
+        print(f"""   Bind the keys in ~/.config/hypr/bindings.lua:
+     hl.unbind("SUPER + CTRL + X")
+     hl.unbind("F9")
+     o.bind("SUPER + CTRL + X", "Toggle dictation", "{DICTATE} toggle")
+     o.bind("F9", "Start dictation (push-to-talk)", "{DICTATE} start")
+     o.bind("F9", "Stop dictation (push-to-talk)", "{DICTATE} stop", {{ release = true }})""")
+    else:
+        print(f"   Add keyboard shortcuts in your desktop's settings: `{DICTATE} toggle`\n"
+              f"   (or `{DICTATE} start` on press and `{DICTATE} stop` on release).")
 
 
 def require(cmd, hint):
@@ -401,22 +585,54 @@ def require(cmd, hint):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", help="Ollama model for cleanup (default: qwen3.5:4b, or "
-                                    "qwen3.5:4b-mlx on Apple Silicon)")
+    ap.add_argument("--model", help="model for cleanup (default: qwen3.5:4b, or "
+                                    "qwen3.5:4b-mlx on Apple Silicon; --api anthropic always uses "
+                                    f"{HAIKU}; required with other APIs)")
+    ap.add_argument("--api", metavar="PROVIDER_OR_URL",
+                    help="use your own API key instead of Ollama: anthropic (Claude), openai, openrouter, "
+                         "groq, gemini, mistral, deepseek, or any OpenAI-compatible base URL")
+    ap.add_argument("--handy-app", action="store_true",
+                    help="use Handy's own app and hotkeys, with localflow as its post-processing proxy, "
+                         "instead of dictate")
     ap.add_argument("--rocm", action=argparse.BooleanOptionalAction, default=None,
                     help="Linux: also install Ollama's ROCm build (default: auto-detect AMD GPU)")
     args = ap.parse_args()
+    if args.api and args.api.lower() == "anthropic":
+        if args.model not in (None, HAIKU):
+            ap.error(f"--api anthropic always uses {HAIKU}; drop --model")
+        args.model = HAIKU
+    if args.api and not args.model:
+        ap.error("--api needs --model (the provider's model name)")
     rocm = has_amd_gpu() if args.rocm is None else args.rocm
     hyprland = SYSTEM == "Linux" and have("hyprctl") and bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
 
-    install_ollama(rocm)
-    model = pull_model(args.model)
-    install_proxy(model, hyprland)
+    if args.api:
+        model = args.model
+        setup_api(args.api, model)
+    else:
+        install_ollama(rocm)
+        model = pull_model(args.model)
     install_handy()
-    configure_handy(hyprland)
+    if args.handy_app:
+        install_proxy(model, hyprland, args.api)
+        configure_handy(hyprland)
+    else:
+        # dictate warms the model as you start speaking, so it can unload soon after.
+        write_env(cleanup_env(model, args.api, keep_alive="2m"))
+        remove_proxy()
+        prepare_handy()
+        install_dictate(hyprland)
 
-    step(f"Done (cleanup model: {model})")
-    if SYSTEM == "Darwin":
+    step(f"Done (cleanup model: {model}{f' via {args.api}' if args.api else ''})")
+    if args.api and SYSTEM == "Linux" and subprocess.run(["systemctl", "--user", "is-active", "--quiet",
+                                                          "ollama"]).returncode == 0:
+        print("   Ollama isn't needed now: `systemctl --user disable --now ollama` frees its memory.")
+    if not args.handy_app:
+        keys = {"Darwin": "Option+Shift+Space", "Windows": "Ctrl+Shift+Space"}.get(SYSTEM)
+        if keys:
+            print(f"   Dictate: hold {keys} and talk (or tap it, talk, tap again). Esc cancels.")
+        print(f"   Check everything: {sys.executable} {DICTATE} --selftest")
+    elif SYSTEM == "Darwin":
         print("   Dictate with Option+Shift+Space (Handy's post-process shortcut).")
     elif SYSTEM == "Windows":
         print("   Dictate with Ctrl+Shift+Space (Handy's post-process shortcut).")

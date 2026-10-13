@@ -13,9 +13,25 @@ messages, and a sanity check that falls back to the raw transcript.
     localflow --eval                 # run cases.txt
     localflow --eval qwen3.5:2b      # ...against another Ollama model
     localflow --eval qwen3.5:4b off  # ...draft only, no review pass
+    localflow --check                # one tiny request: is the model reachable?
 
-Environment:
-    LOCALFLOW_MODEL       Ollama model        (default: qwen3.5:4b)
+Instead of Ollama, a hosted model works with your own key (no local model,
+no GPU or RAM for it; your dictation goes to that provider): Claude Haiku, or
+any OpenAI-compatible API. Set LOCALFLOW_API_URL to a provider name or URL,
+LOCALFLOW_MODEL to its model, and put the key in LOCALFLOW_API_KEY or in
+~/.config/localflow/api_key (%APPDATA%\\localflow\\api_key on Windows).
+install.py --api does all three.
+
+    LOCALFLOW_API_URL=anthropic localflow --check    # claude-haiku-5-5
+
+Environment (also read from ~/.config/localflow/env, one VAR=value per line,
+which install.py writes; a variable set in the environment wins):
+    LOCALFLOW_MODEL       model name          (default: qwen3.5:4b; ignored with
+                          LOCALFLOW_API_URL=anthropic, which always uses claude-haiku-5-5)
+    LOCALFLOW_API_URL     use this API instead of Ollama: openai, openrouter, groq,
+                          gemini, anthropic, mistral, deepseek, or any OpenAI-compatible
+                          base URL, e.g. https://host/v1 (default: unset, use Ollama)
+    LOCALFLOW_API_KEY     API key (default: read from the api_key file above)
     LOCALFLOW_REVIEW_MODEL  model for the repair pass (default: same; "off" to skip)
     LOCALFLOW_OLLAMA      Ollama base URL     (default: http://127.0.0.1:11434)
     LOCALFLOW_PORT        port for `serve`    (default: 11435)
@@ -30,10 +46,41 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MODEL = os.environ.get("LOCALFLOW_MODEL", "qwen3.5:4b")
+CONFIG_DIR = os.path.join(os.environ["APPDATA"] if os.name == "nt" else
+                          os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "localflow")
+# Settings saved by install.py (LOCALFLOW_*=value lines), so `dictate` and the
+# stdin filter clean up the same way as the service. The environment wins.
+try:
+    with open(os.path.join(CONFIG_DIR, "env")) as f:
+        for line in f:
+            k, sep, v = line.strip().partition("=")
+            if sep and k.startswith("LOCALFLOW_"):
+                os.environ.setdefault(k, v)
+except OSError:
+    pass
+
+# Hosted APIs (your own key) in place of Ollama. All speak the OpenAI chat
+# API except Anthropic, which gets its own Messages API.
+PROVIDERS = {
+    "openai": "https://api.openai.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "anthropic": "https://api.anthropic.com/v1",
+    "mistral": "https://api.mistral.ai/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+}
+# On Anthropic, cleanup always runs on Claude Haiku 5.5: small, fast and
+# cheap. Any other model name (LOCALFLOW_MODEL, --eval) is ignored.
+HAIKU = "claude-haiku-5-5"
+PROVIDER = os.environ.get("LOCALFLOW_API_URL", "").strip()
+API_URL = PROVIDERS.get(PROVIDER.lower(), PROVIDER).rstrip("/")
+ANTHROPIC = API_URL.startswith("https://api.anthropic.com")
+MODEL = HAIKU if ANTHROPIC else os.environ.get("LOCALFLOW_MODEL") or ("" if API_URL else "qwen3.5:4b")
 OLLAMA = os.environ.get("LOCALFLOW_OLLAMA", "http://127.0.0.1:11434").rstrip("/")
 PORT = int(os.environ.get("LOCALFLOW_PORT", "11435"))
 KEEP_ALIVE = os.environ.get("LOCALFLOW_KEEP_ALIVE", "1h")
@@ -41,9 +88,14 @@ KEEP_ALIVE = os.environ.get("LOCALFLOW_KEEP_ALIVE", "1h")
 # problems, a fresh call (no examples, no history) repairs just those. "off"
 # skips the repair call (checks and deterministic fixes still run).
 REVIEW_MODEL = os.environ.get("LOCALFLOW_REVIEW_MODEL", MODEL)
+if ANTHROPIC and REVIEW_MODEL != "off":
+    REVIEW_MODEL = HAIKU
 # Load the model into GPU/CPU buffers instead of also keeping the file mapped
 # in RAM: halves RAM use (2.1 -> 1.1 GB on GPU) at the same speed.
 USE_MMAP = os.environ.get("LOCALFLOW_USE_MMAP") == "1"
+
+# The key lives in a file only you can read, not in the service definition.
+KEY_FILE = os.path.join(CONFIG_DIR, "api_key")
 
 SYSTEM = """You are a dictation cleanup filter. Each user message is a raw speech-to-text transcript inside <dictation> tags. Output the text the speaker actually meant to write.
 
@@ -156,11 +208,92 @@ def ollama_options(num_predict):
 
 def warm(model=MODEL):
     """Load the model (no generation) so it's ready when the dictation arrives."""
+    if API_URL:
+        return  # nothing to load
     body = {"model": model, "messages": [], "keep_alive": KEEP_ALIVE, "options": ollama_options(1)}
     req = urllib.request.Request(f"{OLLAMA}/api/chat", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as resp:
         resp.read()
+
+
+def chat(model, messages, num_predict, fmt=None):
+    if not model:
+        raise RuntimeError("no model: set LOCALFLOW_MODEL to the provider's model name")
+    if ANTHROPIC:
+        return anthropic_chat(model, messages, num_predict)
+    if API_URL:
+        return api_chat(model, messages, num_predict)
+    return ollama_chat(model, messages, num_predict, fmt)
+
+
+def api_key():
+    if key := os.environ.get("LOCALFLOW_API_KEY", "").strip():
+        return key
+    try:
+        with open(KEY_FILE) as f:
+            return f.read().strip()
+    except OSError:
+        raise RuntimeError(f"no API key: set LOCALFLOW_API_KEY or put it in {KEY_FILE}")
+
+
+# Reasoning models (OpenAI's o-series, gpt-5) reject temperature and
+# max_tokens; after the first such refusal, send only model and messages.
+_api_minimal = False
+
+
+def api_chat(model, messages, num_predict):
+    global _api_minimal
+    body = {"model": model, "messages": messages}
+    if not _api_minimal:
+        body.update(temperature=0, max_tokens=num_predict)
+    req = urllib.request.Request(f"{API_URL}/chat/completions", data=json.dumps(body).encode(), headers={
+        "Content-Type": "application/json", "Authorization": f"Bearer {api_key()}",
+        "User-Agent": "localflow"})  # some providers' firewalls block urllib's default
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            answer = json.load(resp)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:300]
+        if e.code == 400 and not _api_minimal:
+            _api_minimal = True
+            try:
+                return api_chat(model, messages, num_predict)
+            except Exception:
+                _api_minimal = False
+                raise
+        raise RuntimeError(f"HTTP {e.code}: {detail}") from None
+    choice = answer["choices"][0]
+    if choice.get("finish_reason") == "length":
+        raise RuntimeError("model output was cut off (a thinking model? pick a non-reasoning one)")
+    return choice["message"]["content"] or ""
+
+
+def anthropic_chat(model, messages, num_predict):
+    system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+    turns = [dict(m) for m in messages if m["role"] != "system"]
+    if len(turns) > 1:
+        # Rules and examples are the same on every dictation: cache them, so
+        # only the new transcript is processed from scratch.
+        turns[-2]["content"] = [{"type": "text", "text": turns[-2]["content"],
+                                 "cache_control": {"type": "ephemeral"}}]
+    # Only Haiku 5.5, whatever model was asked for; thinking off, it only slows cleanup down.
+    body = {"model": HAIKU, "max_tokens": num_predict, "messages": turns, "thinking": {"type": "disabled"}}
+    if system:
+        body["system"] = system
+    req = urllib.request.Request(f"{API_URL}/messages", data=json.dumps(body).encode(), headers={
+        "Content-Type": "application/json", "x-api-key": api_key(),
+        "anthropic-version": "2023-06-01", "User-Agent": "localflow"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            answer = json.load(resp)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from None
+    if answer.get("stop_reason") == "max_tokens":
+        raise RuntimeError("model output was cut off")
+    if answer.get("stop_reason") == "refusal":
+        raise RuntimeError("model declined")
+    return "".join(b["text"] for b in answer.get("content", []) if b.get("type") == "text")
 
 
 def ollama_chat(model, messages, num_predict, fmt=None):
@@ -205,7 +338,7 @@ def draft(text, model, system):
         messages += [{"role": "user", "content": f"<dictation>{raw}</dictation>"},
                      {"role": "assistant", "content": cleaned}]
     messages.append({"role": "user", "content": f"<dictation>{text}</dictation>"})
-    out = ollama_chat(model, messages, int(len(text) * 1.5) + 64)
+    out = chat(model, messages, int(len(text) * 1.5) + 64)
     return re.sub(r"</?dictation>", "", out).strip()
 
 
@@ -263,12 +396,14 @@ def review(text, first, model, system):
         return ("ok" if not problems else f"{len(problems)} problems, repair off"), None
     listed = "\n".join(f"- {p}" for p in problems)
     prompt = f"RULES:\n{system}\n\nRAW:\n{text}\n\nDRAFT:\n{first}\n\nPROBLEMS:\n{listed}"
-    out = ollama_chat(model, [{"role": "system", "content": REVIEW_SYSTEM},
-                              {"role": "user", "content": prompt}],
-                      len(text) * 2 + 128, fmt=REVIEW_FORMAT)
+    out = chat(model, [{"role": "system", "content": REVIEW_SYSTEM},
+                       {"role": "user", "content": prompt}],
+               len(text) * 2 + 128, fmt=REVIEW_FORMAT)
     try:
-        fixed = (json.loads(out).get("text") or "").strip()
-    except ValueError:
+        # Ollama enforces the JSON format; hosted models may wrap it in a code block.
+        m = re.search(r"\{.*\}", out, re.S)
+        fixed = (json.loads(m.group(0) if m else out).get("text") or "").strip()
+    except (ValueError, AttributeError):
         return "invalid", None
     # Accept the repair only if it clears problems without adding new ones;
     # small models sometimes "fix" by dropping unrelated words.
@@ -371,8 +506,8 @@ class Handler(BaseHTTPRequestHandler):
             r = clean_detailed(transcript)
             out = r["final"]
             print(f"draft {r['ms_draft']}ms, review {r['ms_review']}ms: {r['verdict']}", file=sys.stderr)
-        except Exception as e:  # Ollama down or slow: never lose the dictation
-            print(f"ollama error: {e}", file=sys.stderr)
+        except Exception as e:  # Ollama/API down or slow: never lose the dictation
+            print(f"cleanup error: {e}", file=sys.stderr)
             out = transcript.strip()
         self._json(200, {
             "id": "localflow", "object": "chat.completion", "model": "localflow",
@@ -394,8 +529,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve():
+    if ANTHROPIC and os.environ.get("LOCALFLOW_MODEL", HAIKU) != HAIKU:
+        print(f"localflow: ignoring LOCALFLOW_MODEL={os.environ['LOCALFLOW_MODEL']}; "
+              f"Anthropic always uses {HAIKU}", file=sys.stderr)
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"localflow: http://127.0.0.1:{PORT}/v1 -> {OLLAMA} ({MODEL})", file=sys.stderr)
+    print(f"localflow: http://127.0.0.1:{PORT}/v1 -> {API_URL or OLLAMA} ({MODEL})", file=sys.stderr)
     server.serve_forever()
 
 
@@ -483,6 +621,12 @@ if __name__ == "__main__":
             urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{PORT}/warm", data=b""), timeout=2).read()
         except OSError:
             pass
+    elif args[:1] == ["--check"]:
+        try:
+            chat(MODEL, [{"role": "user", "content": "Reply with just: ok"}], 32)
+            print(f"ok: {MODEL} via {API_URL or OLLAMA}")
+        except Exception as e:
+            sys.exit(f"localflow: {MODEL} via {API_URL or OLLAMA}: {e}")
     elif args[:1] == ["--eval"]:
         run_eval(args[1] if len(args) > 1 else MODEL, args[2] if len(args) > 2 else REVIEW_MODEL)
     elif args[:1] in (["-h"], ["--help"]):
@@ -491,6 +635,6 @@ if __name__ == "__main__":
         text = sys.stdin.read()
         try:
             sys.stdout.write(clean(text))
-        except Exception as e:  # Ollama down: pass the text through, like serve does
+        except Exception as e:  # Ollama/API down: pass the text through, like serve does
             print(f"localflow: {e}; passing text through unchanged", file=sys.stderr)
             sys.stdout.write(text.strip())

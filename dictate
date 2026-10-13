@@ -1,0 +1,1209 @@
+#!/usr/bin/env python3
+"""dictate: speak, see it listening, get clean text pasted where you type.
+
+A small pill at the bottom of the screen shows the microphone level while
+you talk, then "Transcribing" and "Cleaning up". Speech is transcribed by
+Handy's headless engine (`handy --transcribe-file`, the speech model loaded
+only for the half second it runs), cleaned up by localflow (settings from
+~/.config/localflow/env), and pasted into the window you were typing in.
+
+Linux (Hyprland and other compositors): nothing runs between dictations;
+bind keys to these commands:
+    dictate start [raw]     start recording (raw: paste the transcript as is)
+    dictate stop            transcribe, clean up, paste
+    dictate toggle [raw]    start, or stop if recording
+    dictate cancel          stop recording and throw it away
+
+Windows and macOS: run `dictate` once (install.py starts it at login). It
+waits in the background (~25 MB) for the hotkey:
+    Ctrl+Shift+Space (Windows), Option+Shift+Space (macOS)
+    hold to talk, or tap to start and tap again to stop; Esc cancels
+
+    dictate --selftest      check the overlay, clipboard, hotkey and microphone
+
+Uses only the Python standard library (Tk for the overlay; without Tk it
+still works, with notifications instead).
+"""
+
+import array
+import ctypes
+import ctypes.util
+import importlib.machinery
+import importlib.util
+import json
+import logging
+import math
+import os
+import platform
+import queue
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import wave
+from pathlib import Path
+
+SYSTEM = platform.system()  # "Linux", "Darwin", "Windows"
+HERE = Path(__file__).resolve().parent
+RATE = 16000  # 16 kHz mono 16-bit: what --transcribe-file takes
+HOME = Path.home()
+NO_WINDOW = 0x08000000 if SYSTEM == "Windows" else 0  # CREATE_NO_WINDOW
+
+if SYSTEM == "Windows":
+    STATE = Path(os.environ.get("LOCALAPPDATA", HOME)) / "localflow"
+    RUN = Path(tempfile.gettempdir()) / "localflow-dictate"
+elif SYSTEM == "Darwin":
+    STATE = HOME / "Library/Logs/localflow"
+    RUN = Path(os.environ.get("TMPDIR", "/tmp")) / "localflow-dictate"
+else:
+    STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "localflow"
+    RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / "localflow-dictate"
+
+log = logging.getLogger("dictate")
+
+
+def setup_logging(to_file=True):
+    # Background mode has no terminal (pythonw on Windows has no stderr at
+    # all), so log to a file. Never logs what you said.
+    STATE.mkdir(parents=True, exist_ok=True)
+    handlers = [logging.FileHandler(STATE / "dictate.log", encoding="utf-8")] if to_file else []
+    if sys.stderr:
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(level=logging.INFO, handlers=handlers,
+                        format="%(asctime)s %(levelname)s %(message)s")
+
+
+# --- Handy (speech to text) -------------------------------------------------
+
+def handy_path():
+    if os.environ.get("DICTATE_HANDY"):
+        return os.environ["DICTATE_HANDY"]
+    if SYSTEM == "Darwin":
+        import plistlib
+        for app in (Path("/Applications/Handy.app"), HOME / "Applications/Handy.app"):
+            try:
+                with open(app / "Contents/Info.plist", "rb") as f:
+                    exe = app / "Contents/MacOS" / plistlib.load(f)["CFBundleExecutable"]
+                if exe.exists():
+                    return str(exe)
+            except (OSError, KeyError, ValueError):
+                pass
+    elif SYSTEM == "Windows":
+        for base in (os.environ.get("LOCALAPPDATA"), os.environ.get("ProgramFiles")):
+            exe = Path(base or "") / "Handy/Handy.exe"
+            if exe.exists():
+                return str(exe)
+    else:
+        if (HOME / ".local/bin/handy").exists():
+            return str(HOME / ".local/bin/handy")
+    return shutil.which("handy")
+
+
+def transcribe(pcm):
+    """Speech (16 kHz mono s16 bytes) to text with Handy's selected model."""
+    exe = handy_path()
+    if not exe:
+        raise RuntimeError("Handy not found (install it, or set DICTATE_HANDY)")
+    RUN.mkdir(parents=True, exist_ok=True)
+    wav_path = RUN / f"audio-{os.getpid()}.wav"
+    with wave.open(str(wav_path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(pcm)
+    try:
+        r = subprocess.run([exe, "--transcribe-file", str(wav_path), "--json"], capture_output=True,
+                           timeout=120, creationflags=NO_WINDOW)
+    finally:
+        wav_path.unlink(missing_ok=True)
+    try:
+        return json.loads(r.stdout.decode("utf-8", "replace")).get("text", "").strip()
+    except ValueError:
+        err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise RuntimeError(f"Handy couldn't transcribe: {err[-1] if err else r.returncode}") from None
+
+
+# --- localflow (cleanup) ----------------------------------------------------
+
+_localflow = None
+
+
+def localflow():
+    """The localflow script as a module, so cleanup runs in this process."""
+    global _localflow
+    if _localflow is None:
+        loader = importlib.machinery.SourceFileLoader("localflow", str(HERE / "localflow"))
+        spec = importlib.util.spec_from_loader("localflow", loader)
+        _localflow = importlib.util.module_from_spec(spec)
+        loader.exec_module(_localflow)
+    return _localflow
+
+
+def warm_cleanup_model():
+    """With Ollama, start loading the model while you speak (no-op on an API)."""
+    def go():
+        try:
+            localflow().warm()
+        except Exception as e:
+            log.info("warm failed: %s", e)
+    threading.Thread(target=go, daemon=True).start()
+
+
+def cleanup(text):
+    try:
+        return localflow().clean(text)
+    except Exception as e:  # never lose the dictation
+        log.warning("cleanup failed, pasting the raw transcript: %s", e)
+        return text
+
+
+# --- Microphone ---------------------------------------------------------------
+
+class PipeRecorder:
+    """Raw 16 kHz mono s16 audio from a command's stdout (Linux, macOS)."""
+
+    def __init__(self, on_chunk):
+        self.on_chunk, self.chunks, self.proc = on_chunk, [], None
+
+    @staticmethod
+    def command():
+        if shutil.which("pw-record"):
+            return ["pw-record", "--rate", str(RATE), "--channels", "1", "--format", "s16", "-"]
+        if shutil.which("parec"):
+            return ["parec", "--rate", str(RATE), "--channels", "1", "--format", "s16le", "--raw"]
+        if shutil.which("arecord"):
+            return ["arecord", "-q", "-f", "S16_LE", "-r", str(RATE), "-c", "1", "-t", "raw"]
+        if shutil.which("rec"):  # sox
+            return ["rec", "-q", "-r", str(RATE), "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"]
+        if shutil.which("ffmpeg") and SYSTEM == "Darwin":
+            return ["ffmpeg", "-loglevel", "quiet", "-f", "avfoundation", "-i", ":0",
+                    "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"]
+        raise RuntimeError("no recorder found: install pipewire (pw-record), alsa-utils or sox")
+
+    def start(self):
+        self.proc = subprocess.Popen(self.command(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
+
+    def _read(self):
+        while True:
+            data = self.proc.stdout.read1(1024) if hasattr(self.proc.stdout, "read1") else self.proc.stdout.read(1024)
+            if not data:
+                break
+            self.chunks.append(data)
+            self.on_chunk(data)
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.reader.join(1)  # it ends when the recorder's output closes
+        pcm = b"".join(self.chunks)
+        return pcm[:len(pcm) // 2 * 2]
+
+
+class WinRecorder:
+    """16 kHz mono s16 audio from the default microphone through winmm (Windows)."""
+
+    class WAVEFORMATEX(ctypes.Structure):
+        _fields_ = [("wFormatTag", ctypes.c_ushort), ("nChannels", ctypes.c_ushort),
+                    ("nSamplesPerSec", ctypes.c_uint), ("nAvgBytesPerSec", ctypes.c_uint),
+                    ("nBlockAlign", ctypes.c_ushort), ("wBitsPerSample", ctypes.c_ushort),
+                    ("cbSize", ctypes.c_ushort)]
+
+    class WAVEHDR(ctypes.Structure):
+        _fields_ = [("lpData", ctypes.c_void_p), ("dwBufferLength", ctypes.c_uint),
+                    ("dwBytesRecorded", ctypes.c_uint), ("dwUser", ctypes.c_size_t),
+                    ("dwFlags", ctypes.c_uint), ("dwLoops", ctypes.c_uint),
+                    ("lpNext", ctypes.c_void_p), ("reserved", ctypes.c_size_t)]
+
+    WHDR_DONE = 1
+
+    def __init__(self, on_chunk):
+        self.on_chunk, self.chunks, self.running = on_chunk, [], False
+        self.winmm = ctypes.WinDLL("winmm")
+
+    def start(self):
+        w = self.winmm
+        fmt = self.WAVEFORMATEX(1, 1, RATE, RATE * 2, 2, 16, 0)
+        self.handle = ctypes.c_void_p()
+        rc = w.waveInOpen(ctypes.byref(self.handle), ctypes.c_uint(0xFFFFFFFF), ctypes.byref(fmt),
+                          ctypes.c_size_t(0), ctypes.c_size_t(0), ctypes.c_uint(0))
+        if rc:
+            raise RuntimeError(f"couldn't open the microphone (waveInOpen error {rc})")
+        size = RATE * 2 // 20  # 50 ms per buffer
+        self.bufs = [ctypes.create_string_buffer(size) for _ in range(8)]
+        self.hdrs = [self.WAVEHDR(ctypes.cast(b, ctypes.c_void_p), size, 0, 0, 0, 0, None, 0) for b in self.bufs]
+        for h in self.hdrs:
+            w.waveInPrepareHeader(self.handle, ctypes.byref(h), ctypes.sizeof(h))
+            w.waveInAddBuffer(self.handle, ctypes.byref(h), ctypes.sizeof(h))
+        w.waveInStart(self.handle)
+        self.running = True
+        self.thread = threading.Thread(target=self._poll, daemon=True)
+        self.thread.start()
+
+    def _take(self, h, requeue):
+        if h.dwFlags & self.WHDR_DONE:
+            data = ctypes.string_at(h.lpData, h.dwBytesRecorded)
+            if data:
+                self.chunks.append(data)
+                self.on_chunk(data)
+            h.dwFlags &= ~self.WHDR_DONE
+            h.dwBytesRecorded = 0
+            if requeue:
+                self.winmm.waveInAddBuffer(self.handle, ctypes.byref(h), ctypes.sizeof(h))
+            return True
+        return False
+
+    def _poll(self):
+        i = 0
+        while self.running:
+            if self._take(self.hdrs[i], True):
+                i = (i + 1) % len(self.hdrs)
+            else:
+                time.sleep(0.01)
+        self.next = i
+
+    def stop(self):
+        w = self.winmm
+        self.running = False
+        self.thread.join()
+        w.waveInStop(self.handle)
+        w.waveInReset(self.handle)  # marks the buffer being filled as done
+        for k in range(len(self.hdrs)):
+            self._take(self.hdrs[(self.next + k) % len(self.hdrs)], False)
+        for h in self.hdrs:
+            w.waveInUnprepareHeader(self.handle, ctypes.byref(h), ctypes.sizeof(h))
+        w.waveInClose(self.handle)
+        return b"".join(self.chunks)
+
+
+def Recorder(on_chunk):
+    return WinRecorder(on_chunk) if SYSTEM == "Windows" else PipeRecorder(on_chunk)
+
+
+def level(chunk):
+    """Loudness of a chunk, 0..1 (RMS on a log scale, speech lands around 0.5-0.9)."""
+    a = array.array("h", chunk[:len(chunk) // 2 * 2])
+    if not a:
+        return 0.0
+    rms = math.sqrt(sum(x * x for x in a) / len(a))
+    return max(0.0, min(1.0, (20 * math.log10(max(rms, 1)) - 25) / 45))
+
+
+# --- Paste ----------------------------------------------------------------------
+
+class Paste:
+    """Put text on the clipboard, press the paste keys, then restore the
+    clipboard. Pasting instead of typing keeps list newlines from pressing Enter.
+    Returns False when the keys couldn't be sent (the text stays on the clipboard)."""
+
+    @staticmethod
+    def text(text):
+        if SYSTEM == "Windows":
+            return Paste._windows(text)
+        if SYSTEM == "Darwin":
+            return Paste._mac(text)
+        r = subprocess.run([str(HERE / "paste"), text])
+        return r.returncode == 0
+
+    @staticmethod
+    def _mac(text):
+        env = dict(os.environ, LC_CTYPE="UTF-8")
+        old = subprocess.run(["pbpaste"], capture_output=True, env=env).stdout
+        subprocess.run(["pbcopy"], input=text.encode(), env=env)
+        time.sleep(0.05)
+        try:
+            if not Quartz.lib().AXIsProcessTrusted():
+                return False  # key presses would be dropped silently
+            Quartz.key(9, Quartz.CMD)  # v
+        except OSError:
+            return False
+
+        def restore():
+            time.sleep(1)
+            subprocess.run(["pbcopy"], input=old, env=env)
+        threading.Thread(target=restore, daemon=True).start()
+        return True
+
+    @staticmethod
+    def _windows(text):
+        old = WinClipboard.get()
+        WinClipboard.set(text.replace("\r\n", "\n").replace("\n", "\r\n"))
+        time.sleep(0.05)
+        u = ctypes.windll.user32
+        for vk, up in ((0x11, 0), (0x56, 0), (0x56, 2), (0x11, 2)):  # Ctrl down, V down, V up, Ctrl up
+            u.keybd_event(vk, 0, up, 0)
+
+        def restore():
+            time.sleep(1)
+            if old is not None:
+                WinClipboard.set(old)
+        threading.Thread(target=restore, daemon=True).start()
+        return True
+
+
+class WinClipboard:
+    CF_UNICODETEXT = 13
+
+    @staticmethod
+    def _open():
+        u = ctypes.windll.user32
+        for _ in range(20):
+            if u.OpenClipboard(None):
+                return True
+            time.sleep(0.02)
+        return False
+
+    @classmethod
+    def get(cls):
+        u, k = ctypes.windll.user32, ctypes.windll.kernel32
+        u.GetClipboardData.restype = ctypes.c_void_p
+        k.GlobalLock.restype, k.GlobalLock.argtypes = ctypes.c_void_p, [ctypes.c_void_p]
+        k.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        if not cls._open():
+            return None
+        try:
+            h = u.GetClipboardData(cls.CF_UNICODETEXT)
+            if not h:
+                return None
+            p = k.GlobalLock(h)
+            try:
+                return ctypes.wstring_at(p)
+            finally:
+                k.GlobalUnlock(h)
+        finally:
+            u.CloseClipboard()
+
+    @classmethod
+    def set(cls, text):
+        u, k = ctypes.windll.user32, ctypes.windll.kernel32
+        k.GlobalAlloc.restype, k.GlobalAlloc.argtypes = ctypes.c_void_p, [ctypes.c_uint, ctypes.c_size_t]
+        k.GlobalLock.restype, k.GlobalLock.argtypes = ctypes.c_void_p, [ctypes.c_void_p]
+        k.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        u.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        data = ctypes.create_unicode_buffer(text)
+        size = ctypes.sizeof(data)
+        h = k.GlobalAlloc(0x0002, size)  # GMEM_MOVEABLE
+        p = k.GlobalLock(h)
+        ctypes.memmove(p, data, size)
+        k.GlobalUnlock(h)
+        if not cls._open():
+            return False
+        try:
+            u.EmptyClipboard()
+            return bool(u.SetClipboardData(cls.CF_UNICODETEXT, h))
+        finally:
+            u.CloseClipboard()
+
+
+class Quartz:
+    """Just enough of macOS's Quartz event API through ctypes: a keyboard tap
+    for the hotkey and synthetic key presses for pasting. Both need the
+    Accessibility permission (System Settings > Privacy & Security)."""
+    CMD, SHIFT, ALT, CTRL = 0x100000, 0x20000, 0x80000, 0x40000
+    _lib = None
+
+    @classmethod
+    def lib(cls):
+        if cls._lib is None:
+            q = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+            v = ctypes.c_void_p
+            q.CGEventSourceCreate.restype, q.CGEventSourceCreate.argtypes = v, [ctypes.c_int]
+            q.CGEventCreateKeyboardEvent.restype = v
+            q.CGEventCreateKeyboardEvent.argtypes = [v, ctypes.c_uint16, ctypes.c_bool]
+            q.CGEventSetFlags.argtypes = [v, ctypes.c_uint64]
+            q.CGEventGetFlags.restype, q.CGEventGetFlags.argtypes = ctypes.c_uint64, [v]
+            q.CGEventPost.argtypes = [ctypes.c_uint32, v]
+            q.CGEventGetIntegerValueField.restype = ctypes.c_int64
+            q.CGEventGetIntegerValueField.argtypes = [v, ctypes.c_uint32]
+            q.CFRelease.argtypes = [v]
+            q.AXIsProcessTrusted.restype = ctypes.c_bool  # in ApplicationServices (HIServices)
+            cls._lib = q
+        return cls._lib
+
+    @classmethod
+    def key(cls, code, flags):
+        q = cls.lib()
+        src = q.CGEventSourceCreate(1)  # kCGEventSourceStateHIDSystemState
+        for down in (True, False):
+            e = q.CGEventCreateKeyboardEvent(src, code, down)
+            q.CGEventSetFlags(e, flags)
+            q.CGEventPost(0, e)  # kCGHIDEventTap
+            q.CFRelease(e)
+        if src:
+            q.CFRelease(src)
+
+
+# --- Hotkey (Windows, macOS) ------------------------------------------------------
+# Posts "press", "release" and "escape" to a queue. The hotkey's key presses are
+# swallowed so the space doesn't reach the app you're typing in.
+
+def windows_hotkey(events, recording):
+    from ctypes import wintypes
+    u, k = ctypes.WinDLL("user32", use_last_error=True), ctypes.WinDLL("kernel32")
+    LRESULT = ctypes.c_ssize_t
+
+    class KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD), ("flags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+    u.SetWindowsHookExW.restype = ctypes.c_void_p
+    u.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, ctypes.c_void_p, wintypes.DWORD]
+    u.CallNextHookEx.restype = LRESULT
+    u.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+    u.GetAsyncKeyState.restype = ctypes.c_short
+    k.GetModuleHandleW.restype = ctypes.c_void_p
+    held = [False]
+
+    def proc(n, wparam, lparam):
+        if n == 0:
+            kb = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+            injected = kb.flags & 0x10
+            down = wparam in (0x100, 0x104)  # WM_KEYDOWN, WM_SYSKEYDOWN
+            if not injected and kb.vkCode == 0x20:  # space
+                mods = (u.GetAsyncKeyState(0x11) & 0x8000) and (u.GetAsyncKeyState(0x10) & 0x8000)
+                if down and (held[0] or mods):
+                    if not held[0]:
+                        held[0] = True
+                        events.put("press")
+                    return 1
+                if not down and held[0]:
+                    held[0] = False
+                    events.put("release")
+                    return 1
+            if not injected and kb.vkCode == 0x1B and down and recording():  # Esc
+                events.put("escape")
+                return 1
+        return u.CallNextHookEx(None, n, wparam, lparam)
+
+    cb = HOOKPROC(proc)
+    hook = u.SetWindowsHookExW(13, cb, k.GetModuleHandleW(None), 0)  # WH_KEYBOARD_LL
+    if not hook:
+        raise OSError(f"couldn't install the keyboard hook (error {ctypes.get_last_error()})")
+    events.put("ready")
+    msg = wintypes.MSG()
+    while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        u.TranslateMessage(ctypes.byref(msg))
+        u.DispatchMessageW(ctypes.byref(msg))
+
+
+def mac_hotkey(events, recording):
+    q = Quartz.lib()
+    cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    v = ctypes.c_void_p
+    CALLBACK = ctypes.CFUNCTYPE(v, v, ctypes.c_uint32, v, v)
+    q.CGEventTapCreate.restype = v
+    q.CGEventTapCreate.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint64, CALLBACK, v]
+    q.CGEventTapEnable.argtypes = [v, ctypes.c_bool]
+    cf.CFMachPortCreateRunLoopSource.restype = v
+    cf.CFMachPortCreateRunLoopSource.argtypes = [v, v, ctypes.c_long]
+    cf.CFRunLoopGetCurrent.restype = v
+    cf.CFRunLoopAddSource.argtypes = [v, v, v]
+    modes = v.in_dll(cf, "kCFRunLoopCommonModes")
+    held, tap = [False], [None]
+    KEY_DOWN, KEY_UP, SPACE, ESC = 10, 11, 49, 53
+
+    def proc(_proxy, kind, event, _ref):
+        if kind in (0xFFFFFFFE, 0xFFFFFFFF):  # tap disabled by timeout or user input: re-enable
+            q.CGEventTapEnable(tap[0], True)
+            return event
+        code = q.CGEventGetIntegerValueField(event, 9)  # kCGKeyboardEventKeycode
+        flags = q.CGEventGetFlags(event)
+        if code == SPACE:
+            mods = flags & Quartz.ALT and flags & Quartz.SHIFT and not flags & (Quartz.CMD | Quartz.CTRL)
+            if kind == KEY_DOWN and (held[0] or mods):
+                if not held[0]:
+                    held[0] = True
+                    events.put("press")
+                return None
+            if kind == KEY_UP and held[0]:
+                held[0] = False
+                events.put("release")
+                return None
+        if code == ESC and kind == KEY_DOWN and recording():
+            events.put("escape")
+            return None
+        return event
+
+    cb = CALLBACK(proc)
+    mask = (1 << KEY_DOWN) | (1 << KEY_UP)
+    tap[0] = q.CGEventTapCreate(1, 0, 0, mask, cb, None)  # session tap, head insert, default (can swallow)
+    if not tap[0]:
+        raise OSError("no keyboard access: allow this Python in System Settings > Privacy & Security > "
+                      "Accessibility, then restart dictate")
+    source = cf.CFMachPortCreateRunLoopSource(None, tap[0], 0)
+    cf.CFRunLoopAddSource(cf.CFRunLoopGetCurrent(), source, modes)
+    q.CGEventTapEnable(tap[0], True)
+    events.put("ready")
+    cf.CFRunLoopRun()
+
+
+# --- Overlay ----------------------------------------------------------------------
+
+BG, FG, DIM, RED, BLUE = "#18181b", "#f4f4f5", "#a1a1aa", "#ef4444", "#60a5fa"
+
+
+class Overlay:
+    """The pill at the bottom of the screen. It never takes keyboard focus, so
+    the paste lands in the window you were typing in. Only touch it from the
+    Tk thread."""
+    W, H, BARS = 220, 40, 22
+
+    def __init__(self, root):
+        self.root, self.levels = root, [0.0] * self.BARS
+        self.state, self.raw, self.started, self.tick = "hidden", False, 0, 0
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        key = BG
+        if SYSTEM == "Windows":
+            key = "#010101"  # see-through color, for the rounded ends
+            root.config(bg=key)
+            root.attributes("-transparentcolor", key)
+        elif SYSTEM == "Darwin":
+            key = "systemTransparent"
+            root.config(bg=key)
+            root.attributes("-transparent", True)
+        self.canvas = c = __import__("tkinter").Canvas(root, width=self.W, height=self.H, bg=key,
+                                                      highlightthickness=0, bd=0)
+        c.pack()
+        if SYSTEM in ("Windows", "Darwin"):  # draw the pill; on Linux the compositor rounds the window
+            r = self.H // 2
+            c.create_oval(0, 0, self.H, self.H, fill=BG, outline=BG)
+            c.create_oval(self.W - self.H, 0, self.W, self.H, fill=BG, outline=BG)
+            c.create_rectangle(r, 0, self.W - r, self.H, fill=BG, outline=BG)
+        self.hyprland = SYSTEM == "Linux" and bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
+        if SYSTEM == "Linux":
+            try:
+                root.attributes("-type", "notification")  # not a window to focus
+            except Exception:
+                pass
+        if self.hyprland:
+            hyprland_rules()
+        root.geometry(f"{self.W}x{self.H}+0+0")
+        root.update_idletasks()
+        self.hwnd = None
+        if SYSTEM == "Windows":
+            self._windows_no_activate()
+        else:
+            root.withdraw()
+        self._animate()
+
+    # Platform plumbing --------------------------------------------------------
+    def _windows_no_activate(self):
+        u = ctypes.windll.user32
+        u.GetWindowLongW.restype = ctypes.c_long
+        self.hwnd = int(self.root.wm_frame(), 16)
+        style = u.GetWindowLongW(self.hwnd, -20)  # GWL_EXSTYLE
+        u.SetWindowLongW(self.hwnd, -20, style | 0x08000000 | 0x80 | 0x8)  # NOACTIVATE, TOOLWINDOW, TOPMOST
+        u.ShowWindow(self.hwnd, 0)
+
+    def _place(self):
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        bottom = sh - 90  # above the dock / taskbar
+        if SYSTEM == "Windows":
+            from ctypes import wintypes
+            area = wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(area), 0)  # SPI_GETWORKAREA
+            sw, bottom = area.right - area.left, area.bottom - 24
+        return (sw - self.W) // 2, bottom - self.H
+
+    def _show(self):
+        if self.state != "hidden":
+            return
+        x, y = self._place()
+        if SYSTEM == "Windows":
+            ctypes.windll.user32.SetWindowPos(self.hwnd, -1, x, y, self.W, self.H, 0x0010 | 0x0040)  # NOACTIVATE|SHOWWINDOW
+        else:
+            if not self.hyprland:  # on Hyprland a window rule places it on the focused monitor
+                self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
+            self.root.deiconify()
+            self.root.lift()
+
+    def hide(self):
+        if SYSTEM == "Windows":
+            ctypes.windll.user32.ShowWindow(self.hwnd, 0)
+        else:
+            self.root.withdraw()
+        self.state = "hidden"
+        self._draw()
+
+    # States ----------------------------------------------------------------
+    def recording(self, raw=False):
+        self._show()
+        self.state, self.raw, self.started = "recording", raw, time.monotonic()
+        self.levels = [0.0] * self.BARS
+        self._draw()
+
+    def push_level(self, value):
+        self.levels = self.levels[1:] + [value]
+
+    def working(self, text):
+        self._show()
+        self.state, self.text = "working", text
+        self._draw()
+
+    def message(self, text, ms=1600):
+        self._show()
+        self.state, self.text = "message", text
+        self._draw()
+        token = self.started = time.monotonic()
+        self.root.after(ms, lambda: self.started == token and self.state == "message" and self.hide())
+
+    # Drawing ---------------------------------------------------------------
+    def _draw(self):
+        c, W, H = self.canvas, self.W, self.H
+        c.delete("ui")
+        if self.state == "hidden":
+            return
+        if self.state == "recording":
+            speaking = max(self.levels[-4:]) > 0.35
+            dot = BLUE if self.raw else RED
+            pulse = 4 + (1.5 if speaking or (self.tick // 8) % 2 else 0)
+            c.create_oval(20 - pulse, H / 2 - pulse, 20 + pulse, H / 2 + pulse, fill=dot, outline="", tags="ui")
+            x0, step = 38, 6
+            for i, lv in enumerate(self.levels):
+                h = 2 + lv * (H - 16)
+                x = x0 + i * step
+                c.create_rectangle(x, H / 2 - h / 2, x + 3, H / 2 + h / 2, fill=FG if lv > 0.2 else DIM,
+                                   outline="", tags="ui")
+            secs = int(time.monotonic() - self.started)
+            c.create_text(W - 22, H / 2, text=f"{secs // 60}:{secs % 60:02d}", fill=DIM,
+                          font=("TkDefaultFont", 10), tags="ui")
+        else:
+            dots = "." * (1 + (self.tick // 6) % 3) if self.state == "working" else ""
+            c.create_text(W / 2, H / 2, text=f"{self.text}{dots}", fill=FG, font=("TkDefaultFont", 11),
+                          tags="ui")
+
+    def _animate(self):
+        self.tick += 1
+        if self.state in ("recording", "working"):
+            self._draw()
+        self.root.after(50, self._animate)
+
+
+def hyprland_rules():
+    """Round the pill and keep it at the bottom of the focused monitor, once
+    per Hyprland session (runtime rules last until Hyprland reloads its config)."""
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
+    RUN.mkdir(parents=True, exist_ok=True)
+    mark = RUN / f"hypr-rules-{sig}"
+    if mark.exists():
+        return
+    rule = ('o.window({ class = "^[Ll]ocalflow-overlay$" }, { no_focus = true, tag = "-default-opacity", '
+            'opacity = "1 1", rounding = 20, border_size = 0, '
+            'no_shadow = true, '
+            'no_blur = true, no_anim = true, move = "(monitor_w*0.5-window_w*0.5) (monitor_h-window_h-60)" })')
+    try:
+        if subprocess.run(["hyprctl", "eval", rule], capture_output=True, text=True, timeout=2).stdout.strip() == "ok":
+            mark.touch()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+class Headless:
+    """Stand-in for the overlay without Tk: a notification while recording."""
+
+    def __init__(self):
+        self.state = "hidden"
+
+    def _notify(self, text, ms):
+        if SYSTEM == "Linux" and shutil.which("notify-send"):
+            subprocess.Popen(["notify-send", "-a", "localflow", "-t", str(ms), text])
+        elif SYSTEM == "Darwin":
+            subprocess.Popen(["osascript", "-e", f'display notification "{text}" with title "localflow"'])
+
+    def recording(self, raw=False):
+        self.state = "recording"
+        self._notify("Dictating…" + (" (raw)" if raw else ""), 0)
+
+    def push_level(self, value):
+        pass
+
+    def working(self, text):
+        self.state = "working"
+
+    def message(self, text, ms=1600):
+        self._notify(text, ms)
+        self.hide()
+
+    def hide(self):
+        if self.state == "recording" and SYSTEM == "Linux" and shutil.which("omarchy"):
+            subprocess.Popen(["omarchy", "notification", "dismiss", "Dictating"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.state = "hidden"
+
+
+# --- One dictation ------------------------------------------------------------------
+
+class Dictation:
+    """Recording -> transcribe -> clean up -> paste. UI calls go through `ui`,
+    a queue the Tk thread drains, so this works from any thread."""
+
+    def __init__(self, ui, raw=False):
+        self.ui, self.raw, self.busy = ui, raw, False
+        self.recorder = Recorder(lambda chunk: ui.put(("level", level(chunk))))
+
+    def start(self):
+        self.recorder.start()
+        self.ui.put(("recording", self.raw))
+        if not self.raw:
+            warm_cleanup_model()
+
+    def cancel(self):
+        self.recorder.stop()
+        self.ui.put(("hide",))
+        log.info("cancelled")
+
+    def finish(self):
+        """Blocking: run it on a worker thread. Returns how long (ms) the
+        closing message shows, 0 if none."""
+        start = time.monotonic()
+        pcm = self.recorder.stop()
+        secs = len(pcm) / (2 * RATE)
+        if secs < 0.3:
+            self.ui.put(("message", "Too short"))
+            return 1600
+        try:
+            self.ui.put(("working", "Transcribing"))
+            text = transcribe(pcm)
+            t_stt = time.monotonic() - start
+            if not text:
+                self.ui.put(("message", "Nothing heard"))
+                log.info("%.1fs of audio, nothing heard", secs)
+                return 1600
+            if not self.raw:
+                self.ui.put(("working", "Cleaning up"))
+                text = cleanup(text)
+            self.ui.put(("hide",))
+            time.sleep(0.1)
+            pasted = Paste.text(text)
+            log.info("%.1fs of audio: transcribed in %.2fs, done in %.2fs%s", secs, t_stt,
+                     time.monotonic() - start, "" if pasted else " (left on the clipboard)")
+            if not pasted:
+                keys = "Cmd+V" if SYSTEM == "Darwin" else "Ctrl+V"
+                self.ui.put(("message", f"Copied: paste with {keys}", 2500))
+                return 2500
+            return 0
+        except Exception as e:
+            log.exception("dictation failed")
+            self.ui.put(("message", str(e)[:40] or "Something went wrong", 3000))
+            return 3000
+
+
+def make_ui():
+    """(Tk root or None, overlay). Falls back to notifications without Tk."""
+    try:
+        import tkinter
+        if SYSTEM == "Windows":
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp, and real screen coordinates
+            except (AttributeError, OSError):
+                pass
+        root = tkinter.Tk(className="localflow-overlay")
+        root.title("localflow")
+        if SYSTEM == "Darwin":
+            mac_accessory_app()
+        return root, Overlay(root)
+    except Exception as e:
+        log.info("no overlay (%s), using notifications", e)
+        return None, Headless()
+
+
+def mac_accessory_app():
+    """No Dock icon or menu bar, and showing the pill doesn't make Python the active app."""
+    try:
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+        objc.objc_getClass.restype, objc.objc_getClass.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
+        objc.sel_registerName.restype, objc.sel_registerName.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
+        send = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+        app = send(objc.objc_getClass(b"NSApplication"), objc.sel_registerName(b"sharedApplication"))
+        policy = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long)(
+            ("objc_msgSend", objc))
+        policy(app, objc.sel_registerName(b"setActivationPolicy:"), 1)  # NSApplicationActivationPolicyAccessory
+    except Exception as e:
+        log.info("couldn't hide the Dock icon: %s", e)
+
+
+def run_ui(root, overlay, ui, on_tick=None, period=30):
+    """Drain UI requests on the Tk thread (or poll, without Tk)."""
+    def drain():
+        try:
+            while True:
+                op, *args = ui.get_nowait()
+                if op == "level":
+                    overlay.push_level(*args)
+                elif op == "quit":
+                    if root:
+                        root.destroy()
+                    return False
+                else:
+                    getattr(overlay, op)(*args)
+        except queue.Empty:
+            pass
+        if on_tick and on_tick() is False:
+            if root:
+                root.destroy()
+            return False
+        return True
+
+    if root:
+        def loop():
+            if drain():
+                root.after(period, loop)
+        loop()
+        root.mainloop()
+    else:
+        while drain():
+            time.sleep(period / 1000)
+
+
+# --- Linux: one process per dictation, driven by compositor keys ----------------------
+# `start` spawns a session process that records and shows the overlay; `stop`
+# and `cancel` leave a file for it. Files, not signals: a quick tap can send
+# stop before the session has started.
+
+def session_pid():
+    try:
+        pid = int((RUN / "current").read_text())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def cmd_start(raw):
+    RUN.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if session_pid():
+        return
+    STATE.mkdir(parents=True, exist_ok=True)
+    with open(STATE / "dictate.log", "a") as out:
+        p = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_session"] + (["raw"] if raw else []),
+                             stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+    (RUN / "current").write_text(str(p.pid))
+
+
+def cmd_signal(what):
+    for _ in range(20):  # the session may still be starting
+        pid = session_pid()
+        if pid:
+            (RUN / f"{what}-{pid}").touch()
+            return
+        time.sleep(0.05)
+
+
+def cmd_session(raw):
+    setup_logging(to_file=False)  # `start` already sends stderr to the log file
+    ui = queue.Queue()
+    d = Dictation(ui, raw)
+    d.start()  # before the window, so the first words aren't lost
+    root, overlay = make_ui()
+    me = os.getpid()
+    stop_file, cancel_file = RUN / f"stop-{me}", RUN / f"cancel-{me}"
+    state = {"phase": "recording"}
+
+    def release_current():
+        if session_pid() == me:
+            (RUN / "current").unlink(missing_ok=True)
+
+    def tick():
+        if state["phase"] == "recording":
+            if cancel_file.exists():
+                cancel_file.unlink(missing_ok=True)
+                release_current()
+                d.cancel()
+                state["phase"] = "closing"
+                ui.put(("quit",))
+            elif stop_file.exists():
+                stop_file.unlink(missing_ok=True)
+                release_current()  # the next dictation can start while this one finishes
+                state["phase"] = "working"
+
+                def work():
+                    time.sleep(d.finish() / 1000 + 0.1)  # let a closing message show
+                    ui.put(("quit",))
+                threading.Thread(target=work, daemon=True).start()
+            elif time.monotonic() - started > 600:  # forgotten: stop after 10 minutes
+                stop_file.touch()
+        return True
+
+    started = time.monotonic()
+    run_ui(root, overlay, ui, tick)
+    release_current()
+
+
+# --- Windows / macOS: background app with a hotkey -------------------------------------
+
+def cmd_background():
+    setup_logging()
+    lock = socket.socket()
+    try:
+        lock.bind(("127.0.0.1", 11437))  # one instance only
+    except OSError:
+        log.info("already running")
+        return
+    if SYSTEM == "Darwin" and not shutil.which("rec") and not shutil.which("ffmpeg"):
+        log.error("no recorder: `brew install sox`")
+    events, ui = queue.Queue(), queue.Queue()
+    root, overlay = make_ui()
+    current = {"d": None, "pressed": 0.0, "toggle": False, "working": False}
+    listener = windows_hotkey if SYSTEM == "Windows" else mac_hotkey
+
+    def listen():
+        try:
+            listener(events, lambda: current["d"] is not None)
+        except Exception as e:
+            log.error("hotkey: %s", e)
+            events.put(("error", str(e)))
+    threading.Thread(target=listen, daemon=True).start()
+
+    def finish(d):
+        current["working"] = True
+        try:
+            d.finish()
+        finally:
+            current["working"] = False
+
+    def tick():
+        try:
+            while True:
+                ev = events.get_nowait()
+                d = current["d"]
+                if ev == "ready":
+                    log.info("ready: hold %s to dictate", "Ctrl+Shift+Space" if SYSTEM == "Windows"
+                             else "Option+Shift+Space")
+                elif isinstance(ev, tuple):
+                    ui.put(("message", "Hotkey unavailable, see dictate.log", 4000))
+                elif ev == "press":
+                    if d is None and not current["working"]:
+                        try:
+                            current["d"] = Dictation(ui)
+                            current["d"].start()
+                        except Exception as e:
+                            current["d"] = None
+                            log.exception("couldn't start recording")
+                            ui.put(("message", str(e)[:40], 3000))
+                        current["pressed"], current["toggle"] = time.monotonic(), False
+                    elif d is not None and current["toggle"]:
+                        current["d"] = None
+                        threading.Thread(target=finish, args=(d,), daemon=True).start()
+                elif ev == "release" and d is not None:
+                    if time.monotonic() - current["pressed"] < 0.35:
+                        current["toggle"] = True  # a tap: keep recording until the next tap
+                    elif not current["toggle"]:
+                        current["d"] = None
+                        threading.Thread(target=finish, args=(d,), daemon=True).start()
+                elif ev == "escape" and d is not None:
+                    current["d"] = None
+                    d.cancel()
+        except queue.Empty:
+            pass
+        return True
+
+    run_ui(root, overlay, ui, tick)
+
+
+# --- Self-test ----------------------------------------------------------------------------
+
+def foreground():
+    """Something that identifies the focused window, to check the overlay doesn't take focus."""
+    if SYSTEM == "Windows":
+        return ctypes.windll.user32.GetForegroundWindow()
+    if SYSTEM == "Darwin":
+        try:
+            ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")  # NSWorkspace
+            objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+            objc.objc_getClass.restype, objc.objc_getClass.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
+            objc.sel_registerName.restype, objc.sel_registerName.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
+            send = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+            pid = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+            ws = send(objc.objc_getClass(b"NSWorkspace"), objc.sel_registerName(b"sharedWorkspace"))
+            app = send(ws, objc.sel_registerName(b"frontmostApplication"))
+            return pid(app, objc.sel_registerName(b"processIdentifier")) if app else None
+        except Exception:
+            return None
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        r = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True)
+        try:
+            w = json.loads(r.stdout or "{}")
+            return f"{w.get('class')} {w.get('address')}" if w else None
+        except ValueError:
+            return None
+    return None
+
+
+def cmd_selftest(seconds):
+    """Exercise each piece that doesn't need a person: prints one line per check."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    results = []
+
+    def check(name, fn):
+        try:
+            detail = fn()
+            results.append(True)
+            print(f"PASS {name}{': ' + str(detail) if detail else ''}", flush=True)
+        except SkipTest as e:
+            print(f"SKIP {name}: {e}", flush=True)
+        except Exception as e:
+            results.append(False)
+            print(f"FAIL {name}: {type(e).__name__}: {e}", flush=True)
+
+    def wav_roundtrip():
+        pcm = array.array("h", (int(8000 * math.sin(i / 8)) for i in range(RATE))).tobytes()
+        path = Path(tempfile.gettempdir()) / "dictate-selftest.wav"
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1), w.setsampwidth(2), w.setframerate(RATE), w.writeframes(pcm)
+        with wave.open(str(path)) as w:
+            assert (w.getframerate(), w.getnchannels(), w.getnframes()) == (RATE, 1, RATE)
+        path.unlink()
+        assert level(pcm) > 0.5 and level(bytes(3200)) == 0.0
+        return f"loud level {level(pcm):.2f}, silence 0.00"
+
+    def overlay_test():
+        import tkinter  # noqa: F401 (fails loudly without Tk)
+        before = foreground()
+        root, overlay = make_ui()
+        if root is None:
+            raise RuntimeError("Tk didn't start")
+        ui = queue.Queue()
+        steps = [("recording", False)] + [("level", abs(math.sin(i / 3))) for i in range(40)] + \
+                [("working", "Transcribing"), ("working", "Cleaning up"), ("message", "Done")]
+        t0 = time.monotonic()
+        stolen = []
+
+        def tick():
+            if steps:
+                ui.put(steps.pop(0))
+            if overlay.state != "hidden" and foreground() != before and before is not None:
+                stolen.append(foreground())
+            return time.monotonic() - t0 < seconds
+
+        run_ui(root, overlay, ui, tick, period=50)
+        if stolen:
+            raise AssertionError(f"the overlay took focus ({before} -> {stolen[0]})")
+        return "shown recording / transcribing / message, focus unchanged" + ("" if before is not None else
+                                                                             " (focus not checkable here)")
+
+    def clipboard():
+        sample = "localflow ✓ test\nline two"
+        if SYSTEM == "Windows":
+            old = WinClipboard.get()
+            WinClipboard.set(sample.replace("\n", "\r\n"))
+            got = WinClipboard.get().replace("\r\n", "\n")
+            if old is not None:
+                WinClipboard.set(old)
+        elif SYSTEM == "Darwin":
+            env = dict(os.environ, LC_CTYPE="UTF-8")
+            old = subprocess.run(["pbpaste"], capture_output=True, env=env).stdout
+            subprocess.run(["pbcopy"], input=sample.encode(), env=env)
+            got = subprocess.run(["pbpaste"], capture_output=True, env=env).stdout.decode()
+            subprocess.run(["pbcopy"], input=old, env=env)
+        else:
+            if not shutil.which("wl-copy") or not os.environ.get("WAYLAND_DISPLAY"):
+                raise SkipTest("no Wayland clipboard")
+            old = subprocess.run(["wl-paste", "--no-newline"], capture_output=True).stdout
+            quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}  # wl-copy stays running
+            subprocess.run(["wl-copy"], input=sample.encode(), **quiet)
+            got = subprocess.run(["wl-paste", "--no-newline"], capture_output=True).stdout.decode()
+            subprocess.run(["wl-copy"], input=old, **quiet)
+        assert got == sample, repr(got)
+        return "set and read back unicode + newlines"
+
+    def hotkey():
+        if SYSTEM == "Linux":
+            raise SkipTest("Linux uses compositor key bindings")
+        events = queue.Queue()
+        listener = windows_hotkey if SYSTEM == "Windows" else mac_hotkey
+        errors = []
+        threading.Thread(target=lambda: _catch(listener, events, errors), daemon=True).start()
+        for _ in range(40):
+            if not events.empty() or errors:
+                break
+            time.sleep(0.05)
+        if errors:
+            if SYSTEM == "Darwin" and "Accessibility" in errors[0]:
+                raise SkipTest(errors[0])
+            raise RuntimeError(errors[0])
+        assert events.get_nowait() == "ready"
+        return "keyboard hook installed"
+
+    def microphone():
+        chunks = []
+        try:
+            rec = Recorder(chunks.append)
+            rec.start()
+        except Exception as e:
+            raise SkipTest(f"no microphone ({e})")
+        time.sleep(0.6)
+        pcm = rec.stop()
+        if not pcm:
+            raise SkipTest("recorder gave no audio (no microphone?)")
+        return f"{len(pcm) / (2 * RATE):.2f}s recorded, level {level(pcm):.2f}"
+
+    def handy():
+        exe = handy_path()
+        if not exe:
+            raise SkipTest("Handy not installed")
+        return exe
+
+    def cleanup_module():
+        lf = localflow()
+        return f"localflow loaded ({lf.MODEL or 'no model'} via {lf.API_URL or lf.OLLAMA})"
+
+    print(f"dictate self-test on {SYSTEM} {platform.release()}, Python {platform.python_version()}")
+    check("audio and WAV", wav_roundtrip)
+    check("localflow", cleanup_module)
+    check("Handy", handy)
+    check("clipboard", clipboard)
+    check("hotkey", hotkey)
+    check("microphone", microphone)
+    check("overlay", overlay_test)
+    print(f"\n{results.count(False)} failed")
+    return 1 if False in results else 0
+
+
+class SkipTest(Exception):
+    pass
+
+
+def _catch(fn, events, errors):
+    try:
+        fn(events, lambda: False)
+    except Exception as e:
+        errors.append(str(e))
+
+
+def main():
+    args = sys.argv[1:]
+    cmd, rest = (args[0] if args else ""), args[1:]
+    raw = "raw" in rest
+    if cmd == "start":
+        cmd_start(raw)
+    elif cmd == "stop":
+        cmd_signal("stop")
+    elif cmd == "cancel":
+        cmd_signal("cancel")
+    elif cmd == "toggle":
+        cmd_signal("stop") if session_pid() else cmd_start(raw)
+    elif cmd == "_session":
+        cmd_session(raw)
+    elif cmd == "--selftest":
+        sys.exit(cmd_selftest(float(rest[0]) if rest else 3))
+    elif cmd in ("-h", "--help"):
+        print(__doc__.strip())
+    elif cmd == "" and SYSTEM in ("Windows", "Darwin"):
+        cmd_background()
+    else:
+        print(__doc__.strip(), file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
