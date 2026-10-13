@@ -10,6 +10,7 @@
 On macOS the same, from localflow.app/Contents/MacOS/localflow.
 """
 
+import os
 import socket
 import sys
 
@@ -45,7 +46,20 @@ def misplaced():
     return sys.platform == "darwin" and (exe.startswith("/Volumes/") or "/AppTranslocation/" in exe)
 
 
+def clean_child_environment():
+    """On Linux the frozen app points LD_LIBRARY_PATH at its own bundled
+    libraries; programs it starts (Handy, notify-send, the paste tools) must
+    get the system's, or they load ours and fail."""
+    if sys.platform == "linux":
+        original = os.environ.pop("LD_LIBRARY_PATH_ORIG", None)
+        if original is not None:
+            os.environ["LD_LIBRARY_PATH"] = original
+        else:
+            os.environ.pop("LD_LIBRARY_PATH", None)
+
+
 def main():
+    clean_child_environment()
     if sys.stdout is None:
         log_to_file()
     args = sys.argv[1:]
