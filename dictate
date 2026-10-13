@@ -632,7 +632,8 @@ class Overlay:
                 self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
             prev = Mac.frontmost_pid() if SYSTEM == "Darwin" else None
             self.root.deiconify()
-            self.root.lift()
+            if SYSTEM != "Darwin":  # on macOS, raising activates the app; -topmost keeps it above
+                self.root.lift()
             if prev and prev != os.getpid():
                 self.root.update_idletasks()
                 if Mac.frontmost_pid() == os.getpid():
