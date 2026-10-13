@@ -12,6 +12,11 @@ through the real pipeline and check it lands in a text box.
    (injected key presses, on macOS / Windows), the overlay, Handy's
    transcription, the cleanup and the paste. Only the microphone is replaced,
    by the WAV file.
+5. Pastes several pieces in a row, restoring the clipboard once (what dictate
+   does to paste text around a file attachment).
+6. Learning: selects a corrected sentence in the text box and runs what the
+   learn key does; on Windows, also edits a pasted sentence in Notepad and
+   checks it's learned on its own.
 
 Prints PASS / FAIL per step; exits 1 if anything failed.
 """
@@ -157,9 +162,10 @@ def stop_background():
 
 # --- 4. dictate into a text box ---------------------------------------------------------
 
-def target_window(out, flag):
-    """Child process: a focused text box. When `flag` appears, writes what it got
-    to `out` and exits. Logs what happens, for when it doesn't work."""
+def target_window(out, flag, initial=""):
+    """Child process: a focused text box (holding `initial`, selected). When
+    `flag` appears, writes what it got to `out` and exits. Logs what happens,
+    for when it doesn't work."""
     import tkinter
     t0 = time.monotonic()
 
@@ -171,6 +177,9 @@ def target_window(out, flag):
     root.geometry("500x200+100+100")
     text = tkinter.Text(root)
     text.pack(fill="both", expand=True)
+    if initial:
+        text.insert("1.0", initial)
+        text.tag_add("sel", "1.0", "end-1c")
     text.bind("<Key>", lambda e: say(f"key {e.keysym!r} state={e.state}"), add=True)
 
     def grab():
@@ -318,9 +327,76 @@ def dictate_into_text_box(pcm):
     return f"text box got {typed!r} (overlay showed {states})"
 
 
+def with_text_box(action, initial=""):
+    """Run action(dictate module) while a text box in another process has the
+    focus. Returns (what action returned, what the text box got)."""
+    d = load("dictate")
+    out, flag = TMP / f"box-{time.monotonic_ns()}.txt", TMP / f"box-{time.monotonic_ns()}.done"
+    box = subprocess.Popen([sys.executable, __file__, "--target", str(out), str(flag), initial])
+    time.sleep(2.5)  # let it take focus
+    try:
+        result = action(d)
+        time.sleep(1.5)  # let the keys arrive
+    finally:
+        flag.touch()
+    try:
+        box.wait(20)
+    except subprocess.TimeoutExpired:
+        box.kill()
+        raise AssertionError("the text box hung (see its log above)")
+    return result, out.read_text(encoding="utf-8") if out.exists() else ""
+
+
+def references_into_text_box():
+    want = "Look at @src/app.py and ünïcode ✓."
+    ok, got = with_text_box(lambda d: d.Paste.parts([("text", "Look at "), ("text", "@src/app.py"),
+                                                     ("text", " and ünïcode ✓.")]))
+    assert ok and got == want, f"text box got {got!r}, wanted {want!r}"
+    return f"text box got {got!r}"
+
+
+def learn_from_text_box():
+    def learn(d):
+        d.remember("Push it to git hub and ask Claw.")
+        return d.learn_correction()
+
+    message, _ = with_text_box(learn, initial="Push it to GitHub and ask Claw.")
+    assert message.startswith("Learned"), message
+    lf = load("localflow")
+    assert ("GitHub", ["git hub"]) in lf.misheard_hints(), lf.misheard_hints()
+    return f"{message!r}, saved in {lf.USER_WORDS}"
+
+
+def learn_from_edited_notepad():
+    """Windows: paste into Notepad, fix words there, leave it; the watcher reads
+    the box (UI Automation) and learns the fixes."""
+    d = load("dictate")
+    pad = subprocess.Popen(["notepad.exe"])
+    time.sleep(3)
+    pasted = "Ping Sara on slack about the cuber netties cluster."
+    try:
+        d.Paste.text(pasted)
+        time.sleep(1)
+        box = d.WinUIA.get().focused_text()
+        assert box and "cuber netties" in box[1], f"read from Notepad: {box!r}"
+        notes, stamp = [], d.remember(pasted)
+        watcher = threading.Thread(target=d.watch, args=(pasted, box[0], stamp, notes.append), daemon=True)
+        watcher.start()
+        time.sleep(2)
+        d.WinKeys.press(0x41, ctrl=True)  # select all, then paste the fixed version over it
+        d.Paste.text("Ping Sarah on Slack about the Kubernetes cluster.")
+        time.sleep(3)
+    finally:
+        pad.kill()  # you move on: what's left in the box is what you kept
+    subprocess.run(["taskkill", "/f", "/im", "notepad.exe"], capture_output=True)
+    watcher.join(30)
+    assert notes and notes[0].startswith("Learned"), f"learned: {notes}"
+    return f"read Notepad, then {notes[0]!r}"
+
+
 def main():
     if sys.argv[1:2] == ["--target"]:
-        return target_window(sys.argv[2], sys.argv[3])
+        return target_window(*sys.argv[2:5])
     print(f"e2e on {SYSTEM} {platform.release()}, Python {platform.python_version()}")
     api = start_fake_api()
     step("install.py", lambda: install(api))
@@ -330,6 +406,10 @@ def main():
     if pcm:
         step("transcribe with Handy", lambda: f"{load('dictate').transcribe(pcm)!r}")
         step("dictate into a text box", lambda: dictate_into_text_box(pcm))
+    step("several pastes into a text box", references_into_text_box)
+    step("learn from a corrected sentence", learn_from_text_box)
+    if SYSTEM == "Windows":
+        step("learn from a text box on its own", learn_from_edited_notepad)
     print(f"\n{len(failures)} failed: {failures}" if failures else "\nall passed")
     sys.exit(1 if failures else 0)
 

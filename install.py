@@ -675,10 +675,12 @@ def install_dictate(hyprland):
      hl.unbind("F9")
      o.bind("SUPER + CTRL + X", "Toggle dictation", "{DICTATE} toggle")
      o.bind("F9", "Start dictation (push-to-talk)", "{DICTATE} start")
-     o.bind("F9", "Stop dictation (push-to-talk)", "{DICTATE} stop", {{ release = true }})""")
+     o.bind("F9", "Stop dictation (push-to-talk)", "{DICTATE} stop", {{ release = true }})
+     o.bind("F8", "Learn from a dictation correction", "{DICTATE} learn")""")
     else:
         print(f"   Add keyboard shortcuts in your desktop's settings: `{DICTATE} toggle`\n"
-              f"   (or `{DICTATE} start` on press and `{DICTATE} stop` on release).")
+              f"   (or `{DICTATE} start` on press and `{DICTATE} stop` on release), and\n"
+              f"   `{DICTATE} learn` to learn from a correction.")
 
 
 def require(cmd, hint):

@@ -110,6 +110,103 @@ class LocalflowTest(unittest.TestCase):
         finally:
             Path(CONFIG, "localflow", "env").unlink()
 
+    def test_file_list_goes_with_the_dictation(self):
+        lf = self.anthropic()
+        lf.clean("look at the settings file", files=["src/settings.py", "tests/"])
+        turn = FakeAPI.seen[0][2]["messages"][-1]["content"]
+        self.assertIn("<dictation>look at the settings file</dictation>\n<files>\nsrc/settings.py\ntests/\n</files>",
+                      turn if isinstance(turn, str) else turn[0]["text"])
+        lf.clean("call mom")  # no files: no list
+        self.assertNotIn("<files>", FakeAPI.seen[1][2]["messages"][-1]["content"])
+
+    def test_file_refs(self):
+        lf = load("localflow")
+        files = ["install.py", "src/app.py", "tests/"]
+        self.assertEqual(lf.file_refs("Look at @install.py, @src/app.py. And @tests/? Mail me@example.com", files),
+                         [("text", "Look at "), ("file", "install.py"), ("text", ", "), ("file", "src/app.py"),
+                          ("text", ". And "), ("file", "tests/"), ("text", "? Mail me@example.com")])
+        self.assertTrue(lf.plausible("Check @src/a/very/long/path/name/settings.py now.", "check settings now",
+                                     ["src/a/very/long/path/name/settings.py"]))
+
+    def test_learn_corrections(self):
+        lf = load("localflow")
+        self.assertEqual(lf.corrections("Push it to git hub and ask Claw about local flow.",
+                                        "Push it to GitHub and ask Claude about localflow."),
+                         [("git hub", "GitHub"), ("Claw", "Claude"), ("local flow", "localflow")])
+        self.assertEqual(lf.corrections("I think there car is red", "I think their car is red"), [])  # grammar
+        self.assertIsNone(lf.corrections("Push it to git hub", "Something else entirely here"))
+        words = Path(CONFIG, "localflow", "words.txt")
+        try:
+            self.assertEqual(lf.learn([("git hub", "GitHub"), ("slack", "Slack")]),
+                             [("git hub", "GitHub"), ("slack", "Slack")])
+            self.assertEqual(lf.learn([("git hub", "GitHub")]), [])  # already known
+            self.assertEqual(lf.learn([("get hub", "GitHub")]), [("get hub", "GitHub")])
+            self.assertIn('GitHub: often heard as "git hub", "get hub"', words.read_text())
+            self.assertIn(("GitHub", ["git hub", "get hub"]), lf.misheard_hints())
+            self.assertIn("- Slack", lf.rules())
+        finally:
+            words.unlink(missing_ok=True)
+
+    def test_learns_from_what_you_send(self):
+        """After a paste, the edited version you send to Claude Code is found in
+        its transcript; the fixes the model calls mishearings are learned."""
+        d = load("dictate", {"LOCALFLOW_API_URL": self.url, "LOCALFLOW_MODEL": "small", "LOCALFLOW_API_KEY": "k"})
+        home = Path(tempfile.mkdtemp())
+        d.HOME, d.RUN, d.LAST = home, home, home / "last.json"
+        words = Path(CONFIG, "localflow", "words.txt")
+        notes = []
+        try:
+            pasted = "Ask Claw to push it to git hub and ship it tuesday."
+            stamp = d.remember(pasted)
+            watcher = threading.Thread(target=d.watch, args=(pasted, None, stamp, notes.append))
+            watcher.start()
+            threading.Event().wait(0.5)
+            log = home / ".claude/projects/-tmp-proj/session.jsonl"
+            log.parent.mkdir(parents=True)
+            sent = "Ask Claude to push it to GitHub and ship it wednesday. Thanks!"
+            with open(log, "w") as f:
+                f.write(json.dumps({"type": "user", "message": {"role": "assistant", "content": "x"}}) + "\n")
+                f.write(json.dumps({"type": "user", "message": {"role": "user", "content": sent}}) + "\n")
+            watcher.join(10)
+            self.assertFalse(watcher.is_alive())
+            # Claw -> Claude is already in words.txt; the fake model skips "wednesday" (lowercase).
+            self.assertEqual(notes, ["Learned: git hub → GitHub"])
+            self.assertIn(("GitHub", ["git hub"]), d.localflow().misheard_hints())
+            judged = [b for _, _, b in FakeAPI.seen if "CHANGES:" in b["messages"][-1]["content"]]
+            self.assertEqual(len(judged), 1)
+        finally:
+            words.unlink(missing_ok=True)
+
+    def test_sent_messages_from_cursor_chat(self):
+        import sqlite3
+        d = load("dictate")
+        d.HOME = Path(tempfile.mkdtemp())
+        db = Path(CONFIG, "Cursor/User/globalStorage/state.vscdb") if sys.platform != "darwin" else \
+            d.HOME / "Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE IF NOT EXISTS cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)")
+        con.execute("INSERT INTO cursorDiskKV VALUES ('bubbleId:a:1', ?)", (json.dumps({"type": 1, "text": "old"}),))
+        con.commit()
+        try:
+            sent = d.SentMessages()
+            self.assertEqual(sent.new(), [])
+            con.execute("INSERT INTO cursorDiskKV VALUES ('bubbleId:a:2', ?)", (json.dumps({"type": 1, "text": "hi"}),))
+            con.execute("INSERT INTO cursorDiskKV VALUES ('bubbleId:a:3', ?)", (json.dumps({"type": 2, "text": "ai"}),))
+            con.commit()
+            self.assertEqual(sent.new(), ["hi"])
+            self.assertEqual(sent.new(), [])
+        finally:
+            con.close()
+            db.unlink()
+
+    def test_edited_region(self):
+        lf = load("localflow")
+        self.assertEqual(lf.edited_region("Ask Claw to push it to git hub.",
+                                          "Hi. Ask Claude to push it to GitHub. And more text after"),
+                         "Ask Claude to push it to GitHub.")
+        self.assertIsNone(lf.edited_region("Ask Claw to push it to git hub.", "Something unrelated"))
+
     def test_proxy_for_handy(self):
         lf = self.anthropic()
         server = ThreadingHTTPServer(("127.0.0.1", 0), lf.Handler)
@@ -154,8 +251,9 @@ class DictateTest(unittest.TestCase):
                 return pcm
 
         d.Recorder = Mic
+        d.start_watching = lambda *args: None
         d.transcribe = lambda audio: "um call mom tomorrow"
-        d.cleanup = lambda text: "Call mom tomorrow."
+        d.cleanup = lambda text, files=None: "Call mom tomorrow."
         d.warm_cleanup_model = lambda: None
         d.Paste.text = staticmethod(lambda text: pasted.append(text) or True)
         dic = d.Dictation(ui)
@@ -267,6 +365,81 @@ class DictateTest(unittest.TestCase):
         keys.new_dictation = lambda: self.fail("started while busy")
         keys.on("press", 1.0)
         self.assertFalse(keys.recording())
+
+    def test_file_candidates(self):
+        files = ["README.md", "install.py", "src/settings.py", "src/components/Button.tsx",
+                 "tests/test_settings.py", "src/", "src/components/", "tests/"]
+        c = self.d.file_candidates
+        self.assertEqual(c("refer to the install file", files)[0], "install.py")
+        self.assertEqual(c("update the read me", files)[0], "README.md")
+        self.assertEqual(c("check test settings dot py", files)[0], "tests/test_settings.py")
+        self.assertIn("src/components/Button.tsx", c("look at the button component", files))
+        self.assertEqual(c("we need to install the package", files), [])  # no word for a file
+        self.assertEqual(c("look at the file", []), [])
+
+    def test_deliver_by_app(self):
+        d, pasted = self.d, []
+        d.Paste.parts = staticmethod(lambda parts: pasted.append(parts) or True)
+        d.Paste.text = staticmethod(lambda text: pasted.append(text) or True)
+        root = Path(tempfile.mkdtemp())
+
+        def target(kind, cwd=None):
+            t = d.Target.__new__(d.Target)
+            t.kind, t.app, t.project, t.cwd, t.files = kind, "x", root, cwd, []
+            return t
+
+        text, files = "Look at @src/app.py and @tests/ now.", ["src/app.py", "tests/"]
+        d.deliver(text, target("terminal", root), files)
+        self.assertEqual(pasted[-1], "Look at @src/app.py and @tests/ now.")
+        d.deliver(text, target("terminal", root / "src"), files)
+        self.assertEqual(pasted[-1], f"Look at @app.py and @{(root / 'tests').as_posix()}/ now.")
+        d.deliver(text, target("editor"), files)
+        self.assertEqual(pasted[-1], "Look at @src/app.py and @tests/ now.")  # text: nothing typed
+        d.deliver(text, target("other"), files)
+        self.assertEqual(pasted[-1], [("text", "Look at "), ("file", str(root / "src/app.py")),
+                                      ("text", " and @tests/ now.")])  # a folder can't be attached
+        d.deliver("No files here.", None, [])
+        self.assertEqual(pasted[-1], "No files here.")
+
+    def test_editor_project(self):
+        d = self.d
+        base = Path(tempfile.mkdtemp())
+        a, b = base / "alpha", base / "beta"
+        a.mkdir(), b.mkdir()
+        if sys.platform == "darwin":
+            d.HOME, state = base, base / "Library/Application Support/Cursor/User/globalStorage"
+        else:  # XDG_CONFIG_HOME and APPDATA point at CONFIG
+            state = Path(CONFIG, "Cursor/User/globalStorage")
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "storage.json").write_text(json.dumps({"windowsState": {
+            "lastActiveWindow": {"folder": a.as_uri()}, "openedWindows": [{"folder": b.as_uri()}]}}))
+        try:
+            self.assertEqual(d.editor_folders("Cursor"), [a, b])
+            self.assertEqual(d.editor_project("Cursor", "● main.py - beta - Cursor"), b)
+            self.assertEqual(d.editor_project("Cursor", "Welcome - Cursor"), a)  # the last one used
+            t = d.Target("Cursor", "app.py - beta - Cursor")
+            self.assertEqual((t.kind, t.project), ("editor", b))
+        finally:
+            (state / "storage.json").unlink()
+
+    def test_project_files(self):
+        root = Path(tempfile.mkdtemp())
+        for f in ("a.py", "src/b.py", "src/ui/c.tsx", "node_modules/x/y.js", ".hidden/z"):
+            (root / f).parent.mkdir(parents=True, exist_ok=True)
+            (root / f).write_text("")
+        self.assertEqual(sorted(self.d.project_files(root)), ["a.py", "src/", "src/b.py", "src/ui/", "src/ui/c.tsx"])
+        self.assertEqual(self.d.project_root(root / "src"), root / "src")  # no git: the folder itself
+
+    def test_learn_key(self):
+        d, shown = self.d, []
+        keys = d.HotkeyController(lambda: self.fail("no dictation"), lambda dic: None, shown.append,
+                                  learn=lambda: "Learned: Claw → Claude")
+        keys.on("learn", 0.0)
+        for _ in range(100):
+            if shown:
+                break
+            threading.Event().wait(0.01)
+        self.assertEqual(shown, ["Learned: Claw → Claude"])
 
     def test_handy_override(self):
         os.environ["DICTATE_HANDY"] = "/opt/handy"

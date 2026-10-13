@@ -241,6 +241,7 @@ Measured on Linux with Claude Haiku and Handy's Parakeet 0.6B speech model:
 | Idle | ~470 MB RAM, 23 MB GPU | **0** on Linux; ~25 MB on macOS / Windows (waits for the hotkey) |
 | While you talk | ~510 MB RAM + 730 MB GPU | **~31 MB** RAM (overlay + recorder) |
 | Transcribing (~0.5 s) | | ~185 MB RAM + 830 MB GPU |
+| For 3 min after a paste (learning your fixes) | | ~25 MB |
 | Key release to text | ~1.5 s | ~2–2.5 s |
 
 `dictate --selftest` checks the overlay (and that it leaves focus alone), the
@@ -259,6 +260,77 @@ and sign in again (or run `pythonw dictate`).
 **Without a GPU**, pick a small speech model in Handy (Moonshine Base peaks
 at ~210 MB RAM on CPU, Parakeet 0.6B at ~1.2 GB).
 
+### Referring to files
+
+In a coding app, say the file: "can you refer to the install file and check
+why it fails on Mac" pastes "Can you refer to @install.py and check why it
+fails on Mac?", with the reference put in the way the app takes it:
+
+| You're dictating into | A file you name becomes |
+| --- | --- |
+| Cursor, VS Code, Windsurf | `@path`, relative to the project (Cursor's agent and Claude Code read the file from it) |
+| A terminal (Claude Code, Codex, opencode…) | `@path`, relative to where the terminal is |
+| Anything else (a browser, Slack, mail) | the file itself, pasted as an attachment |
+
+While you talk, `dictate` works out the project: the folder open in the
+editor window (from its title and the editor's list of open folders), or the
+terminal's working directory (from its title, else the coding agent or newest
+program running in it). Elsewhere, it's the project you last had open in your
+editor. When what you said mentions a file ("file", "folder", "script", "dot
+py", "read me", "refer", "attach"…), the project's best-matching paths go to
+the cleanup with your words, and it writes `@path` for the ones you meant
+("install the package" stays as said). Only those paths are sent, never file
+contents; raw dictation skips all this.
+
+Tested on Linux with Cursor (its Claude Code panel), Ghostty and Chrome. On
+Windows, a terminal's directory can't be read, so terminals there use the
+editor's project. On macOS, the window title needs the Accessibility
+permission, which `dictate` already asks for.
+
+### Learning from your fixes
+
+When `dictate` gets a word wrong and you fix it, it learns the fix on its
+own. For 3 minutes after each paste (or until your next dictation), it looks
+for the version you kept:
+
+| Where you dictated | How it sees your fix | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Claude Code (terminal or editor panel), Codex | the message you sent, from its transcript | ✅ | ✅ | ✅ |
+| Cursor's chat | the message you sent, from Cursor's chat history | ✅ | ✅ | ✅ |
+| Any other text box | the box itself, once you send it or move on | – | ✅ | ✅ |
+
+Linux apps don't expose their text boxes (Chrome and Electron only do with a
+startup flag), so there it's the first two rows, plus the learn key.
+
+It compares what it pasted with what you kept. The words you changed go to
+the cleanup model, which keeps fixes of misheard words ("Claw" to "Claude",
+"omar key" to "Omarchy", "Sara" to "Sarah") and drops changes of mind
+("Tuesday" to "Wednesday", "Hilton" to "Marriott"). Grammar fixes between
+everyday words ("there" to "their") and rewritten sentences never count.
+Each fix is saved to your vocabulary, `~/.config/localflow/words.txt`
+(`%APPDATA%\localflow\words.txt` on Windows), as `Claude: often heard as
+"Claw"`, and from then on the cleanup writes Claude. A notification (the pill
+on macOS and Windows) says what it learned. The file is plain text: edit or
+delete lines to unlearn.
+
+For anywhere else, or to teach it right away, select the fixed sentence (or
+copy it) and press the learn key, which saves your fixes without asking the
+model:
+
+| Platform | Learn key |
+| --- | --- |
+| macOS | `Option+Shift+L` |
+| Windows | `Ctrl+Alt+Space` |
+| Linux | a key you bind to `dictate learn` (F8 below) |
+
+`LOCALFLOW_LEARN=key` in `~/.config/localflow/env` turns off learning on its
+own (just the key); `off` turns off both. What it reads stays on your
+machine except the changed sentence, which goes to your cleanup model (Haiku
+or Ollama) once, for the check. Nothing is logged. To compare, the last
+pasted text is kept in a temporary folder only you can read, until the next
+dictation replaces it. While it watches, it uses ~25 MB (a background process
+on Linux, a thread in the macOS / Windows app).
+
 ### Linux (Hyprland / Omarchy)
 
 Wayland apps can't grab global keys, so the compositor owns them, and nothing
@@ -272,13 +344,15 @@ o.bind("F9", "Start dictation (push-to-talk)", "~/Projects/localflow/dictate sta
 o.bind("F9", "Stop dictation (push-to-talk)", "~/Projects/localflow/dictate stop", { release = true })
 o.bind("F10", "Start raw dictation (push-to-talk)", "~/Projects/localflow/dictate start raw")
 o.bind("F10", "Stop raw dictation (push-to-talk)", "~/Projects/localflow/dictate stop", { release = true })
+o.bind("F8", "Learn from a dictation correction", "~/Projects/localflow/dictate learn")
 ```
 
 The pill needs Tk (`sudo pacman -S tk`); without it you get a notification.
 On Hyprland, `dictate` adds a window rule at runtime that rounds the pill and
 keeps it at the bottom of the focused monitor. It pastes with `./paste`:
 Ctrl+V in apps, Shift+Insert in terminals, like Omarchy's universal paste,
-restoring your clipboard after.
+and in VS Code-family editors (their chat panels, like Claude Code's in
+Cursor, ignore a synthetic Ctrl+V), restoring your clipboard after.
 
 On other desktops, add custom shortcuts running `dictate toggle` (or
 `dictate start` on press and `dictate stop` on release). Pasting needs
@@ -324,7 +398,9 @@ Claude: the AI assistant, often heard as "Claw" or "clawed"
 Pine Script: TradingView's scripting language, often heard as "Py script"
 ```
 
-It's read on every dictation; no restart needed.
+Your own list, `~/.config/localflow/words.txt`, is read too: the learn key
+adds to it (see [Learning from your fixes](#learning-from-your-fixes)), and
+you can edit it. Both are read on every dictation; no restart needed.
 
 ## Tuning
 
@@ -365,6 +441,12 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
   can check there: `dictate --selftest` on your machine does.
 - `dictate` needs a Handy version with the headless `--transcribe-file` option
   (check with `handy --help`).
+- On Hyprland, apps running through XWayland (Tk's own windows, some older
+  apps) get garbled keys from `wtype`, so pasting into them fails; native
+  Wayland apps (browsers, Cursor, terminals) are fine.
+- File references are found by name: "the install file" finds `install.py`,
+  but a description ("the file with the hotkey code") doesn't. On Windows, a
+  terminal's own folder can't be read (see [Referring to files](#referring-to-files)).
 - Misheard words are only fixed reliably when they're in `words.txt` with a
   hint; from context alone a 4b model often can't tell (Javanese vs Japanese).
 

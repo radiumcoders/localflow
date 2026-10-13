@@ -30,6 +30,9 @@ class FakeAPI(BaseHTTPRequestHandler):
         m = re.search(r"<dictation>(.*)</dictation>", last, re.S)
         text = (m.group(1) if m else last).strip()
         reply = text[:1].upper() + text[1:].rstrip(".") + "."
+        if "CHANGES:" in last:  # judging edits: learn the ones with a capital letter (names)
+            changes = re.findall(r'^(\d+)\. ".*" -> "(.*)"$', last, re.M)
+            reply = json.dumps({"learn": [int(n) for n, new in changes if new[:1].isupper()]})
         if self.path == "/v1/messages":
             if self.headers.get("x-api-key") != "test-key":
                 return self._send(401, {"type": "error", "error": {"type": "authentication_error"}})

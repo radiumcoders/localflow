@@ -14,12 +14,27 @@ bind keys to these commands:
     dictate toggle [raw]    start, or stop if recording
     dictate cancel          stop recording and throw it away
 
+    dictate learn           learn from the dictation you just fixed (see below)
+
 Windows and macOS: run `dictate` once (install.py starts it at login). It
 waits in the background (~25 MB) for the hotkey:
     Ctrl+Shift+Space (Windows), Option+Shift+Space (macOS)
     hold to talk, or tap to start and tap again to stop; Esc cancels
+    Ctrl+Alt+Space (Windows), Option+Shift+L (macOS): learn
 
     dictate --selftest      check the overlay, clipboard, hotkey and microphone
+
+Files: in a coding app, "look at the install file" becomes a reference to
+install.py in the project you have open: @install.py in Cursor, VS Code and
+terminals (Claude Code and other agents read it from there), and the file
+itself, attached, anywhere else (a browser, Slack).
+
+Learning: when dictate gets a word wrong and you fix it, it learns the fix
+on its own: for a few minutes after each paste it watches for the message
+you send (Claude Code, Codex, Cursor's chat; on macOS and Windows, any text
+box) and saves the words you corrected to your vocabulary
+(~/.config/localflow/words.txt), so they're spelled right from then on.
+Elsewhere, select the fixed sentence and press the learn key.
 
 Uses only the Python standard library (Tk for the overlay; without Tk it
 still works, with notifications instead).
@@ -36,6 +51,7 @@ import math
 import os
 import platform
 import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -43,6 +59,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
+import urllib.request
 import wave
 from pathlib import Path
 
@@ -160,12 +178,343 @@ def warm_cleanup_model():
     threading.Thread(target=go, daemon=True).start()
 
 
-def cleanup(text):
+def cleanup(text, files=None):
     try:
-        return localflow().clean(text)
+        return localflow().clean(text, files=files)
     except Exception as e:  # never lose the dictation
         log.warning("cleanup failed, pasting the raw transcript: %s", e)
         return text
+
+
+# --- Where you're dictating: the app, its project, the files you may name ------
+
+# VS Code-family editors by window class (Linux), program (Windows) or bundle
+# id (macOS) -> their settings folder, which lists the projects they have open.
+EDITORS = {
+    "cursor": "Cursor", "cursor.exe": "Cursor", "com.todesktop.230313mzl4w4u92": "Cursor",
+    "code": "Code", "code.exe": "Code", "com.microsoft.vscode": "Code", "code-oss": "Code - OSS",
+    "vscodium": "VSCodium", "codium": "VSCodium", "vscodium.exe": "VSCodium", "com.vscodium": "VSCodium",
+    "windsurf": "Windsurf", "windsurf.exe": "Windsurf", "com.exafunction.windsurf": "Windsurf",
+}
+TERMINALS = re.compile(r"term|kitty|alacritty|ghostty|konsole|tilix|wezterm|foot|iterm|warp|tabby|"
+                       r"^cmd\.exe$|powershell|pwsh|mintty", re.I)
+# Coding agents: in a terminal running several programs, the one you talk to.
+AGENTS = {"claude", "codex", "opencode", "aider", "gemini", "cursor-agent", "amp", "crush", "goose", "qwen"}
+SKIP_DIRS = {"node_modules", "__pycache__", "venv", "dist", "build", "target"}
+
+
+class Target:
+    """The window a dictation started in, and the project open there. kind is
+    "editor" (Cursor, VS Code), "terminal" or "other" (a browser, Slack...)."""
+
+    def __init__(self, app="", title="", pid=None, tags=()):
+        a = (app or "").lower()
+        self.app, self.pid, self.cwd, self.project, self.files = app, pid, None, None, []
+        self.kind = ("editor" if a in EDITORS else
+                     "terminal" if TERMINALS.search(a) or any(t.startswith("terminal") for t in tags) else "other")
+        if self.kind == "editor":
+            self.project = editor_project(EDITORS[a], title)
+        elif self.kind == "terminal" and pid:
+            self.cwd = terminal_cwd(pid, title)
+            self.project = project_root(self.cwd) if self.cwd else None
+        if not self.project:  # no project here (or none we can see): the one you last had open
+            self.project = recent_project()
+        if self.project:
+            self.files = project_files(self.project)
+
+    def __str__(self):
+        return f"{self.kind} {self.app!r}, project {self.project}, {len(self.files)} files"
+
+    def ref(self, path):
+        """How this app takes a reference to `path` (relative to the project):
+        ("text", "@path") pasted, or ("file", absolute path) pasted as an
+        attachment. Editors and terminals get text: nothing is typed, so the
+        focus never moves."""
+        full = self.project / path
+        if self.kind in ("editor", "terminal") or path.endswith("/"):
+            try:
+                shown = full.relative_to(self.cwd or self.project).as_posix()
+            except ValueError:
+                shown = full.as_posix()
+            return "text", "@" + shown + ("/" if path.endswith("/") and not shown.endswith("/") else "")
+        return "file", str(full)
+
+
+def focused_window():
+    """(app, title, pid, tags) of the window you're typing in; app is the window
+    class (Linux), program file (Windows) or bundle id (macOS)."""
+    if SYSTEM == "Windows":
+        return win_focused()
+    if SYSTEM == "Darwin":
+        return Mac.focused()
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        r = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2)
+        w = json.loads(r.stdout or "{}") or {}
+        return w.get("class", ""), w.get("title", ""), w.get("pid"), w.get("tags", [])
+    if os.environ.get("DISPLAY") and shutil.which("xdotool"):
+        get = lambda what: subprocess.run(["xdotool", "getactivewindow", what], capture_output=True,
+                                          text=True, timeout=2).stdout.strip()
+        pid = get("getwindowpid")
+        return get("getwindowclassname"), get("getwindowname"), int(pid) if pid.isdigit() else None, []
+    return "", "", None, []  # other Wayland desktops don't say
+
+
+def win_focused():
+    from ctypes import wintypes
+    u, k = ctypes.WinDLL("user32"), ctypes.WinDLL("kernel32")
+    u.GetForegroundWindow.restype = ctypes.c_void_p
+    u.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+    u.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+    u.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+    k.OpenProcess.restype = ctypes.c_void_p
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.c_wchar_p,
+                                             ctypes.POINTER(wintypes.DWORD)]
+    k.CloseHandle.argtypes = [ctypes.c_void_p]
+    hwnd = u.GetForegroundWindow()
+    if not hwnd:
+        return "", "", None, []
+    title = ctypes.create_unicode_buffer(u.GetWindowTextLengthW(hwnd) + 1)
+    u.GetWindowTextW(hwnd, title, len(title))
+    pid = wintypes.DWORD()
+    u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    exe = ""
+    h = k.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if h:
+        buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+        if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            exe = Path(buf.value).name
+        k.CloseHandle(h)
+    return exe, title.value, pid.value, []
+
+
+def editor_folders(name):
+    """Folders a VS Code-family editor has open or had open, most recent first,
+    from its state files."""
+    if SYSTEM == "Windows":
+        base = Path(os.environ.get("APPDATA", HOME)) / name
+    elif SYSTEM == "Darwin":
+        base = HOME / "Library/Application Support" / name
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / name
+    state, uris = base / "User/globalStorage", []
+    try:
+        d = json.loads((state / "storage.json").read_text(encoding="utf-8"))
+        windows = d.get("windowsState") or {}
+        uris += [w.get("folder") for w in [windows.get("lastActiveWindow") or {}] + windows.get("openedWindows", [])]
+        uris += [f.get("folderUri") for f in (d.get("backupWorkspaces") or {}).get("folders", [])]
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    try:
+        import sqlite3
+        db = sqlite3.connect(f"{(state / 'state.vscdb').as_uri()}?mode=ro", uri=True, timeout=0.5)
+        try:
+            row = db.execute("SELECT value FROM ItemTable WHERE key = 'history.recentlyOpenedPathsList'").fetchone()
+        finally:
+            db.close()
+        if row:
+            uris += [e.get("folderUri") for e in json.loads(row[0]).get("entries", [])]
+    except Exception:
+        pass
+    folders = []
+    for uri in uris:
+        if uri and uri.startswith("file://"):
+            path = Path(urllib.request.url2pathname(urllib.parse.unquote(urllib.parse.urlparse(uri).path)))
+            if path not in folders and path.is_dir():
+                folders.append(path)
+    return folders
+
+
+def editor_project(name, title):
+    """The project in the editor window: its title is "file - folder - Cursor"."""
+    folders = editor_folders(name)
+    parts = [p.strip(" ●") for p in re.split(r" [-—–] ", title or "")]
+    return next((f for f in folders if f.name in parts), folders[0] if folders else None)
+
+
+def recent_project():
+    """The project in the editor you used last, for apps that have none."""
+    found = []
+    for name in sorted(set(EDITORS.values())):
+        folders = editor_folders(name)
+        if folders:
+            base = {"Windows": Path(os.environ.get("APPDATA", HOME)), "Darwin": HOME / "Library/Application Support"
+                    }.get(SYSTEM, Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config"))
+            try:
+                used = (base / name / "User/globalStorage/storage.json").stat().st_mtime
+            except OSError:
+                used = 0
+            found.append((used, folders[0]))
+    return max(found, key=lambda f: f[0])[1] if found else None
+
+
+def processes():
+    """{pid: (parent pid, program name)} for every process."""
+    procs = {}
+    if SYSTEM == "Linux":
+        for d in os.listdir("/proc"):
+            if d.isdigit():
+                try:
+                    with open(f"/proc/{d}/stat") as f:
+                        stat = f.read()
+                    end = stat.rindex(")")
+                    procs[int(d)] = (int(stat[end + 2:].split()[1]), stat[stat.index("(") + 1:end])
+                except (OSError, ValueError, IndexError):
+                    pass
+    else:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,comm="], capture_output=True, text=True, timeout=3).stdout
+        for line in out.splitlines():
+            try:
+                pid, ppid, comm = line.split(None, 2)
+                procs[int(pid)] = (int(ppid), os.path.basename(comm.strip()))
+            except ValueError:
+                pass
+    return procs
+
+
+def cwds(pids):
+    """{pid: working directory} for those of `pids` we can see."""
+    found = {}
+    if SYSTEM == "Linux":
+        for pid in pids:
+            try:
+                found[pid] = Path(os.readlink(f"/proc/{pid}/cwd"))
+            except OSError:
+                pass
+    elif pids and shutil.which("lsof"):
+        out = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fn", "-p", ",".join(map(str, pids))],
+                             capture_output=True, text=True, timeout=3).stdout
+        pid = None
+        for line in out.splitlines():
+            if line.startswith("p"):
+                pid = int(line[1:])
+            elif line.startswith("n") and pid:
+                found[pid] = Path(line[1:])
+    return found
+
+
+def terminal_cwd(pid, title):
+    """The directory you're working in, in a terminal window: one named in its
+    title (many shells put it there), else that of a coding agent running in
+    it, else that of the newest program in it."""
+    for m in re.finditer(r"~?/[^\s:'\"|()]*", title or ""):
+        path = Path(os.path.expanduser(m.group(0)))
+        if len(m.group(0)) > 2 and path != HOME and path.is_dir():
+            return path
+    if SYSTEM == "Windows":
+        return None  # another process's directory isn't readable there
+    procs, children = processes(), {}
+    for p, (parent, _) in procs.items():
+        children.setdefault(parent, []).append(p)
+    under, todo = [], list(children.get(pid, []))
+    while todo:
+        p = todo.pop()
+        under.append(p)
+        todo += children.get(p, [])
+    under.sort(key=lambda p: (procs[p][1] in AGENTS, p), reverse=True)  # agents, then newest
+    found = cwds(under[:30])
+    return next((found[p] for p in under[:30] if p in found), None)
+
+
+def project_root(cwd):
+    """The git repository around `cwd`, or `cwd` itself."""
+    for d in (cwd, *cwd.parents):
+        if (d / ".git").exists():
+            return d
+    return None if cwd == HOME or cwd.parent == cwd else cwd
+
+
+def git_exe():
+    git = shutil.which("git")
+    if SYSTEM == "Darwin" and git == "/usr/bin/git" and not Path("/Library/Developer/CommandLineTools").exists() \
+            and not Path("/Applications/Xcode.app").exists():
+        return None  # the stub that offers to install the developer tools
+    return git
+
+
+def project_files(root, limit=20000):
+    """The project's files and folders ("src/", with a slash), relative to root.
+    Skips what git ignores."""
+    files, git = None, git_exe()
+    if git:
+        try:
+            r = subprocess.run([git, "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
+                               capture_output=True, timeout=3, creationflags=NO_WINDOW)
+            if r.returncode == 0:
+                files = [f for f in r.stdout.decode("utf-8", "replace").split("\0") if f][:limit]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if files is None:  # not a git repository
+        files = []
+        for d, dirs, names in os.walk(root):
+            dirs[:] = [x for x in dirs if x not in SKIP_DIRS and not x.startswith(".")]
+            rel = Path(d).relative_to(root)
+            files += [(rel / n).as_posix() for n in names]
+            if len(files) >= limit:
+                break
+    folders = {"/".join(f.split("/")[:i]) + "/" for f in files for i in range(1, f.count("/") + 1)}
+    return files + sorted(folders)
+
+
+# Words that point at a file; without one, no file list goes to the cleanup.
+FILE_TALK = re.compile(r"\b(?:files?|folders?|director(?:y|ies)|scripts?|modules?|components?|configs?|"
+                       r"read ?me|dot [a-z0-9]{1,5}|attach\w*|refer\w*|mention\w*|tag)\b", re.I)
+# Words around a file's name ("the settings file"), not part of it.
+NAMING = {"the", "a", "an", "file", "files", "folder", "folders", "directory", "script", "module", "component",
+          "config", "to", "at", "and", "in", "of", "on", "my", "our", "this", "that", "look", "refer", "check"}
+
+
+def file_candidates(text, files, limit=12):
+    """The project paths the dictation most likely names, best first; [] when
+    it doesn't sound like it mentions a file."""
+    if not files or not FILE_TALK.search(text):
+        return []
+    compact = lambda t: re.sub(r"[^a-z0-9]", "", t.lower())
+    index = {}
+    for path in files:
+        name = path.rstrip("/").rsplit("/", 1)[-1]
+        stem = name if name.startswith(".") else name.split(".")[0]
+        for key in {compact(name), compact(stem), compact(path)}:
+            if len(key) >= 3:
+                index.setdefault(key, set()).add(path)
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    grams = set()
+    for n in range(1, 5):  # "settings", "dictate dot py", "test local flow", "read me"
+        for i in range(len(words) - n + 1):
+            ws = words[i:i + n]
+            if ws[0] not in NAMING and ws[-1] not in NAMING and ws[-1] != "dot":
+                gram = "".join(w for w in ws if w != "dot")
+                if len(gram) >= 3:
+                    grams.add(gram)
+    score = {}
+    for g in grams:
+        for path in index.get(g, ()):
+            score[path] = max(score.get(path, 0), 2 * len(g))
+    if len(grams) * len(index) <= 400000:  # near misses ("e to e" for e2e, "settings" for setting)
+        import difflib
+        for g in (g for g in grams if len(g) >= 5):
+            for key in difflib.get_close_matches(g, index, n=3, cutoff=0.8):
+                ratio = difflib.SequenceMatcher(None, g, key).ratio()
+                for path in index[key]:
+                    score[path] = max(score.get(path, 0), ratio * len(g))
+    best = sorted(score, key=lambda p: (-score[p], p.count("/"), len(p)))
+    return best[:limit]
+
+
+def deliver(text, target, offered):
+    """Paste the cleaned text, with each @path the cleanup wrote for one of the
+    `offered` files put in the way the app takes it (see Target.ref)."""
+    parts = []
+    for kind, value in (localflow().file_refs(text, offered) if offered and target else [("text", text)]):
+        if kind == "file":
+            kind, value = target.ref(value)
+        if kind == "text" and parts and parts[-1][0] == "text":
+            parts[-1] = ("text", parts[-1][1] + value)
+        else:
+            parts.append((kind, value))
+    if len(parts) == 1 and parts[0][0] == "text":
+        return Paste.text(parts[0][1])
+    return Paste.parts(parts)
 
 
 # --- Microphone ---------------------------------------------------------------
@@ -322,6 +671,46 @@ class Paste:
         return r.returncode == 0
 
     @staticmethod
+    def parts(parts):
+        """Paste [(kind, value)] in order: "text", or "file" (a path) pasted as
+        an attachment. The clipboard is restored once, at the end."""
+        if SYSTEM == "Linux":
+            args = []
+            for kind, value in parts:
+                args += [kind, Path(value).as_uri() if kind == "file" else value]
+            return subprocess.run([str(HERE / "paste"), "--parts", *args]).returncode == 0
+        mac = SYSTEM == "Darwin"
+        if mac:
+            env = dict(os.environ, LC_CTYPE="UTF-8")
+            old = subprocess.run(["pbpaste"], capture_output=True, env=env).stdout
+            try:
+                if not Quartz.lib().AXIsProcessTrusted():
+                    return False
+            except OSError:
+                return False
+        else:
+            old = WinClipboard.get()
+        for kind, value in parts:
+            if kind == "file":
+                Mac.copy_file(value) if mac else WinClipboard.set_files([value])
+            elif mac:
+                subprocess.run(["pbcopy"], input=value.encode(), env=env)
+            else:
+                WinClipboard.set(value.replace("\r\n", "\n").replace("\n", "\r\n"))
+            time.sleep(0.05)
+            Quartz.key(9, Quartz.CMD) if mac else WinKeys.press(0x56, ctrl=True)  # v
+            time.sleep(0.3)  # let the app read the clipboard before it changes
+
+        def restore():
+            time.sleep(1)
+            if mac:
+                subprocess.run(["pbcopy"], input=old, env=env)
+            elif old is not None:
+                WinClipboard.set(old)
+        threading.Thread(target=restore, daemon=True).start()
+        return True
+
+    @staticmethod
     def _mac(text):
         env = dict(os.environ, LC_CTYPE="UTF-8")
         old = subprocess.run(["pbpaste"], capture_output=True, env=env).stdout
@@ -391,12 +780,24 @@ class WinClipboard:
 
     @classmethod
     def set(cls, text):
+        return cls._set(cls.CF_UNICODETEXT, ctypes.create_unicode_buffer(text))
+
+    @classmethod
+    def set_files(cls, paths):
+        """Files on the clipboard, as Explorer's Copy puts them (CF_HDROP)."""
+        names = "".join(str(p) + "\0" for p in paths) + "\0"
+        # DROPFILES: offset of the names, a point, fNC, fWide; then the names in UTF-16.
+        header = (20).to_bytes(4, "little") + bytes(12) + (1).to_bytes(4, "little")
+        data = header + names.encode("utf-16-le")
+        return cls._set(15, ctypes.create_string_buffer(data, len(data)))  # CF_HDROP
+
+    @classmethod
+    def _set(cls, fmt, data):
         u, k = ctypes.windll.user32, ctypes.windll.kernel32
         k.GlobalAlloc.restype, k.GlobalAlloc.argtypes = ctypes.c_void_p, [ctypes.c_uint, ctypes.c_size_t]
         k.GlobalLock.restype, k.GlobalLock.argtypes = ctypes.c_void_p, [ctypes.c_void_p]
         k.GlobalUnlock.argtypes = [ctypes.c_void_p]
         u.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-        data = ctypes.create_unicode_buffer(text)
         size = ctypes.sizeof(data)
         h = k.GlobalAlloc(0x0002, size)  # GMEM_MOVEABLE
         p = k.GlobalLock(h)
@@ -406,9 +807,118 @@ class WinClipboard:
             return False
         try:
             u.EmptyClipboard()
-            return bool(u.SetClipboardData(cls.CF_UNICODETEXT, h))
+            return bool(u.SetClipboardData(fmt, h))
         finally:
             u.CloseClipboard()
+
+
+class WinUIA:
+    """The focused text box's text on Windows, through UI Automation (its COM
+    interfaces, called through their vtables)."""
+    _local = threading.local()
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", ctypes.c_ulong), ("b", ctypes.c_ushort), ("c", ctypes.c_ushort), ("d", ctypes.c_ubyte * 8)]
+
+    class VARIANT(ctypes.Structure):
+        _fields_ = [("vt", ctypes.c_ushort), ("r1", ctypes.c_ushort), ("r2", ctypes.c_ushort),
+                    ("r3", ctypes.c_ushort), ("value", ctypes.c_void_p), ("extra", ctypes.c_void_p)]
+
+    @classmethod
+    def get(cls):
+        """One per thread (COM objects belong to the thread that made them)."""
+        if not hasattr(cls._local, "uia"):
+            cls._local.uia = cls()
+        return cls._local.uia
+
+    def __init__(self):
+        ole = ctypes.WinDLL("ole32")
+        ole.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED; already initialized is fine
+        self.ole, self.oleaut = ole, ctypes.WinDLL("oleaut32")
+        self.oleaut.SysFreeString.argtypes = [ctypes.c_void_p]
+        clsid, iid = self.guid("{ff48dba4-60ef-4201-aa87-54103eef594e}"), self.guid("{30cbe57d-d9d0-452a-ab13-7ac5ac4825ee}")
+        self.uia = ctypes.c_void_p()
+        hr = ole.CoCreateInstance(ctypes.byref(clsid), None, 1, ctypes.byref(iid), ctypes.byref(self.uia))
+        if hr < 0 or not self.uia.value:
+            raise OSError(f"UI Automation unavailable ({hr & 0xFFFFFFFF:#x})")
+
+    def guid(self, text):
+        g = self.GUID()
+        self.ole.CLSIDFromString(ctypes.c_wchar_p(text), ctypes.byref(g))
+        return g
+
+    @staticmethod
+    def call(obj, index, *args, argtypes=()):
+        """Method `index` of a COM object's vtable. Returns the HRESULT."""
+        vtable = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        fn = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)(vtable[index])
+        return fn(obj, *args)
+
+    def release(self, obj):
+        if obj and obj.value:
+            self.call(obj, 2)
+
+    def prop(self, element, prop_id):
+        """A property of an element: an int or a str (None otherwise)."""
+        var = self.VARIANT()
+        if self.call(element, 10, prop_id, ctypes.byref(var), argtypes=(ctypes.c_int, ctypes.POINTER(self.VARIANT))) < 0:
+            return None
+        try:
+            if var.vt == 3:  # VT_I4
+                return ctypes.c_int.from_buffer_copy(ctypes.c_uint64(var.value or 0)).value
+            if var.vt == 8:  # VT_BSTR
+                return ctypes.wstring_at(var.value) if var.value else ""
+            return None
+        finally:
+            self.oleaut.VariantClear(ctypes.byref(var))
+
+    def document_text(self, element):
+        """All the text of an element with the Text pattern (rich text boxes, browsers)."""
+        pattern, doc, bstr = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+        iid = self.guid("{32eba289-3583-42c9-9c59-3b6d9a1e9b6a}")  # IUIAutomationTextPattern
+        try:
+            if self.call(element, 14, 10014, ctypes.byref(iid), ctypes.byref(pattern),  # GetCurrentPatternAs(Text)
+                         argtypes=(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))) < 0 \
+                    or not pattern.value:
+                return None
+            if self.call(pattern, 7, ctypes.byref(doc), argtypes=(ctypes.POINTER(ctypes.c_void_p),)) < 0 \
+                    or not doc.value:  # DocumentRange
+                return None
+            if self.call(doc, 12, -1, ctypes.byref(bstr), argtypes=(ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))) < 0:
+                return None  # GetText(all)
+            return ctypes.wstring_at(bstr.value) if bstr.value else ""
+        finally:
+            if bstr.value:
+                self.oleaut.SysFreeString(bstr)
+            self.release(doc)
+            self.release(pattern)
+
+    def focused_text(self):
+        """(pid, text) of the focused element, if it holds text."""
+        element = ctypes.c_void_p()
+        if self.call(self.uia, 8, ctypes.byref(element), argtypes=(ctypes.POINTER(ctypes.c_void_p),)) < 0 \
+                or not element.value:  # GetFocusedElement
+            return None
+        try:
+            pid = self.prop(element, 30002)  # UIA_ProcessIdPropertyId
+            text = self.prop(element, 30045)  # UIA_ValueValuePropertyId
+            if not text:
+                text = self.document_text(element)
+            return (pid, text) if text else None
+        finally:
+            self.release(element)
+
+
+class WinKeys:
+    """Synthetic key presses on Windows."""
+
+    @staticmethod
+    def press(vk, ctrl=False):
+        u = ctypes.windll.user32
+        keys = ((0x11, 0), (vk, 0), (vk, 2), (0x11, 2)) if ctrl else ((vk, 0), (vk, 2))  # 2: key up
+        for code, up in keys:
+            u.keybd_event(code, 0, up, 0)
+
 
 
 class Quartz:
@@ -448,6 +958,12 @@ class Quartz:
         if src:
             q.CFRelease(src)
 
+    @classmethod
+    def modifiers_held(cls):
+        q = cls.lib()
+        q.CGEventSourceFlagsState.restype, q.CGEventSourceFlagsState.argtypes = ctypes.c_uint64, [ctypes.c_int]
+        return bool(q.CGEventSourceFlagsState(1) & (cls.CMD | cls.SHIFT | cls.ALT | cls.CTRL))
+
 
 # --- Hotkey (Windows, macOS) ------------------------------------------------------
 # Posts "press", "release" and "escape" to a queue. The hotkey's key presses are
@@ -469,7 +985,8 @@ def windows_hotkey(events, recording):
     u.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
     u.GetAsyncKeyState.restype = ctypes.c_short
     k.GetModuleHandleW.restype = ctypes.c_void_p
-    held = [False]
+    held, learn_held = [False], [False]
+    pressed = lambda vk: u.GetAsyncKeyState(vk) & 0x8000
 
     def proc(n, wparam, lparam):
         if n == 0:
@@ -477,8 +994,8 @@ def windows_hotkey(events, recording):
             injected = kb.flags & 0x10 and not os.environ.get("DICTATE_TEST_INJECTED")  # tests send keys
             down = wparam in (0x100, 0x104)  # WM_KEYDOWN, WM_SYSKEYDOWN
             if not injected and kb.vkCode == 0x20:  # space
-                mods = (u.GetAsyncKeyState(0x11) & 0x8000) and (u.GetAsyncKeyState(0x10) & 0x8000)
-                if down and (held[0] or mods):
+                ctrl, shift, alt = pressed(0x11), pressed(0x10), pressed(0x12)
+                if down and (held[0] or (ctrl and shift and not alt)):
                     if not held[0]:
                         held[0] = True
                         events.put("press")
@@ -486,6 +1003,14 @@ def windows_hotkey(events, recording):
                 if not down and held[0]:
                     held[0] = False
                     events.put("release")
+                    return 1
+                if down and (learn_held[0] or (ctrl and alt and not shift)):  # Ctrl+Alt+Space: learn
+                    if not learn_held[0]:
+                        learn_held[0] = True
+                        events.put("learn")
+                    return 1
+                if not down and learn_held[0]:
+                    learn_held[0] = False
                     return 1
             if not injected and kb.vkCode == 0x1B and down and recording():  # Esc
                 events.put("escape")
@@ -516,8 +1041,8 @@ def mac_hotkey(events, recording):
     cf.CFRunLoopGetCurrent.restype = v
     cf.CFRunLoopAddSource.argtypes = [v, v, v]
     modes = v.in_dll(cf, "kCFRunLoopCommonModes")
-    held, tap = [False], [None]
-    KEY_DOWN, KEY_UP, SPACE, ESC = 10, 11, 49, 53
+    held, learn_held, tap = [False], [False], [None]
+    KEY_DOWN, KEY_UP, SPACE, ESC, L = 10, 11, 49, 53, 37
 
     def proc(_proxy, kind, event, _ref):
         if kind in (0xFFFFFFFE, 0xFFFFFFFF):  # tap disabled by timeout or user input: re-enable
@@ -535,6 +1060,16 @@ def mac_hotkey(events, recording):
             if kind == KEY_UP and held[0]:
                 held[0] = False
                 events.put("release")
+                return None
+        if code == L:  # Option+Shift+L: learn
+            if kind == KEY_DOWN and (learn_held[0] or (flags & Quartz.ALT and flags & Quartz.SHIFT
+                                                       and not flags & (Quartz.CMD | Quartz.CTRL))):
+                if not learn_held[0]:
+                    learn_held[0] = True
+                    events.put("learn")
+                return None
+            if kind == KEY_UP and learn_held[0]:
+                learn_held[0] = False
                 return None
         if code == ESC and kind == KEY_DOWN and recording():
             events.put("escape")
@@ -566,7 +1101,7 @@ class Overlay:
     W, H, BARS = 220, 40, 22
 
     def __init__(self, root):
-        self.root, self.levels = root, [0.0] * self.BARS
+        self.root, self.levels, self.checked = root, [0.0] * self.BARS, False
         self.state, self.raw, self.started, self.tick = "hidden", False, 0, 0
         if SYSTEM == "Darwin":
             try:  # a borderless panel that doesn't activate the app (must be set before it's shown)
@@ -658,6 +1193,27 @@ class Overlay:
                 self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
             self.root.deiconify()
             self.root.lift()
+            if self.hyprland and not self.checked:
+                self.checked = True
+                self.root.after(300, self._hyprland_check)
+
+    def _hyprland_check(self):
+        """Hyprland forgets runtime window rules when it reloads its config
+        (editing any of it does that), and without them the pill never shows
+        up. If it isn't showing, add the rules again and show it again."""
+        try:
+            r = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=2)
+            shown = any(c.get("class", "").lower() == "localflow-overlay" and c.get("mapped")
+                        for c in json.loads(r.stdout or "[]"))
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return
+        if not shown and self.state != "hidden":
+            log.info("the overlay's window rules were gone (Hyprland reloaded); adding them again")
+            hyprland_rules(force=True)
+            self.root.withdraw()
+            self.root.update_idletasks()
+            self.root.deiconify()
+            self.root.lift()
 
     def hide(self):
         if SYSTEM == "Windows":
@@ -723,13 +1279,14 @@ class Overlay:
         self.root.after(50, self._animate)
 
 
-def hyprland_rules():
+def hyprland_rules(force=False):
     """Round the pill and keep it at the bottom of the focused monitor, once
-    per Hyprland session (runtime rules last until Hyprland reloads its config)."""
+    per Hyprland session (runtime rules last until Hyprland reloads its config;
+    Overlay._hyprland_check notices that and calls this with force)."""
     sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
     RUN.mkdir(parents=True, exist_ok=True)
     mark = RUN / f"hypr-rules-{sig}"
-    if mark.exists():
+    if mark.exists() and not force:
         return
     rule = ('o.window({ class = "^[Ll]ocalflow-overlay$" }, { no_focus = true, tag = "-default-opacity", '
             'opacity = "1 1", rounding = 20, border_size = 0, '
@@ -784,12 +1341,23 @@ class Dictation:
     def __init__(self, ui, raw=False):
         self.ui, self.raw, self.busy = ui, raw, False
         self.recorder = Recorder(lambda chunk: ui.put(("level", level(chunk))))
+        self.target, self.finder = None, None
 
     def start(self):
         self.recorder.start()
         self.ui.put(("recording", self.raw))
         if not self.raw:
             warm_cleanup_model()
+            # While you speak: which app this goes to, and its project's files.
+            self.finder = threading.Thread(target=self._find_target, daemon=True)
+            self.finder.start()
+
+    def _find_target(self):
+        try:
+            self.target = Target(*focused_window())
+            log.info("dictating into %s", self.target)
+        except Exception as e:
+            log.info("couldn't tell where this goes: %s", e)
 
     def cancel(self):
         self.recorder.stop()
@@ -813,14 +1381,22 @@ class Dictation:
                 self.ui.put(("message", "Nothing heard"))
                 log.info("%.1fs of audio, nothing heard", secs)
                 return 1600
+            files = []
             if not self.raw:
                 self.ui.put(("working", "Cleaning up"))
-                text = cleanup(text)
+                if self.finder:
+                    self.finder.join(3)
+                files = file_candidates(text, self.target.files) if self.target else []
+                text = cleanup(text, files)
             self.ui.put(("hide",))
             time.sleep(0.1)
-            pasted = Paste.text(text)
-            log.info("%.1fs of audio: transcribed in %.2fs, done in %.2fs%s", secs, t_stt,
-                     time.monotonic() - start, "" if pasted else " (left on the clipboard)")
+            pasted = deliver(text, self.target, files)
+            stamp = remember(text)
+            if pasted and not self.raw:
+                start_watching(text, self.target, stamp, self.ui)
+            log.info("%.1fs of audio: transcribed in %.2fs, done in %.2fs%s%s", secs, t_stt,
+                     time.monotonic() - start, f" ({len(files)} files offered)" if files else "",
+                     "" if pasted else " (left on the clipboard)")
             if not pasted:
                 keys = "Cmd+V" if SYSTEM == "Darwin" else "Ctrl+V"
                 self.ui.put(("message", f"Copied: paste with {keys}", 2500))
@@ -911,6 +1487,96 @@ class Mac:
             cls.send(w, b"setIgnoresMouseEvents:", True, argtypes=(ctypes.c_bool,), restype=None)
 
     @classmethod
+    def string(cls, text):
+        return cls.send(cls.cls(b"NSString"), b"stringWithUTF8String:", text.encode(), argtypes=(ctypes.c_char_p,))
+
+    @classmethod
+    def text(cls, obj):
+        """An NSString (or CFString) as a Python str."""
+        raw = cls.send(obj, b"UTF8String", restype=ctypes.c_char_p) if obj else None
+        return raw.decode("utf-8", "replace") if raw else ""
+
+    @classmethod
+    def focused(cls):
+        """(bundle id, window title, pid, []) of the app you're typing in. The
+        title needs the Accessibility permission; without it, it's empty."""
+        ws = cls.send(cls.cls(b"NSWorkspace"), b"sharedWorkspace")
+        app = cls.send(ws, b"frontmostApplication")
+        if not app:
+            return "", "", None, []
+        pid = cls.send(app, b"processIdentifier", restype=ctypes.c_int)
+        bundle = cls.text(cls.send(app, b"bundleIdentifier"))
+        title = ""
+        try:
+            q, v = Quartz.lib(), ctypes.c_void_p
+            q.AXUIElementCreateApplication.restype, q.AXUIElementCreateApplication.argtypes = v, [ctypes.c_int]
+            q.AXUIElementCopyAttributeValue.restype = ctypes.c_int
+            q.AXUIElementCopyAttributeValue.argtypes = [v, v, ctypes.POINTER(v)]
+            element, window, value = q.AXUIElementCreateApplication(pid), v(), v()
+            if element and not q.AXUIElementCopyAttributeValue(element, cls.string("AXFocusedWindow"),
+                                                               ctypes.byref(window)) and window.value:
+                if not q.AXUIElementCopyAttributeValue(window, cls.string("AXTitle"), ctypes.byref(value)) \
+                        and value.value:
+                    title = cls.text(value)
+                    q.CFRelease(value)
+                q.CFRelease(window)
+            if element:
+                q.CFRelease(element)
+        except Exception as e:
+            log.info("no window title: %s", e)
+        return bundle, title, pid, []
+
+    _manual = set()  # apps asked to turn on their accessibility tree
+
+    @classmethod
+    def focused_text(cls):
+        """(pid, text) of the focused text box, through the Accessibility API."""
+        q, v = Quartz.lib(), ctypes.c_void_p
+        q.AXUIElementCreateSystemWide.restype = v
+        q.AXUIElementCreateApplication.restype, q.AXUIElementCreateApplication.argtypes = v, [ctypes.c_int]
+        q.AXUIElementCopyAttributeValue.restype = ctypes.c_int
+        q.AXUIElementCopyAttributeValue.argtypes = [v, v, ctypes.POINTER(v)]
+        q.AXUIElementSetAttributeValue.restype, q.AXUIElementSetAttributeValue.argtypes = ctypes.c_int, [v, v, v]
+        q.AXUIElementGetPid.restype, q.AXUIElementGetPid.argtypes = ctypes.c_int, [v, ctypes.POINTER(ctypes.c_int)]
+        q.CFGetTypeID.restype, q.CFGetTypeID.argtypes = ctypes.c_ulong, [v]
+        q.CFStringGetTypeID.restype = ctypes.c_ulong
+        system, element, value, pid = q.AXUIElementCreateSystemWide(), v(), v(), ctypes.c_int()
+        try:
+            if q.AXUIElementCopyAttributeValue(system, cls.string("AXFocusedUIElement"), ctypes.byref(element)) \
+                    or not element.value:
+                return None
+            q.AXUIElementGetPid(element, ctypes.byref(pid))
+            if pid.value not in cls._manual:
+                # Electron apps (Cursor, Slack...) only fill in their tree when asked.
+                cls._manual.add(pid.value)
+                app = q.AXUIElementCreateApplication(pid.value)
+                if app:
+                    q.AXUIElementSetAttributeValue(app, cls.string("AXManualAccessibility"),
+                                                   v.in_dll(q, "kCFBooleanTrue"))
+                    q.CFRelease(app)
+            if q.AXUIElementCopyAttributeValue(element, cls.string("AXValue"), ctypes.byref(value)) \
+                    or not value.value:
+                return None
+            if q.CFGetTypeID(value) != q.CFStringGetTypeID():
+                return None
+            return pid.value, cls.text(value)
+        finally:
+            for ref in (value, element):
+                if ref.value:
+                    q.CFRelease(ref)
+            if system:
+                q.CFRelease(system)
+
+    @classmethod
+    def copy_file(cls, path):
+        """A file on the clipboard, as Finder's Copy puts it."""
+        url = cls.send(cls.cls(b"NSURL"), b"fileURLWithPath:", cls.string(path), argtypes=(ctypes.c_void_p,))
+        items = cls.send(cls.cls(b"NSArray"), b"arrayWithObject:", url, argtypes=(ctypes.c_void_p,))
+        pb = cls.send(cls.cls(b"NSPasteboard"), b"generalPasteboard")
+        cls.send(pb, b"clearContents", restype=ctypes.c_long)
+        return cls.send(pb, b"writeObjects:", items, argtypes=(ctypes.c_void_p,), restype=ctypes.c_bool)
+
+    @classmethod
     def accessory(cls):
         """No Dock icon or menu bar: dictate is a background helper, not an app you switch to."""
         nsapp = cls.send(cls.cls(b"NSApplication"), b"sharedApplication")
@@ -948,6 +1614,304 @@ def run_ui(root, overlay, ui, on_tick=None, period=30):
     else:
         while drain():
             time.sleep(period / 1000)
+
+
+# --- Learning from your corrections ---------------------------------------------------
+# The last pasted text is kept (readable only by you, in a temporary folder) so
+# the learn key can compare your fixed version with it.
+
+LAST = RUN / "last.json"
+
+
+def remember(text):
+    """Keep `text` as the last dictation. Returns its time stamp."""
+    stamp = time.time()
+    try:
+        RUN.mkdir(parents=True, exist_ok=True)
+        tmp = RUN / f"last-{os.getpid()}.tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+            json.dump({"text": text, "time": stamp}, f)
+        os.replace(tmp, LAST)
+    except OSError as e:
+        log.info("couldn't keep the last dictation: %s", e)
+    return stamp
+
+
+def last_dictation():
+    """(text, time stamp) of the last dictation, or (None, None)."""
+    try:
+        d = json.loads(LAST.read_text(encoding="utf-8"))
+        return d["text"], d["time"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, None
+
+
+def learned_message(added):
+    heard, meant = added[0]
+    shown = f"Learned: {heard} → {meant}"
+    return shown if len(added) == 1 and len(shown) <= 30 else f"Learned {len(added)} word{'s' * (len(added) > 1)}"
+
+
+def selected_text():
+    """Text you may have selected or copied, most likely first. Linux reads the
+    selection directly; macOS and Windows copy it, then restore the clipboard."""
+    def run(cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, timeout=2).stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    if SYSTEM == "Linux":
+        if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"):
+            return [run(["wl-paste", "--primary", "--no-newline"]), run(["wl-paste", "--no-newline"])]
+        if shutil.which("xclip"):
+            return [run(["xclip", "-o", "-selection", s]) for s in ("primary", "clipboard")]
+        return [run(["xsel", "-o", flag]) for flag in ("-p", "-b")]
+    for _ in range(100):  # wait for the learn key's modifiers to be let go, or the copy is Ctrl+Alt+C
+        held = Quartz.modifiers_held() if SYSTEM == "Darwin" else any(
+            ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000 for vk in (0x10, 0x11, 0x12, 0x5B, 0x5C))
+        if not held:
+            break
+        time.sleep(0.02)
+    if SYSTEM == "Darwin":
+        env = dict(os.environ, LC_CTYPE="UTF-8")
+        old = subprocess.run(["pbpaste"], capture_output=True, env=env).stdout
+        Quartz.key(8, Quartz.CMD)  # c
+        time.sleep(0.25)
+        new = subprocess.run(["pbpaste"], capture_output=True, env=env).stdout
+        subprocess.run(["pbcopy"], input=old, env=env)
+        return [new.decode("utf-8", "replace"), old.decode("utf-8", "replace")]
+    old = WinClipboard.get()
+    WinKeys.press(0x43, ctrl=True)  # c
+    time.sleep(0.25)
+    new = WinClipboard.get()
+    if old is not None:
+        WinClipboard.set(old)
+    return [(t or "").replace("\r\n", "\n") for t in (new, old)]
+
+
+def learn_correction():
+    """Compare the text you fixed (selected or copied) with the last dictation
+    and remember the words you changed. Returns a message to show."""
+    last, _ = last_dictation()
+    if last is None:
+        return "Dictate something first"
+    lf = localflow()
+    for text in selected_text():
+        pairs = lf.corrections(last, text) if text.strip() else None
+        if pairs is not None:
+            break
+    else:
+        return "Select the text you fixed"
+    if not pairs:
+        return "No changed words found"
+    added = lf.learn(pairs)
+    log.info("learned %d of %d corrections", len(added), len(pairs))  # not the words
+    return learned_message(added) if added else "Already learned"
+
+
+def cmd_learn():
+    setup_logging()
+    message = learn_correction()
+    root, overlay = make_ui()
+    ui = queue.Queue()
+    ui.put(("message", message, 2500))
+    started = time.monotonic()
+    run_ui(root, overlay, ui, lambda: time.monotonic() - started < 2.7)
+
+
+# --- Learning on its own -----------------------------------------------------------------
+# For a few minutes after each paste, dictate looks for the version you kept:
+# the message you sent to a coding agent or Cursor's chat (from their history
+# files, on every OS), or, on macOS and Windows, the text box itself (through
+# the accessibility API). The words you changed go to the cleanup model, which
+# keeps the fixes of misheard words ("Claw" -> "Claude") and drops changes of
+# mind ("Tuesday" -> "Wednesday"); those are learned. Nothing is logged.
+
+WATCH_SECS = 180
+
+
+def learning():
+    """LOCALFLOW_LEARN: "auto" (default) learns your fixes on its own, "key"
+    only when you press the learn key, "off" never."""
+    localflow()  # reads the env file
+    return os.environ.get("LOCALFLOW_LEARN", "auto").strip().lower()
+
+
+def editor_state_db(name):
+    base = {"Windows": Path(os.environ.get("APPDATA", HOME)), "Darwin": HOME / "Library/Application Support"
+            }.get(SYSTEM, Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config"))
+    return base / name / "User/globalStorage/state.vscdb"
+
+
+class SentMessages:
+    """Messages you send from now on: to Claude Code and Codex (their
+    transcripts) and in Cursor's chat (its database)."""
+    LOGS = (".claude/projects", ".codex/sessions")
+
+    def __init__(self):
+        self.started = time.time()
+        self.offsets = {path: size for path, size in self._logs(self.started - 86400)}
+        self.chats = {}
+        for name in sorted(set(EDITORS.values())):
+            db = editor_state_db(name)
+            try:
+                self.chats[db] = self._query(db, "SELECT max(rowid) FROM cursorDiskKV")[0][0] or 0
+            except Exception:
+                pass  # no such editor, or no chat history in it
+
+    def _logs(self, since):
+        for rel in self.LOGS:
+            root = HOME / rel
+            if root.is_dir():
+                for path in root.rglob("*.jsonl"):
+                    try:
+                        st = path.stat()
+                    except OSError:
+                        continue
+                    if st.st_mtime >= since:
+                        yield path, st.st_size
+
+    @staticmethod
+    def _query(db, sql, *args):
+        import sqlite3
+        con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=0.5)
+        try:
+            return con.execute(sql, args).fetchall()
+        finally:
+            con.close()
+
+    @staticmethod
+    def _user_text(entry):
+        """Text you wrote, from one transcript line (Claude Code or Codex)."""
+        if entry.get("type") == "user" and not entry.get("isMeta"):  # Claude Code
+            content = (entry.get("message") or {}).get("content")
+        elif (entry.get("payload") or {}).get("role") == "user":  # Codex
+            content = entry["payload"].get("content")
+        else:
+            return []
+        if isinstance(content, str):
+            return [content]
+        return [b.get("text", "") for b in content or () if isinstance(b, dict) and b.get("type") in ("text", "input_text")]
+
+    def new(self):
+        """What you sent since the last call."""
+        texts = []
+        for path, size in self._logs(self.started - 5):
+            start = self.offsets.get(path, 0)
+            if size <= start:
+                continue
+            try:
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    data = f.read(size - start)
+            except OSError:
+                continue
+            done = data.rfind(b"\n") + 1  # a line still being written is read next time
+            self.offsets[path] = start + done
+            for line in data[:done].splitlines():
+                try:
+                    texts += self._user_text(json.loads(line))
+                except (ValueError, AttributeError):
+                    pass
+        for db, rowid in self.chats.items():
+            try:
+                rows = self._query(db, "SELECT rowid, value FROM cursorDiskKV WHERE rowid > ? AND key LIKE 'bubbleId:%'",
+                                   rowid)
+            except Exception:
+                continue
+            for row, value in rows:
+                self.chats[db] = max(self.chats[db], row)
+                try:
+                    bubble = json.loads(value)
+                except (ValueError, TypeError):
+                    continue
+                if str(bubble.get("type")) == "1" and bubble.get("text"):  # 1: a message you wrote
+                    texts.append(bubble["text"])
+        return texts
+
+
+def focused_text():
+    """(pid, text) of the text box you're typing in, or None: macOS and Windows."""
+    try:
+        if SYSTEM == "Darwin":
+            return Mac.focused_text()
+        if SYSTEM == "Windows":
+            return WinUIA.get().focused_text()
+    except Exception as e:
+        log.info("can't read the text box: %s", e)
+    return None
+
+
+def learn_on_its_own(pasted, edited, notify):
+    lf = localflow()
+    pairs = lf.corrections(pasted, edited)
+    if not pairs:
+        return
+    try:
+        keep = lf.mishearings(pasted, edited, pairs)
+    except Exception as e:
+        log.info("couldn't check the changes: %s", e)
+        return
+    added = lf.learn(keep)
+    log.info("learned %d of %d changes you made", len(added), len(pairs))  # not the words
+    if added:
+        notify(learned_message(added))
+
+
+def watch(pasted, pid, stamp, notify):
+    """Learn the words you fix in what was just pasted (see above). Stops after
+    WATCH_SECS, at the next dictation, or once it has seen what you kept."""
+    lf, sent, kept = localflow(), SentMessages(), None
+    deadline = time.monotonic() + WATCH_SECS
+    while time.monotonic() < deadline:
+        time.sleep(1.5)
+        if last_dictation()[1] != stamp:
+            break  # a newer dictation took over
+        for text in sent.new():
+            edited = lf.edited_region(pasted, text)
+            if edited is not None:
+                return learn_on_its_own(pasted, edited, notify)
+        box = focused_text()
+        if box and box[0] == pid:
+            edited = lf.edited_region(pasted, box[1])
+            if edited is not None:
+                kept = edited  # still there, maybe being edited
+                continue
+        if kept is not None:  # sent, cleared, or you moved on: what was there is what you kept
+            return learn_on_its_own(pasted, kept, notify)
+    if kept is not None:
+        learn_on_its_own(pasted, kept, notify)
+
+
+def notify_desktop(text):
+    """A desktop notification (Linux, where no overlay is running by then)."""
+    if shutil.which("notify-send"):
+        subprocess.Popen(["notify-send", "-a", "localflow", "-t", "4000", text],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def start_watching(text, target, stamp, ui):
+    """Watch for your fixes to `text` in the background: a thread in the
+    macOS / Windows app, a short-lived process on Linux."""
+    if learning() != "auto":
+        return
+    pid = getattr(target, "pid", None)
+    if SYSTEM == "Linux":
+        STATE.mkdir(parents=True, exist_ok=True)
+        with open(STATE / "dictate.log", "a") as out:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_watch", str(pid or 0), repr(stamp)],
+                             stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+    else:
+        threading.Thread(target=watch, args=(text, pid, stamp, lambda m: ui.put(("message", m, 3000))),
+                         daemon=True).start()
+
+
+def cmd_watch(pid, stamp):
+    setup_logging(to_file=False)  # stderr already goes to the log file
+    text, latest = last_dictation()
+    if text is not None and repr(latest) == stamp:
+        watch(text, int(pid) or None, latest, notify_desktop)
 
 
 # --- Linux: one process per dictation, driven by compositor keys ----------------------
@@ -1032,8 +1996,8 @@ class HotkeyController:
     `finish(d)` finishes one in the background, `message(text)` shows a problem."""
     TAP = 0.35  # a press shorter than this is a tap
 
-    def __init__(self, new_dictation, finish, message):
-        self.new_dictation, self.finish, self.message = new_dictation, finish, message
+    def __init__(self, new_dictation, finish, message, learn=None):
+        self.new_dictation, self.finish, self.message, self.learn = new_dictation, finish, message, learn
         self.d, self.pressed, self.toggle, self.working = None, 0.0, False, False
 
     def recording(self):
@@ -1062,6 +2026,18 @@ class HotkeyController:
         elif event == "escape" and d is not None:
             self.d = None
             d.cancel()
+        elif event == "learn" and d is None and not self.working and self.learn:
+            self.working = True
+
+            def run():
+                try:
+                    self.message(self.learn())
+                except Exception as e:
+                    log.exception("learning failed")
+                    self.message(str(e)[:40])
+                finally:
+                    self.working = False
+            threading.Thread(target=run, daemon=True).start()
 
     def _finish(self, d):
         self.d = None
@@ -1088,7 +2064,7 @@ def cmd_background():
     events, ui = queue.Queue(), queue.Queue()
     root, overlay = make_ui()
     keys = HotkeyController(lambda: Dictation(ui), lambda d: d.finish(),
-                            lambda text: ui.put(("message", text, 3000)))
+                            lambda text: ui.put(("message", text, 3000)), learn_correction)
     listener = windows_hotkey if SYSTEM == "Windows" else mac_hotkey
 
     def listen():
@@ -1104,8 +2080,9 @@ def cmd_background():
             while True:
                 ev = events.get_nowait()
                 if ev == "ready":
-                    log.info("ready: hold %s to dictate", "Ctrl+Shift+Space" if SYSTEM == "Windows"
-                             else "Option+Shift+Space")
+                    log.info("ready: hold %s to dictate, %s to learn a correction",
+                             *(("Ctrl+Shift+Space", "Ctrl+Alt+Space") if SYSTEM == "Windows"
+                               else ("Option+Shift+Space", "Option+Shift+L")))
                 elif isinstance(ev, tuple):
                     ui.put(("message", "Hotkey unavailable, see dictate.log", 4000))
                 else:
@@ -1215,7 +2192,20 @@ def cmd_selftest(seconds):
             got = subprocess.run(["wl-paste", "--no-newline"], capture_output=True).stdout.decode()
             subprocess.run(["wl-copy"], input=old, **quiet)
         assert got == sample, repr(got)
-        return "set and read back unicode + newlines"
+        if SYSTEM == "Windows":  # a file, as for an attachment
+            WinClipboard.set_files([__file__])
+            has_file = bool(ctypes.windll.user32.IsClipboardFormatAvailable(15))  # CF_HDROP
+            if old is not None:
+                WinClipboard.set(old)
+        elif SYSTEM == "Darwin":
+            Mac.copy_file(__file__)
+            info = subprocess.run(["osascript", "-e", "clipboard info"], capture_output=True, text=True).stdout
+            has_file = "furl" in info
+            subprocess.run(["pbcopy"], input=old, env=env)
+        else:
+            return "set and read back unicode + newlines"
+        assert has_file, "no file on the clipboard"
+        return "set and read back unicode + newlines, and a file"
 
     def hotkey():
         if SYSTEM == "Linux":
@@ -1258,10 +2248,23 @@ def cmd_selftest(seconds):
         lf = localflow()
         return f"localflow loaded ({lf.MODEL or 'no model'} via {lf.API_URL or lf.OLLAMA})"
 
+    def text_box():
+        if SYSTEM == "Linux":
+            raise SkipTest("Linux learns from what you send (no text box access)")
+        box = Mac.focused_text() if SYSTEM == "Darwin" else WinUIA.get().focused_text()
+        return f"read {len(box[1])} characters from pid {box[0]}" if box else "no text box focused (read without errors)"
+
+    def target():
+        window = focused_window()
+        t = Target(*window)
+        return f"{t} (title {len(window[1])} chars, pid {window[2]})"
+
     print(f"dictate self-test on {SYSTEM} {platform.release()}, Python {platform.python_version()}")
     check("audio and WAV", wav_roundtrip)
     check("localflow", cleanup_module)
     check("Handy", handy)
+    check("focused app and project", target)
+    check("reading the focused text box", text_box)
     check("clipboard", clipboard)
     check("hotkey", hotkey)
     check("microphone", microphone)
@@ -1293,6 +2296,10 @@ def main():
         cmd_signal("cancel")
     elif cmd == "toggle":
         cmd_signal("stop") if session_pid() else cmd_start(raw)
+    elif cmd == "learn":
+        cmd_learn()
+    elif cmd == "_watch":
+        cmd_watch(*rest[:2])
     elif cmd == "_session":
         cmd_session(raw)
     elif cmd == "--selftest":
