@@ -1,17 +1,20 @@
-"""Build the packaged app: PyInstaller, then the installer (.msi on Windows).
+"""Build the packaged app: PyInstaller, then the installer (.msi on Windows,
+.dmg on macOS).
 
-    pip install pyinstaller==6.11.1 pillow==11.0.0
+    pip install pyinstaller==6.19.0 pillow==11.3.0
     dotnet tool install --global wix --version 5.0.2    # Windows, for the .msi
     python pkg/build.py --version 0.1.0
 
-Writes build/dist/localflow/ (the app) and, on Windows,
-build/localflow-<version>-x64.msi. The scripts have no .py extension, so they
-are copied in as modules for PyInstaller to find their imports.
+Writes the app to build/dist/ and the installer to build/:
+localflow-<version>-x64.msi, or localflow-<version>-<arm64|x64>.dmg. The
+scripts have no .py extension, so they are copied in as modules for
+PyInstaller to find their imports.
 """
 
 import argparse
 import os
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -57,15 +60,47 @@ def stage():
         shutil.copy(PKG / name, STAGE / name)
 
 
-def pyinstaller(png, ico):
+def pyinstaller(png, ico, version):
+    mac = platform.system() == "Darwin"
     data = [ROOT / "words.txt", ROOT / "cases.txt", png] + ([ROOT / "paste"] if platform.system() == "Linux" else [])
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--onedir",
-           "--name", "localflow", "--icon", str(ico), "--paths", str(STAGE),
+           "--name", "localflow", "--icon", str(png if mac else ico), "--paths", str(STAGE),
            "--distpath", str(BUILD / "dist"), "--workpath", str(BUILD / "work"), "--specpath", str(BUILD)]
     for f in data:
         cmd += ["--add-data", f"{f}{os.pathsep}."]
+    if mac:
+        cmd += ["--osx-bundle-identifier", "computer.localflow"]
     subprocess.run(cmd + [str(STAGE / "main.py")], check=True)
-    return BUILD / "dist/localflow"
+    if not mac:
+        return BUILD / "dist/localflow"
+    app = BUILD / "dist/localflow.app"
+    info = app / "Contents/Info.plist"
+    with open(info, "rb") as f:
+        plist = plistlib.load(f)
+    plist.update(CFBundleDisplayName="localflow", CFBundleShortVersionString=version, CFBundleVersion=version,
+                 NSMicrophoneUsageDescription="localflow records what you say while you hold the dictation key, "
+                                              "to turn it into text.",
+                 LSMinimumSystemVersion="11.0")
+    with open(info, "wb") as f:
+        plistlib.dump(plist, f)
+    # Changing Info.plist breaks PyInstaller's ad-hoc signature; sign again (no
+    # Developer ID yet: Gatekeeper asks once, see README).
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True)
+    return app
+
+
+def dmg(app, version):
+    arch = "arm64" if platform.machine() == "arm64" else "x64"
+    out = BUILD / f"localflow-{version}-{arch}.dmg"
+    folder = BUILD / "dmg"
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir()
+    subprocess.run(["ditto", str(app), str(folder / app.name)], check=True)
+    (folder / "Applications").symlink_to("/Applications")  # drag the app onto it
+    out.unlink(missing_ok=True)
+    subprocess.run(["hdiutil", "create", "-volname", "localflow", "-srcfolder", str(folder), "-format", "UDZO",
+                    "-ov", str(out)], check=True)
+    return out
 
 
 def msi(app, ico, version):
@@ -82,10 +117,12 @@ def main():
     BUILD.mkdir(exist_ok=True)
     png, ico = icon()
     stage()
-    app = pyinstaller(png, ico)
+    app = pyinstaller(png, ico, args.version)
     print(f"app: {app}")
     if platform.system() == "Windows":
         print(f"installer: {msi(app, ico, args.version)}")
+    elif platform.system() == "Darwin":
+        print(f"installer: {dmg(app, args.version)}")
 
 
 if __name__ == "__main__":

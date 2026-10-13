@@ -185,13 +185,15 @@ def install_ollama(rocm):
         print("   already running")
         return
     if SYSTEM == "Darwin":
-        if Path("/Applications/Ollama.app").exists():
-            run("open", "-a", "Ollama")  # the app starts the server and keeps it running
-        else:
-            require("brew", "Install Homebrew (https://brew.sh) or Ollama from https://ollama.com/download")
+        app = next((a for a in (Path("/Applications/Ollama.app"), HOME / "Applications/Ollama.app") if a.exists()), None)
+        if not app and have("brew") and not FROZEN:
             if subprocess.run(["brew", "list", "ollama"], capture_output=True).returncode != 0:
                 run("brew", "install", "ollama")
             run("brew", "services", "start", "ollama")
+        else:
+            if not app:
+                app = install_ollama_mac_app()
+            run("open", "-a", app)  # the app starts the server and keeps it running
     elif SYSTEM == "Windows":
         exe = shutil.which("ollama") or Path(os.environ["LOCALAPPDATA"]) / "Programs/Ollama/ollama.exe"
         if not Path(exe).exists() and have("winget"):
@@ -208,6 +210,18 @@ def install_ollama(rocm):
         install_ollama_linux(rocm)
     if not wait_for(f"{OLLAMA_URL}/api/version"):
         sys.exit("Ollama didn't start; check it, then re-run install.py")
+
+
+def install_ollama_mac_app():
+    """Without Homebrew: Ollama's app from GitHub, into /Applications (or ~/Applications)."""
+    archive = Path(tempfile.gettempdir()) / "Ollama-darwin.zip"
+    download(latest_asset("ollama/ollama", "Ollama-darwin.zip"), archive)
+    for dest in (Path("/Applications"), HOME / "Applications"):
+        dest.mkdir(exist_ok=True)
+        if subprocess.run(["ditto", "-x", "-k", str(archive), str(dest)]).returncode == 0 and \
+                (dest / "Ollama.app").exists():
+            return dest / "Ollama.app"
+    sys.exit("Ollama didn't install; install it from https://ollama.com/download, then re-run")
 
 
 def install_ollama_linux(rocm):
@@ -746,9 +760,8 @@ def install_dictate(hyprland):
             SYSTEM, "sudo pacman -S tk  /  sudo apt install python3-tk  /  sudo dnf install python3-tkinter")
         print(f"   no Tk for {py}: dictate will use notifications instead of the overlay ({hint})")
     if SYSTEM == "Darwin":
-        if not have("rec") and not have("ffmpeg"):
-            require("brew", "Install sox (https://sox.sourceforge.net) for recording")
-            run("brew", "install", "sox")
+        if not FROZEN and not have("rec") and not have("ffmpeg") and have("brew"):
+            run("brew", "install", "sox")  # without it (and in the app), dictate records through AudioQueue
         plist = HOME / "Library/LaunchAgents/computer.localflow.dictate.plist"
         plist.parent.mkdir(parents=True, exist_ok=True)
         path = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])
@@ -756,7 +769,7 @@ def install_dictate(hyprland):
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>computer.localflow.dictate</string>
-  <key>ProgramArguments</key><array><string>{py}</string><string>{DICTATE}</string></array>
+  <key>ProgramArguments</key><array>{"".join(f"<string>{a}</string>" for a in dictate_cmd("--background"))}</array>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -767,9 +780,9 @@ def install_dictate(hyprland):
         subprocess.run(["launchctl", "bootout", domain, str(plist)], capture_output=True)
         time.sleep(1)
         run("launchctl", "bootstrap", domain, plist)
-        print(f"   allow {py} in System Settings > Privacy & Security > Accessibility (hotkey and\n"
-              "   paste) and Microphone (asked on first use), then: launchctl kickstart -k "
-              f"{domain}/computer.localflow.dictate")
+        who = "localflow" if FROZEN else py
+        print(f"   allow {who} in System Settings > Privacy & Security > Accessibility (hotkey and\n"
+              "   paste; macOS asks) and Microphone (asked on first use)")
     elif SYSTEM == "Windows":
         startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
         if FROZEN:  # the .msi starts the app at sign-in; drop a script install's entry

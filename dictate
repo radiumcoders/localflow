@@ -647,8 +647,86 @@ class WinRecorder:
         return b"".join(self.chunks)
 
 
+class MacRecorder:
+    """16 kHz mono s16 audio from the default microphone through AudioToolbox's
+    AudioQueue (macOS), so the app needs no sox. macOS asks to allow the
+    microphone the first time."""
+
+    class ASBD(ctypes.Structure):  # AudioStreamBasicDescription
+        _fields_ = [("mSampleRate", ctypes.c_double), ("mFormatID", ctypes.c_uint32),
+                    ("mFormatFlags", ctypes.c_uint32), ("mBytesPerPacket", ctypes.c_uint32),
+                    ("mFramesPerPacket", ctypes.c_uint32), ("mBytesPerFrame", ctypes.c_uint32),
+                    ("mChannelsPerFrame", ctypes.c_uint32), ("mBitsPerChannel", ctypes.c_uint32),
+                    ("mReserved", ctypes.c_uint32)]
+
+    class Buffer(ctypes.Structure):  # AudioQueueBuffer
+        _fields_ = [("mAudioDataBytesCapacity", ctypes.c_uint32), ("mAudioData", ctypes.c_void_p),
+                    ("mAudioDataByteSize", ctypes.c_uint32), ("mUserData", ctypes.c_void_p),
+                    ("mPacketDescriptionCapacity", ctypes.c_uint32), ("mPacketDescriptions", ctypes.c_void_p),
+                    ("mPacketDescriptionCount", ctypes.c_uint32)]
+
+    # AudioQueueInputCallback(user data, queue, buffer, start time, packet count, packet descriptions)
+    CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(Buffer),
+                                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p)
+
+    def __init__(self, on_chunk):
+        self.on_chunk, self.chunks, self.stopping = on_chunk, [], False
+        at = self.at = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")
+        v, buf = ctypes.c_void_p, ctypes.POINTER(self.Buffer)
+        for name, args in [("AudioQueueNewInput", [ctypes.POINTER(self.ASBD), self.CALLBACK, v, v, v, ctypes.c_uint32,
+                                                   ctypes.POINTER(v)]),
+                           ("AudioQueueAllocateBuffer", [v, ctypes.c_uint32, ctypes.POINTER(buf)]),
+                           ("AudioQueueEnqueueBuffer", [v, buf, ctypes.c_uint32, v]),
+                           ("AudioQueueStart", [v, v]),
+                           ("AudioQueueStop", [v, ctypes.c_ubyte]),
+                           ("AudioQueueDispose", [v, ctypes.c_ubyte])]:
+            fn = getattr(at, name)
+            fn.argtypes, fn.restype = args, ctypes.c_int32  # OSStatus
+
+    def _check(self, rc):
+        if rc:
+            raise RuntimeError(f"couldn't open the microphone (AudioQueue error {rc})")
+
+    def start(self):
+        at = self.at
+        # Linear PCM, signed integer | packed
+        fmt = self.ASBD(RATE, 0x6C70636D, 0x4 | 0x8, 2, 1, 2, 1, 16, 0)
+        self.callback = self.CALLBACK(self._filled)  # kept alive while the queue runs
+        self.queue = ctypes.c_void_p()
+        self._check(at.AudioQueueNewInput(ctypes.byref(fmt), self.callback, None, None, None, 0,
+                                          ctypes.byref(self.queue)))
+        for _ in range(4):
+            buf = ctypes.POINTER(self.Buffer)()
+            self._check(at.AudioQueueAllocateBuffer(self.queue, RATE * 2 // 20, ctypes.byref(buf)))  # 50 ms
+            at.AudioQueueEnqueueBuffer(self.queue, buf, 0, None)
+        rc = at.AudioQueueStart(self.queue, None)
+        if rc:
+            at.AudioQueueDispose(self.queue, 1)
+            self._check(rc)
+
+    def _filled(self, _user, queue, buf, _time, _packets, _descs):
+        b = buf.contents
+        data = ctypes.string_at(b.mAudioData, b.mAudioDataByteSize) if b.mAudioDataByteSize else b""
+        if data:
+            self.chunks.append(data)
+            self.on_chunk(data)
+        if not self.stopping:
+            self.at.AudioQueueEnqueueBuffer(queue, buf, 0, None)
+
+    def stop(self):
+        self.stopping = True
+        self.at.AudioQueueStop(self.queue, 1)
+        self.at.AudioQueueDispose(self.queue, 1)
+        pcm = b"".join(self.chunks)
+        return pcm[:len(pcm) // 2 * 2]
+
+
 def Recorder(on_chunk):
-    return WinRecorder(on_chunk) if SYSTEM == "Windows" else PipeRecorder(on_chunk)
+    if SYSTEM == "Windows":
+        return WinRecorder(on_chunk)
+    if SYSTEM == "Darwin" and (FROZEN or not shutil.which("rec") and not shutil.which("ffmpeg")):
+        return MacRecorder(on_chunk)  # the app, or no sox: macOS's own audio API
+    return PipeRecorder(on_chunk)
 
 
 def level(chunk):
@@ -953,6 +1031,27 @@ class Quartz:
         return cls._lib
 
     @classmethod
+    def ask_accessibility(cls):
+        """macOS's own prompt to allow this app under Accessibility; it also
+        lists the app there, ready to switch on."""
+        try:
+            q = cls.lib()
+            cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            v = ctypes.c_void_p
+            cf.CFDictionaryCreate.restype = v
+            cf.CFDictionaryCreate.argtypes = [v, v, v, ctypes.c_long, v, v]
+            q.AXIsProcessTrustedWithOptions.restype = ctypes.c_bool
+            q.AXIsProcessTrustedWithOptions.argtypes = [v]
+            keys = (v * 1)(v.in_dll(q, "kAXTrustedCheckOptionPrompt").value)
+            values = (v * 1)(v.in_dll(cf, "kCFBooleanTrue").value)
+            options = cf.CFDictionaryCreate(None, keys, values, 1,
+                                            ctypes.addressof(ctypes.c_char.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")),
+                                            ctypes.addressof(ctypes.c_char.in_dll(cf, "kCFTypeDictionaryValueCallBacks")))
+            q.AXIsProcessTrustedWithOptions(options)
+        except (OSError, ValueError) as e:
+            log.info("couldn't ask for Accessibility: %s", e)
+
+    @classmethod
     def key(cls, code, flags):
         q = cls.lib()
         src = q.CGEventSourceCreate(1)  # kCGEventSourceStateHIDSystemState
@@ -1086,8 +1185,15 @@ def mac_hotkey(events, recording):
     mask = (1 << KEY_DOWN) | (1 << KEY_UP)
     tap[0] = q.CGEventTapCreate(1, 0, 0, mask, cb, None)  # session tap, head insert, default (can swallow)
     if not tap[0]:
-        raise OSError("no keyboard access: allow this Python in System Settings > Privacy & Security > "
-                      "Accessibility, then restart dictate")
+        who = "localflow" if FROZEN else "this Python"
+        msg = f"no keyboard access: allow {who} in System Settings > Privacy & Security > Accessibility"
+        log.error("hotkey: %s", msg)
+        events.put(("error", msg))
+        Quartz.ask_accessibility()
+        while not tap[0]:  # allowing it takes effect without a restart
+            time.sleep(2)
+            tap[0] = q.CGEventTapCreate(1, 0, 0, mask, cb, None)
+        log.info("keyboard access allowed")
     source = cf.CFMachPortCreateRunLoopSource(None, tap[0], 0)
     cf.CFRunLoopAddSource(cf.CFRunLoopGetCurrent(), source, modes)
     q.CGEventTapEnable(tap[0], True)
@@ -2065,8 +2171,6 @@ def cmd_background():
     except OSError:
         log.info("already running")
         return
-    if SYSTEM == "Darwin" and not shutil.which("rec") and not shutil.which("ffmpeg"):
-        log.error("no recorder: `brew install sox`")
     events, ui = queue.Queue(), queue.Queue()
     root, overlay = make_ui()
     keys = HotkeyController(lambda: Dictation(ui), lambda d: d.finish(),
@@ -2090,7 +2194,8 @@ def cmd_background():
                              *(("Ctrl+Shift+Space", "Ctrl+Alt+Space") if SYSTEM == "Windows"
                                else ("Option+Shift+Space", "Option+Shift+L")))
                 elif isinstance(ev, tuple):
-                    ui.put(("message", "Hotkey unavailable, see dictate.log", 4000))
+                    ui.put(("message", "Allow localflow under Accessibility" if "Accessibility" in ev[1]
+                            else "Hotkey unavailable, see dictate.log", 6000))
                 else:
                     keys.on(ev)
         except queue.Empty:
@@ -2225,11 +2330,14 @@ def cmd_selftest(seconds):
             if not events.empty() or errors:
                 break
             time.sleep(0.05)
+        first = None if events.empty() else events.get_nowait()
+        if isinstance(first, tuple):  # macOS without Accessibility: it waits for it
+            errors.append(first[1])
         if errors:
             if SYSTEM == "Darwin" and "Accessibility" in errors[0]:
                 raise SkipTest(errors[0])
             raise RuntimeError(errors[0])
-        assert events.get_nowait() == "ready"
+        assert first == "ready", first
         return "keyboard hook installed"
 
     def microphone():
@@ -2313,7 +2421,7 @@ def main():
         sys.exit(cmd_selftest(float(rest[0]) if rest else 3))
     elif cmd in ("-h", "--help"):
         print(__doc__.strip())
-    elif cmd == "" and SYSTEM in ("Windows", "Darwin"):
+    elif cmd in ("", "--background") and SYSTEM in ("Windows", "Darwin"):
         cmd_background()
     else:
         print(__doc__.strip(), file=sys.stderr)

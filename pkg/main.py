@@ -5,7 +5,9 @@
     localflow.exe setup            # the setup window
     localflow.exe install ARGS     # setup without the window: install.py's options
     localflow.exe localflow ARGS   # the cleanup script: localflow --check, ...
-    localflow.exe ARGS             # dictate's commands: --selftest, ...
+    localflow.exe ARGS             # dictate's commands: --selftest, --background, ...
+
+On macOS the same, from localflow.app/Contents/MacOS/localflow.
 """
 
 import socket
@@ -36,10 +38,24 @@ def running():
         s.close()
 
 
+def misplaced():
+    """macOS: opened from the disk image (or a quarantined copy macOS runs from
+    a random place), so login items would point at something that goes away."""
+    exe = sys.executable
+    return sys.platform == "darwin" and (exe.startswith("/Volumes/") or "/AppTranslocation/" in exe)
+
+
 def main():
     if sys.stdout is None:
         log_to_file()
     args = sys.argv[1:]
+    if not args and misplaced():
+        import tkinter
+        from tkinter import messagebox
+        tkinter.Tk().withdraw()
+        messagebox.showinfo("localflow", "Drag localflow into your Applications folder first, "
+                                         "then open it from there.")
+        return
     if args[:1] == ["localflow"]:
         import localflow
         localflow.main(args[1:])
