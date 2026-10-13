@@ -395,6 +395,9 @@ def learn_from_edited_notepad():
 
 
 def main():
+    # Windows consoles are cp1252: printing "✓" or "→" would crash the test, not dictate.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     if sys.argv[1:2] == ["--target"]:
         return target_window(*sys.argv[2:5])
     print(f"e2e on {SYSTEM} {platform.release()}, Python {platform.python_version()}")
