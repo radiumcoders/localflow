@@ -101,10 +101,13 @@ machine.
 VRAM (NVIDIA, AMD or Apple Silicon) for fast long dictation. Without a GPU,
 `--model qwen3.5:2b` roughly halves the wait.
 
-**Software:** Python 3.9+ and git. On Linux also `curl` and `zstd` (to unpack
-Ollama), an x86-64 CPU, and Handy's own needs (`webkit2gtk-4.1`,
-`gtk-layer-shell`); on Hyprland the paste helper needs `wl-clipboard` and
-`wtype` (Omarchy ships all of these).
+**Software:** Python 3.9+ with Tk (python.org and winget Pythons include
+it; Homebrew: `brew install python-tk@3.x`; Arch: `tk`; Debian/Ubuntu:
+`python3-tk`) and git. On macOS, `install.py` adds `sox` for recording
+(Homebrew). On Linux also `curl` and `zstd` (to unpack Ollama, not needed with
+`--api`), PipeWire (`pw-record`) or ALSA (`arecord`) for recording, Handy's
+own needs (`webkit2gtk-4.1`), and for pasting `wl-clipboard` + `wtype` on
+Wayland or `xclip` + `xdotool` on X11 (Omarchy ships all of these).
 
 ## Install
 
@@ -123,9 +126,12 @@ python3 install.py                      # Windows: py install.py
    pulls Ollama's MLX build, **qwen3.5:4b-mlx**, which runs faster there, and
    falls back to the regular one if that can't run. Optional: `--model
    qwen3.5:2b` for a faster, less accurate one
-3. installs Handy if missing (Homebrew cask, winget, or the AppImage on
-   Linux) for its speech engine. The first time, it opens Handy so you can
-   download a speech model; quit Handy and re-run
+3. installs Handy if missing, for its speech engine: Homebrew cask or the
+   `.dmg` on macOS, winget or the installer on Windows, the AppImage on Linux
+   (x64 and arm64). It downloads a speech model if none is there: Handy's
+   recommended one, or the one you name with `--speech-model` (see `handy
+   --list-models`; e.g. `handy-computer/moonshine-base-gguf/moonshine-base-Q8_0.gguf`
+   for a 73 MB one on machines without a GPU)
 4. sets up [`dictate`](#dictating): on macOS and Windows it starts at login
    (launchd / the Startup folder); on Linux it prints the key bindings to add.
    On macOS it also installs `sox` for recording
@@ -251,9 +257,12 @@ keeps it at the bottom of the focused monitor. It pastes with `./paste`:
 Ctrl+V in apps, Shift+Insert in terminals, like Omarchy's universal paste,
 restoring your clipboard after.
 
-On GNOME/KDE, add custom shortcuts running `dictate toggle`. If the paste
-keys can't be sent there, the text stays on the clipboard and the pill says
-so.
+On other desktops, add custom shortcuts running `dictate toggle` (or
+`dictate start` on press and `dictate stop` on release). Pasting needs
+`wl-clipboard` + `wtype` on Wayland, or `xclip` (or `xsel`) + `xdotool` on
+X11. Where the paste keys can't be sent (GNOME's Wayland session doesn't
+allow `wtype`), the text stays on the clipboard and the pill says so: press
+Ctrl+V.
 
 ### With the Handy app (`install.py --handy-app`)
 
@@ -323,10 +332,14 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
   the proxy service (they point at it); re-run `install.py` from the new place.
 - On Linux, Handy runs from an extracted AppImage, so Handy's in-app updates
   don't apply. To update: delete `~/.local/share/handy` and re-run `install.py`.
-- Everything is tested by hand on Linux (Arch/Omarchy, Hyprland). On macOS
-  and Windows, CI runs the unit tests and `dictate --selftest` (overlay,
-  focus, clipboard, hotkey hook), but recording, Handy's headless
-  transcription and the paste keys haven't been tried by a person yet.
+- Tested by hand on Linux (Arch/Omarchy, Hyprland). CI tests every push on
+  fresh Ubuntu, macOS and Windows machines: the unit tests, `dictate
+  --selftest`, and `tests/e2e.py`, which runs `install.py`, speaks a sentence
+  with the OS's text-to-speech and dictates it into a text box through the
+  hotkey, the overlay, Handy's transcription, the cleanup and the paste.
+  CI machines have no microphone, so recording (sox on macOS, winmm on
+  Windows) is the one piece only a person can check there:
+  `dictate --selftest` on your machine does.
 - `dictate` needs a Handy version with the headless `--transcribe-file` option
   (check with `handy --help`).
 - Misheard words are only fixed reliably when they're in `words.txt` with a
@@ -341,5 +354,5 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
 | `words.txt` | your names/terms, with optional mishearing hints |
 | `cases.txt` | eval cases |
 | `dictate` | the dictation app: overlay, hotkey, recording, transcription, cleanup, paste |
-| `tests/` | `python -m unittest discover -s tests` (no key, model or microphone needed) |
+| `tests/` | `python -m unittest discover -s tests` (no key, model or microphone needed); `e2e.py`, the install-and-dictate test CI runs |
 | `paste` | Linux/Hyprland paste helper for Handy and `dictate` |
