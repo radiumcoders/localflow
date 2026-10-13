@@ -157,14 +157,21 @@ def stop_background():
 
 # --- 4. dictate into a text box ---------------------------------------------------------
 
-def target_window(out, seconds):
-    """Child process: a focused text box; writes what it got to `out` when done."""
+def target_window(out, flag):
+    """Child process: a focused text box. When `flag` appears, writes what it got
+    to `out` and exits. Logs what happens, for when it doesn't work."""
     import tkinter
+    t0 = time.monotonic()
+
+    def say(msg):
+        print(f"  [text box {time.monotonic() - t0:5.1f}s] {msg}", flush=True)
+
     root = tkinter.Tk()
     root.title("e2e target")
     root.geometry("500x200+100+100")
     text = tkinter.Text(root)
     text.pack(fill="both", expand=True)
+    text.bind("<Key>", lambda e: say(f"key {e.keysym!r} state={e.state}"), add=True)
 
     def grab():
         root.lift()
@@ -177,14 +184,20 @@ def target_window(out, seconds):
             u.SetForegroundWindow(hwnd)
         root.focus_force()
         text.focus_set()
+        say(f"focus: {root.focus_get()}")
 
-    def done():
-        Path(out).write_text(text.get("1.0", "end").strip(), encoding="utf-8")
-        root.destroy()
+    def poll():
+        if Path(flag).exists() or time.monotonic() - t0 > 170:
+            got = text.get("1.0", "end").strip()
+            say(f"done, got {got!r}")
+            Path(out).write_text(got, encoding="utf-8")
+            root.destroy()
+        else:
+            root.after(200, poll)
 
     root.after(300, grab)
     root.after(1500, grab)
-    root.after(int(seconds * 1000), done)
+    root.after(200, poll)
     root.mainloop()
 
 
@@ -235,9 +248,8 @@ def dictate_into_text_box(pcm):
     d.setup_logging(to_file=False)
     FileMic.pcm = pcm
     d.Recorder = FileMic
-    out = TMP / "typed.txt"
-    seconds = len(pcm) / 32000 + 14
-    target = subprocess.Popen([sys.executable, __file__, "--target", str(out), str(seconds)])
+    out, flag = TMP / "typed.txt", TMP / "pasted"
+    target = subprocess.Popen([sys.executable, __file__, "--target", str(out), str(flag)])
     time.sleep(2.5)  # let it take focus
 
     ui, events = queue.Queue(), queue.Queue()
@@ -282,10 +294,16 @@ def dictate_into_text_box(pcm):
             if now > len(pcm) / 32000 + 0.5 and not plan["released"]:
                 plan["released"] = True
                 keys.on("release", 10.0)
-        return not done.is_set() and now < 60
+        return not done.is_set() and now < 150
 
     d.run_ui(root, overlay, ui, tick)
-    target.wait(seconds + 10)
+    time.sleep(1)  # let the paste arrive
+    flag.touch()
+    try:
+        target.wait(20)
+    except subprocess.TimeoutExpired:
+        target.kill()
+        raise AssertionError("the text box hung (see its log above)")
     typed = out.read_text(encoding="utf-8") if out.exists() else ""
     states = sorted(set(shown))
     assert plan["pressed"] and done.is_set(), f"dictation didn't finish (hotkey events: {plan}, overlay: {states})"
@@ -296,7 +314,7 @@ def dictate_into_text_box(pcm):
 
 def main():
     if sys.argv[1:2] == ["--target"]:
-        return target_window(sys.argv[2], float(sys.argv[3]))
+        return target_window(sys.argv[2], sys.argv[3])
     print(f"e2e on {SYSTEM} {platform.release()}, Python {platform.python_version()}")
     api = start_fake_api()
     step("install.py", lambda: install(api))
