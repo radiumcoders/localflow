@@ -26,6 +26,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -277,19 +278,54 @@ def start_handy():
                      start_new_session=SYSTEM != "Windows", creationflags=flags)
 
 
+ARM = platform.machine().lower() in ("arm64", "aarch64")
+
+
 def install_handy():
     step("Handy")
     if SYSTEM == "Darwin":
-        if not Path("/Applications/Handy.app").exists():
-            require("brew", "Install Handy from https://handy.computer")
-            run("brew", "install", "--cask", "handy")
+        if not mac_handy_app():
+            if have("brew"):
+                run("brew", "install", "--cask", "handy")
+            else:
+                install_handy_dmg()
     elif SYSTEM == "Windows":
         if not handy_launch_cmd():
-            require("winget", "Install Handy from https://handy.computer")
-            run("winget", "install", "--id", "cjpais.Handy", "-e", "--accept-package-agreements",
-                "--accept-source-agreements")
+            if have("winget"):
+                run("winget", "install", "--id", "cjpais.Handy", "-e", "--accept-package-agreements",
+                    "--accept-source-agreements")
+            if not handy_launch_cmd():  # no winget, or it didn't take: the installer from GitHub
+                setup = Path(os.environ["TEMP"]) / "Handy-setup.exe"
+                download(latest_asset("cjpais/Handy", "_arm64-setup.exe" if ARM else "_x64-setup.exe"), setup)
+                run(setup, "/S")  # silent, per-user (NSIS)
+            if not handy_launch_cmd():
+                sys.exit("Handy didn't install; install it from https://handy.computer, then re-run")
     else:
         install_handy_linux()
+
+
+def mac_handy_app():
+    for app in (Path("/Applications/Handy.app"), HOME / "Applications/Handy.app"):
+        if app.exists():
+            return app
+    return None
+
+
+def install_handy_dmg():
+    """Without Homebrew: the .dmg from GitHub, copied to /Applications (or ~/Applications)."""
+    dmg = Path(tempfile.gettempdir()) / "Handy.dmg"
+    download(latest_asset("cjpais/Handy", "_aarch64.dmg" if ARM else "_x64.dmg"), dmg)
+    mount = Path(tempfile.mkdtemp())
+    run("hdiutil", "attach", "-nobrowse", "-quiet", "-mountpoint", mount, dmg)
+    try:
+        for dest in (Path("/Applications"), HOME / "Applications"):
+            dest.mkdir(exist_ok=True)
+            if subprocess.run(["cp", "-R", str(mount / "Handy.app"), str(dest)]).returncode == 0:
+                break
+    finally:
+        subprocess.run(["hdiutil", "detach", "-quiet", str(mount)])
+    if not mac_handy_app():
+        sys.exit("Handy didn't install; install it from https://handy.computer, then re-run")
 
 
 def install_handy_linux():
@@ -297,7 +333,7 @@ def install_handy_linux():
     appimage, appdir = LINUX_HANDY / "Handy.AppImage", LINUX_HANDY / "app"
     if not appimage.exists():
         LINUX_HANDY.mkdir(parents=True, exist_ok=True)
-        download(latest_asset("cjpais/Handy", "_amd64.AppImage"), appimage)
+        download(latest_asset("cjpais/Handy", "_aarch64.AppImage" if ARM else "_amd64.AppImage"), appimage)
         appimage.chmod(0o755)
     if not appdir.exists():
         stop_handy()
@@ -457,7 +493,7 @@ def handy_cli():
     """Handy's executable, for its headless --transcribe-file / --list-models."""
     if SYSTEM == "Darwin":
         import plistlib
-        app = Path("/Applications/Handy.app")
+        app = mac_handy_app() or Path("/Applications/Handy.app")
         try:
             with open(app / "Contents/Info.plist", "rb") as f:
                 return app / "Contents/MacOS" / plistlib.load(f)["CFBundleExecutable"]
@@ -467,39 +503,100 @@ def handy_cli():
     return Path(cmd[0]) if cmd else None
 
 
-def speech_models():
-    """Ids of the speech models Handy has downloaded."""
+def handy_models():
+    """Handy's model catalog (with is_downloaded), from `handy --list-models --json`."""
     exe = handy_cli()
     if not exe:
         return []
     try:
-        r = subprocess.run([str(exe), "--list-models", "--json"], capture_output=True, timeout=30,
+        r = subprocess.run([str(exe), "--list-models", "--json"], capture_output=True, timeout=60,
                            creationflags=0x08000000 if SYSTEM == "Windows" else 0)
         out = r.stdout
     except subprocess.TimeoutExpired as e:  # it can linger after printing
         out = e.stdout or b""
     try:
-        return [m["id"] for m in json.loads(out) if m.get("is_downloaded")]
+        return json.loads(out)
     except (ValueError, TypeError):
         return []
 
 
-def prepare_handy():
+def hf_cache():
+    """Where Handy (like other Hugging Face tools) keeps downloaded models."""
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"])
+    return Path(os.environ.get("HF_HOME") or HOME / ".cache/huggingface") / "hub"
+
+
+def download_speech_model(model):
+    """Download one of Handy's single-file models into the Hugging Face cache
+    layout Handy reads (blobs/, snapshots/<revision>/, refs/)."""
+    import hashlib
+    hf = model.get("source", {}).get("HuggingFace") or {}
+    if model.get("is_directory") or not hf.get("repo_id"):
+        sys.exit(f"{model['id']} can't be downloaded here; download it in Handy's settings, then re-run")
+    repo, rev, name = hf["repo_id"], hf["revision"], model["filename"]
+    root = hf_cache() / ("models--" + repo.replace("/", "--"))
+    for d in ("blobs", f"snapshots/{rev}", "refs"):
+        (root / d).mkdir(parents=True, exist_ok=True)
+    part = root / "blobs" / f"{name}.part"
+    print(f"   downloading {model['name']} ({model.get('size_mb', '?')} MB)", flush=True)
+    sha = hashlib.sha256()
+    with urllib.request.urlopen(f"https://huggingface.co/{repo}/resolve/{rev}/{name}") as resp, open(part, "wb") as f:
+        while chunk := resp.read(1 << 20):
+            sha.update(chunk)
+            f.write(chunk)
+    blob = root / "blobs" / sha.hexdigest()
+    part.replace(blob)
+    link = root / "snapshots" / rev / name
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    try:
+        link.symlink_to(Path("../../blobs") / blob.name)
+    except OSError:  # Windows without symlink rights
+        shutil.copyfile(blob, link)
+    (root / "refs" / rev).write_text(rev)
+
+
+def read_env():
+    try:
+        lines = (KEY_FILE.parent / "env").read_text().splitlines()
+    except OSError:
+        return {}
+    return dict(l.split("=", 1) for l in lines if "=" in l)
+
+
+def prepare_handy(requested):
     """dictate uses Handy's engine, not its app: make sure a speech model is
-    downloaded, then keep the app from running (its hotkeys would clash)."""
+    downloaded, and keep the app from running (its hotkeys would clash).
+    Returns the model id to pass to Handy, or None for Handy's selected one."""
     step("Handy speech model")
-    models = speech_models()
-    if not models:
-        start_handy()
-        sys.exit("   Handy is open: pick and download a speech model there (Parakeet is a good default),\n"
-                 "   quit Handy, then re-run install.py.")
-    print(f"   using Handy's speech model ({len(models)} downloaded; pick another in Handy's settings)")
+    catalog = handy_models()
+    if not catalog:
+        sys.exit("couldn't list Handy's models (`handy --list-models --json`); is Handy installed?")
+    downloaded = [m["id"] for m in catalog if m.get("is_downloaded")]
+    chosen = None
+    previous = read_env().get("LOCALFLOW_SPEECH_MODEL")
+    if not requested and previous in downloaded:
+        requested = previous  # keep what an earlier run set up
+    if requested:
+        chosen = next((m for m in catalog if m["id"] == requested), None)
+        if not chosen:
+            sys.exit(f"Handy has no model {requested!r}; see `handy --list-models`")
+    elif not downloaded:
+        chosen = next((m for m in catalog if m.get("is_recommended") and not m.get("is_directory")), None)
+        chosen = chosen or next(m for m in catalog if not m.get("is_directory"))
+    if chosen and chosen["id"] not in downloaded:
+        download_speech_model(chosen)
+        if not any(m["id"] == chosen["id"] and m.get("is_downloaded") for m in handy_models()):
+            sys.exit(f"Handy doesn't see the downloaded {chosen['id']}; download it in Handy's settings")
+    print(f"   speech model: {chosen['name'] if chosen else 'the one selected in Handy'}")
     stop_handy()
     store = handy_data_dir() / "settings_store.json"
     if store.exists():
         data = json.loads(store.read_text())
         data.setdefault("settings", {})["autostart_enabled"] = False
         store.write_text(json.dumps(data, indent=2))
+    return chosen["id"] if chosen else None
 
 
 def remove_proxy():
@@ -591,6 +688,9 @@ def main():
     ap.add_argument("--api", metavar="PROVIDER_OR_URL",
                     help="use your own API key instead of Ollama: anthropic (Claude), openai, openrouter, "
                          "groq, gemini, mistral, deepseek, or any OpenAI-compatible base URL")
+    ap.add_argument("--speech-model", metavar="ID",
+                    help="Handy speech model to download and use (see `handy --list-models`; default: the "
+                         "one selected in Handy, or Handy's recommended model if none is downloaded)")
     ap.add_argument("--handy-app", action="store_true",
                     help="use Handy's own app and hotkeys, with localflow as its post-processing proxy, "
                          "instead of dictate")
@@ -617,10 +717,13 @@ def main():
         install_proxy(model, hyprland, args.api)
         configure_handy(hyprland)
     else:
+        speech = prepare_handy(args.speech_model)
         # dictate warms the model as you start speaking, so it can unload soon after.
-        write_env(cleanup_env(model, args.api, keep_alive="2m"))
+        env = cleanup_env(model, args.api, keep_alive="2m")
+        if speech:
+            env["LOCALFLOW_SPEECH_MODEL"] = speech
+        write_env(env)
         remove_proxy()
-        prepare_handy()
         install_dictate(hyprland)
 
     step(f"Done (cleanup model: {model}{f' via {args.api}' if args.api else ''})")

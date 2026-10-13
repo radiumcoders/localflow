@@ -9,15 +9,18 @@ import array
 import json
 import math
 import os
-import re
+import sys
 import tempfile
 import threading
 import unittest
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests"))
+from fake_api import FakeAPI  # noqa: E402
+
 CONFIG = tempfile.mkdtemp()  # no ~/.config/localflow/env from the machine running the tests
 
 
@@ -31,36 +34,6 @@ def load(name, env=None):
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
-
-
-class FakeAPI(BaseHTTPRequestHandler):
-    """Anthropic Messages and OpenAI chat; replies with the dictation, capitalized."""
-    seen = []
-
-    def _send(self, code, obj):
-        data = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        FakeAPI.seen.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
-        last = body["messages"][-1]["content"]
-        last = "".join(b["text"] for b in last) if isinstance(last, list) else last
-        m = re.search(r"<dictation>(.*)</dictation>", last, re.S)
-        text = (m.group(1) if m else last).strip()
-        reply = text[:1].upper() + text[1:].rstrip(".") + "."
-        if self.path == "/v1/messages":
-            if self.headers.get("x-api-key") != "test-key":
-                return self._send(401, {"type": "error", "error": {"type": "authentication_error"}})
-            return self._send(200, {"stop_reason": "end_turn", "content": [{"type": "text", "text": reply}]})
-        return self._send(200, {"choices": [{"finish_reason": "stop", "message": {"content": reply}}]})
-
-    def log_message(self, *args):
-        pass
 
 
 class LocalflowTest(unittest.TestCase):
@@ -224,6 +197,76 @@ class DictateTest(unittest.TestCase):
         dic = d.Dictation(queue.Queue())
         dic.start()
         self.assertGreater(dic.finish(), 0)
+
+    def test_hotkey_hold_tap_escape(self):
+        d = self.d
+        log = []
+
+        class Fake:
+            def __init__(self):
+                self.n = len(log)
+
+            def start(self):
+                log.append(("start", self.n))
+
+            def cancel(self):
+                log.append(("cancel", self.n))
+
+        finished = threading.Event()
+
+        def finish(dic):
+            log.append(("finish", dic.n))
+            finished.set()
+
+        keys = d.HotkeyController(Fake, finish, lambda text: log.append(("message", text)))
+        # Hold: press, release after 1 s -> finish.
+        keys.on("press", 0.0)
+        self.assertTrue(keys.recording())
+        keys.on("release", 1.0)
+        finished.wait(2)
+        self.assertEqual(log[-1][0], "finish")
+        self.assertFalse(keys.recording())
+        for _ in range(100):  # the finish thread clears `working`
+            if not keys.working:
+                break
+            threading.Event().wait(0.01)
+        # Tap: press + quick release keeps recording; the next press finishes.
+        finished.clear()
+        keys.on("press", 10.0)
+        keys.on("release", 10.1)
+        self.assertTrue(keys.recording())
+        keys.on("press", 15.0)
+        finished.wait(2)
+        keys.on("release", 15.1)  # release of the stopping tap: nothing happens
+        self.assertEqual([e[0] for e in log], ["start", "finish", "start", "finish"])
+        for _ in range(100):
+            if not keys.working:
+                break
+            threading.Event().wait(0.01)
+        # Escape cancels.
+        keys.on("press", 20.0)
+        keys.on("escape", 20.5)
+        self.assertFalse(keys.recording())
+        self.assertEqual(log[-1][0], "cancel")
+        keys.on("release", 21.0)
+        self.assertEqual(log[-1][0], "cancel")
+
+    def test_hotkey_busy_and_errors(self):
+        d = self.d
+        messages = []
+
+        class Broken:
+            def start(self):
+                raise RuntimeError("no microphone")
+
+        keys = d.HotkeyController(Broken, lambda dic: None, messages.append)
+        keys.on("press", 0.0)
+        self.assertFalse(keys.recording())
+        self.assertEqual(messages, ["no microphone"])
+        keys.working = True  # still finishing the last one: presses are ignored
+        keys.new_dictation = lambda: self.fail("started while busy")
+        keys.on("press", 1.0)
+        self.assertFalse(keys.recording())
 
     def test_handy_override(self):
         os.environ["DICTATE_HANDY"] = "/opt/handy"

@@ -1,34 +1,70 @@
 #!/usr/bin/env bash
-# Handy "external script" paste method: Handy runs `paste "<text>"`.
+# paste "<text>": paste text into the focused window (Linux). Used by `dictate`
+# and by Handy's "external script" paste method.
 #
-# Pastes like Omarchy's universal paste: Shift+Insert in terminals, Ctrl+V
-# everywhere else (Shift+Insert doesn't paste in browsers). Pasting instead of
-# typing keeps list newlines from pressing Enter. The previous clipboard is
-# restored a moment later, once the app has had time to read the new one.
+# Pastes instead of typing, so list newlines don't press Enter. The previous
+# clipboard is restored a moment later, once the app has had time to read the
+# new one. If the paste keys can't be sent, the text stays on the clipboard
+# and this exits 1.
+#   Wayland: wl-copy + wtype. On Hyprland, Shift+Insert in terminals and
+#            Ctrl+V elsewhere, like Omarchy's universal paste.
+#   X11:     xclip (or xsel) + xdotool. Ctrl+Shift+V in terminals.
 set -u
 text="$1"
-
 old=$(mktemp)
-old_type=$(wl-paste --list-types 2>/dev/null | head -n1)
-[[ -n $old_type ]] && wl-paste --no-newline --type "$old_type" >"$old" 2>/dev/null
 
-printf '%s' "$text" | wl-copy
-sleep 0.05
-
-# Same test Omarchy uses: the window carries the "terminal" tag (dynamic tags end in *).
-if hyprctl activewindow -j 2>/dev/null | grep -qE '"tags": \[[^]]*"terminal\*?"'; then
-  wtype -M shift -k Insert -m shift
-else
-  wtype -M ctrl -k v -m ctrl
-fi || {
-  # Couldn't send the keys: leave the dictation on the clipboard to paste by hand.
-  rm -f "$old"
-  exit 1
+restore_later() {
+  (
+    sleep 1
+    "$@" <"$old"
+    rm -f "$old"
+  ) >/dev/null 2>&1 &
+  disown
 }
 
-(
-  sleep 1
-  if [[ -n $old_type ]]; then wl-copy --type "$old_type" <"$old"; fi
+if [[ -n ${WAYLAND_DISPLAY:-} ]] && command -v wl-copy >/dev/null; then
+  old_type=$(wl-paste --list-types 2>/dev/null | head -n1)
+  [[ -n $old_type ]] && wl-paste --no-newline --type "$old_type" >"$old" 2>/dev/null
+  printf '%s' "$text" | wl-copy
+  sleep 0.05
+  # Same test Omarchy uses: the window carries the "terminal" tag (dynamic tags end in *).
+  if command -v hyprctl >/dev/null &&
+    hyprctl activewindow -j 2>/dev/null | grep -qE '"tags": \[[^]]*"terminal\*?"'; then
+    keys=(-M shift -k Insert -m shift)
+  else
+    keys=(-M ctrl -k v -m ctrl)
+  fi
+  if ! command -v wtype >/dev/null || ! wtype "${keys[@]}" 2>/dev/null; then
+    rm -f "$old"
+    exit 1
+  fi
+  if [[ -n $old_type ]]; then restore_later wl-copy --type "$old_type"; else rm -f "$old"; fi
+
+elif [[ -n ${DISPLAY:-} ]]; then
+  if command -v xclip >/dev/null; then
+    copy=(xclip -selection clipboard -in) get=(xclip -selection clipboard -out)
+  elif command -v xsel >/dev/null; then
+    copy=(xsel --clipboard --input) get=(xsel --clipboard --output)
+  else
+    rm -f "$old"
+    exit 1
+  fi
+  "${get[@]}" >"$old" 2>/dev/null
+  printf '%s' "$text" | "${copy[@]}"
+  sleep 0.05
+  class=$(xdotool getactivewindow getwindowclassname 2>/dev/null)
+  if [[ ${class,,} =~ term|kitty|alacritty|ghostty|konsole|tilix|wezterm|foot|terminator ]]; then
+    key=ctrl+shift+v
+  else
+    key=ctrl+v
+  fi
+  if ! command -v xdotool >/dev/null || ! xdotool key --clearmodifiers "$key" 2>/dev/null; then
+    rm -f "$old"
+    exit 1
+  fi
+  if [[ -s $old ]]; then restore_later "${copy[@]}"; else rm -f "$old"; fi
+
+else
   rm -f "$old"
-) >/dev/null 2>&1 &
-disown
+  exit 1
+fi

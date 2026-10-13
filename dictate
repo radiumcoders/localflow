@@ -102,8 +102,15 @@ def handy_path():
     return shutil.which("handy")
 
 
+def speech_model():
+    """LOCALFLOW_SPEECH_MODEL (set by install.py in ~/.config/localflow/env), or
+    None for the model selected in Handy's settings."""
+    localflow()  # reads the env file
+    return os.environ.get("LOCALFLOW_SPEECH_MODEL") or None
+
+
 def transcribe(pcm):
-    """Speech (16 kHz mono s16 bytes) to text with Handy's selected model."""
+    """Speech (16 kHz mono s16 bytes) to text with Handy's engine."""
     exe = handy_path()
     if not exe:
         raise RuntimeError("Handy not found (install it, or set DICTATE_HANDY)")
@@ -115,8 +122,9 @@ def transcribe(pcm):
         w.setframerate(RATE)
         w.writeframes(pcm)
     try:
-        r = subprocess.run([exe, "--transcribe-file", str(wav_path), "--json"], capture_output=True,
-                           timeout=120, creationflags=NO_WINDOW)
+        model = speech_model()
+        r = subprocess.run([exe, "--transcribe-file", str(wav_path), "--json"] + (["--model", model] if model else []),
+                           capture_output=True, timeout=120, creationflags=NO_WINDOW)
     finally:
         wav_path.unlink(missing_ok=True)
     try:
@@ -466,7 +474,7 @@ def windows_hotkey(events, recording):
     def proc(n, wparam, lparam):
         if n == 0:
             kb = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-            injected = kb.flags & 0x10
+            injected = kb.flags & 0x10 and not os.environ.get("DICTATE_TEST_INJECTED")  # tests send keys
             down = wparam in (0x100, 0x104)  # WM_KEYDOWN, WM_SYSKEYDOWN
             if not injected and kb.vkCode == 0x20:  # space
                 mods = (u.GetAsyncKeyState(0x11) & 0x8000) and (u.GetAsyncKeyState(0x10) & 0x8000)
@@ -1018,6 +1026,55 @@ def cmd_session(raw):
 
 # --- Windows / macOS: background app with a hotkey -------------------------------------
 
+class HotkeyController:
+    """What the hotkey does: hold to talk (stop on release), or tap to start and
+    tap again to stop; Escape cancels. `new_dictation()` makes a Dictation,
+    `finish(d)` finishes one in the background, `message(text)` shows a problem."""
+    TAP = 0.35  # a press shorter than this is a tap
+
+    def __init__(self, new_dictation, finish, message):
+        self.new_dictation, self.finish, self.message = new_dictation, finish, message
+        self.d, self.pressed, self.toggle, self.working = None, 0.0, False, False
+
+    def recording(self):
+        return self.d is not None
+
+    def on(self, event, now=None):
+        now = time.monotonic() if now is None else now
+        d = self.d
+        if event == "press":
+            if d is None and not self.working:
+                try:
+                    self.d = self.new_dictation()
+                    self.d.start()
+                except Exception as e:
+                    self.d = None
+                    log.exception("couldn't start recording")
+                    self.message(str(e)[:40])
+                self.pressed, self.toggle = now, False
+            elif d is not None and self.toggle:
+                self._finish(d)
+        elif event == "release" and d is not None:
+            if now - self.pressed < self.TAP and not self.toggle:
+                self.toggle = True  # a tap: keep recording until the next tap
+            elif not self.toggle:
+                self._finish(d)
+        elif event == "escape" and d is not None:
+            self.d = None
+            d.cancel()
+
+    def _finish(self, d):
+        self.d = None
+        self.working = True
+
+        def run():
+            try:
+                self.finish(d)
+            finally:
+                self.working = False
+        threading.Thread(target=run, daemon=True).start()
+
+
 def cmd_background():
     setup_logging()
     lock = socket.socket()
@@ -1030,56 +1087,29 @@ def cmd_background():
         log.error("no recorder: `brew install sox`")
     events, ui = queue.Queue(), queue.Queue()
     root, overlay = make_ui()
-    current = {"d": None, "pressed": 0.0, "toggle": False, "working": False}
+    keys = HotkeyController(lambda: Dictation(ui), lambda d: d.finish(),
+                            lambda text: ui.put(("message", text, 3000)))
     listener = windows_hotkey if SYSTEM == "Windows" else mac_hotkey
 
     def listen():
         try:
-            listener(events, lambda: current["d"] is not None)
+            listener(events, keys.recording)
         except Exception as e:
             log.error("hotkey: %s", e)
             events.put(("error", str(e)))
     threading.Thread(target=listen, daemon=True).start()
 
-    def finish(d):
-        current["working"] = True
-        try:
-            d.finish()
-        finally:
-            current["working"] = False
-
     def tick():
         try:
             while True:
                 ev = events.get_nowait()
-                d = current["d"]
                 if ev == "ready":
                     log.info("ready: hold %s to dictate", "Ctrl+Shift+Space" if SYSTEM == "Windows"
                              else "Option+Shift+Space")
                 elif isinstance(ev, tuple):
                     ui.put(("message", "Hotkey unavailable, see dictate.log", 4000))
-                elif ev == "press":
-                    if d is None and not current["working"]:
-                        try:
-                            current["d"] = Dictation(ui)
-                            current["d"].start()
-                        except Exception as e:
-                            current["d"] = None
-                            log.exception("couldn't start recording")
-                            ui.put(("message", str(e)[:40], 3000))
-                        current["pressed"], current["toggle"] = time.monotonic(), False
-                    elif d is not None and current["toggle"]:
-                        current["d"] = None
-                        threading.Thread(target=finish, args=(d,), daemon=True).start()
-                elif ev == "release" and d is not None:
-                    if time.monotonic() - current["pressed"] < 0.35:
-                        current["toggle"] = True  # a tap: keep recording until the next tap
-                    elif not current["toggle"]:
-                        current["d"] = None
-                        threading.Thread(target=finish, args=(d,), daemon=True).start()
-                elif ev == "escape" and d is not None:
-                    current["d"] = None
-                    d.cancel()
+                else:
+                    keys.on(ev)
         except queue.Empty:
             pass
         return True
