@@ -1,7 +1,7 @@
 """localflow, the packaged app (built by pkg/build.py).
 
     localflow.exe                  # the first time: setup; then dictate in the background
-                                   # (opened again while running: setup, to change settings)
+                                   # (opened again while running, or on Linux: setup, to change settings)
     localflow.exe setup            # the setup window
     localflow.exe install ARGS     # setup without the window: install.py's options
     localflow.exe localflow ARGS   # the cleanup script: localflow --check, ...
@@ -63,7 +63,8 @@ def main():
         import install
         install.CAPTURE = True  # commands' output into the log, and no console windows
         install.main(args[1:])
-    elif args[:1] == ["setup"] or not args and (not configured() or running()):
+    elif args[:1] == ["setup"] or not args and (not configured() or running() or sys.platform == "linux"):
+        # Linux has no background app to start (your key bindings run dictate): settings.
         import setup_app
         setup_app.main()
     else:

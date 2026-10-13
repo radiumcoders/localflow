@@ -92,7 +92,49 @@ def localflow_cmd(*args):
 
 
 def dictate_cmd(*args):
+    if FROZEN and SYSTEM == "Linux":
+        return [str(linux_app() / "localflow"), *args]
     return [sys.executable, *args] if FROZEN else [sys.executable, str(DICTATE), *args]
+
+
+def linux_app():
+    """Where the packaged app lives on Linux: copied out of the AppImage, whose
+    files go away when the process that opened it exits, while your key
+    bindings start a process for each dictation."""
+    return Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "localflow/app"
+
+
+def install_app_linux():
+    step("localflow app")
+    src, dest = Path(sys.executable).resolve().parent, linux_app()
+    if src != dest.resolve():
+        new = dest.with_name("app.new")
+        shutil.rmtree(new, ignore_errors=True)
+        shutil.copytree(src, new, symlinks=True)
+        shutil.rmtree(dest, ignore_errors=True)
+        new.rename(dest)
+    desktop = HOME / ".local/share/applications/localflow.desktop"
+    desktop.parent.mkdir(parents=True, exist_ok=True)
+    desktop.write_text("[Desktop Entry]\nType=Application\nName=localflow\nComment=Talk, and get clean text where "
+                       f'you type\nExec="{dest / "localflow"}"\nIcon={dest / "_internal/icon.png"}\n'
+                       "Categories=Utility;\n")
+    print(f"   {dest}, in your app launcher")
+
+
+def key_bindings(hyprland):
+    """How to bind dictate's commands to keys (Linux: your compositor's job)."""
+    cmd = str(linux_app() / "localflow") if FROZEN else str(DICTATE)
+    if hyprland:
+        return f"""Bind the keys in ~/.config/hypr/bindings.lua:
+  hl.unbind("SUPER + CTRL + X")
+  hl.unbind("F9")
+  o.bind("SUPER + CTRL + X", "Toggle dictation", "{cmd} toggle")
+  o.bind("F9", "Start dictation (push-to-talk)", "{cmd} start")
+  o.bind("F9", "Stop dictation (push-to-talk)", "{cmd} stop", {{ release = true }})
+  o.bind("F8", "Learn from a dictation correction", "{cmd} learn")"""
+    return (f"Add keyboard shortcuts in your desktop's settings: `{cmd} toggle`\n"
+            f"(or `{cmd} start` on press and `{cmd} stop` on release), and\n"
+            f"`{cmd} learn` to learn from a correction.")
 
 
 def have(cmd):
@@ -793,18 +835,8 @@ def install_dictate(hyprland):
         pyw = pyw if pyw.exists() else py
         (startup / "localflow-dictate.cmd").write_text(f'@echo off\r\nstart "" "{pyw}" "{DICTATE}"\r\n')
         subprocess.Popen([str(pyw), str(DICTATE)], creationflags=0x00000008)  # already running: it exits
-    elif hyprland:
-        print(f"""   Bind the keys in ~/.config/hypr/bindings.lua:
-     hl.unbind("SUPER + CTRL + X")
-     hl.unbind("F9")
-     o.bind("SUPER + CTRL + X", "Toggle dictation", "{DICTATE} toggle")
-     o.bind("F9", "Start dictation (push-to-talk)", "{DICTATE} start")
-     o.bind("F9", "Stop dictation (push-to-talk)", "{DICTATE} stop", {{ release = true }})
-     o.bind("F8", "Learn from a dictation correction", "{DICTATE} learn")""")
     else:
-        print(f"   Add keyboard shortcuts in your desktop's settings: `{DICTATE} toggle`\n"
-              f"   (or `{DICTATE} start` on press and `{DICTATE} stop` on release), and\n"
-              f"   `{DICTATE} learn` to learn from a correction.")
+        print("\n".join("   " + line for line in key_bindings(hyprland).splitlines()))
 
 
 def require(cmd, hint):
@@ -814,6 +846,8 @@ def require(cmd, hint):
 
 def install(api, model, speech_model=None, handy_app=False, rocm=False, hyprland=False):
     """Everything but printing how to use it. Returns the cleanup model."""
+    if FROZEN and SYSTEM == "Linux":
+        install_app_linux()
     if api:
         setup_api(api, model)
     else:

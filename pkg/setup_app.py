@@ -253,13 +253,25 @@ class Setup:
                     f"and localflow spells it right from then on.\n\nCleanup: {where}. localflow starts when "
                     "you sign in; open it again to change these settings.")
         else:
-            cmd = " ".join(install.dictate_cmd())
-            text = (f"Add keyboard shortcuts in your desktop's settings: `{cmd} toggle` to start and stop "
-                    f"(or `{cmd} start` on press and `{cmd} stop` on release), and `{cmd} learn` to learn "
-                    f"from a fix.\n\nCleanup: {where}.")
+            text = (f"Cleanup: {where}.\n\nOn Linux your desktop runs dictation from your key bindings. "
+                    "Add these, then hold the key and talk:")
         self.how.config(text=text)
         for w in self.extra.winfo_children():
             w.destroy()
+        if not keys:
+            hyprland = bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
+            bindings = install.key_bindings(hyprland)
+            box = tk.Text(self.extra, height=bindings.count("\n") + 2, wrap="none", relief="flat",
+                          font=("TkFixedFont", max(self.font.actual("size") - 1, 8)), background="#f4f4f4",
+                          padx=8, pady=6)
+            box.insert("1.0", bindings)
+            box.config(state="disabled")
+            box.pack(fill="x")
+
+            def copy():
+                self.root.clipboard_clear()
+                self.root.clipboard_append(bindings)
+            ttk.Button(self.extra, text="Copy", command=copy).pack(anchor="e", pady=(6, 0))
         if SYSTEM == "Darwin":
             ttk.Label(self.extra, text="macOS asks to allow localflow under Accessibility (for the hotkey "
                                        "and pasting) and Microphone.", wraplength=500, justify="left"

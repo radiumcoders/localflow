@@ -1,12 +1,13 @@
 """Build the packaged app: PyInstaller, then the installer (.msi on Windows,
-.dmg on macOS).
+.dmg on macOS, AppImage on Linux).
 
     pip install pyinstaller==6.19.0 pillow==11.3.0
     dotnet tool install --global wix --version 5.0.2    # Windows, for the .msi
     python pkg/build.py --version 0.1.0
 
 Writes the app to build/dist/ and the installer to build/:
-localflow-<version>-x64.msi, or localflow-<version>-<arm64|x64>.dmg. The
+localflow-<version>-x64.msi, localflow-<version>-<arm64|x64>.dmg, or
+localflow-<version>-<x86_64|aarch64>.AppImage (appimagetool is downloaded). The
 scripts have no .py extension, so they are copied in as modules for
 PyInstaller to find their imports.
 """
@@ -110,6 +111,35 @@ def msi(app, ico, version):
     return out
 
 
+APPIMAGETOOL = "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-{arch}.AppImage"
+
+
+def appimage(app, png, version):
+    """The app in usr/lib/localflow, started by AppRun, with its desktop entry and icon."""
+    arch = "aarch64" if platform.machine().lower() in ("aarch64", "arm64") else "x86_64"
+    appdir = BUILD / "AppDir"
+    shutil.rmtree(appdir, ignore_errors=True)
+    shutil.copytree(app, appdir / "usr/lib/localflow", symlinks=True)
+    apprun = appdir / "AppRun"
+    apprun.write_text('#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/usr/lib/localflow/localflow" "$@"\n')
+    apprun.chmod(0o755)
+    (appdir / "localflow.desktop").write_text(
+        "[Desktop Entry]\nType=Application\nName=localflow\nComment=Talk, and get clean text where you type\n"
+        "Exec=localflow\nIcon=localflow\nCategories=Utility;\nTerminal=false\n")
+    shutil.copy(png, appdir / "localflow.png")
+    (appdir / ".DirIcon").symlink_to("localflow.png")
+    tool = BUILD / f"appimagetool-{arch}.AppImage"
+    if not tool.exists():
+        import urllib.request
+        urllib.request.urlretrieve(APPIMAGETOOL.format(arch=arch), tool)
+        tool.chmod(0o755)
+    out = BUILD / f"localflow-{version}-{arch}.AppImage"
+    # Extract-and-run: no FUSE needed to build (CI machines don't have it).
+    env = dict(os.environ, ARCH=arch, APPIMAGE_EXTRACT_AND_RUN="1")
+    subprocess.run([str(tool), "--no-appstream", str(appdir), str(out)], env=env, check=True)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default="0.0.1", help="x.y.z (an .msi needs numbers)")
@@ -123,6 +153,8 @@ def main():
         print(f"installer: {msi(app, ico, args.version)}")
     elif platform.system() == "Darwin":
         print(f"installer: {dmg(app, args.version)}")
+    else:
+        print(f"installer: {appimage(app, png, args.version)}")
 
 
 if __name__ == "__main__":
