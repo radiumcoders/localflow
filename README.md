@@ -134,6 +134,28 @@ Wayland or `xclip` + `xdotool` on X11 (Omarchy ships all of these).
 
 ## Install
 
+### Windows: the installer
+
+Download `localflow-<version>-x64.msi` from
+[Releases](https://github.com/radiumcoders/localflow/releases) and open it. It
+needs no Python: it installs localflow to Program Files, adds it to the Start
+menu and starts it when you sign in. Then open localflow from the Start menu:
+the first time, it opens setup. Choose cleanup on this computer or with your
+API key, and it downloads what that needs (Ollama and the model, or nothing;
+Handy's speech engine and a speech model) with a progress bar. Open it from
+the Start menu again to change these settings. Uninstall it from Settings >
+Apps.
+
+The installer isn't signed yet, so Windows SmartScreen warns about an
+unknown publisher: click **More info**, then **Run anyway**.
+
+For IT deployment, `msiexec /i localflow-<version>-x64.msi /qn`, then
+`"C:\Program Files\localflow\localflow.exe" install --api anthropic` (with
+`LOCALFLOW_API_KEY` set) sets it up without the window; it takes
+`install.py`'s options.
+
+### Any OS: `install.py`
+
 Download just [`install.py`](https://raw.githubusercontent.com/radiumcoders/localflow/master/install.py)
 and run it:
 
@@ -473,5 +495,6 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
 | `words.txt` | your names/terms, with optional mishearing hints |
 | `cases.txt` | eval cases |
 | `dictate` | the dictation app: overlay, hotkey, recording, transcription, cleanup, paste |
-| `tests/` | `python -m unittest discover -s tests` (no key, model or microphone needed); `e2e.py`, the install-and-dictate test CI runs |
+| `tests/` | `python -m unittest discover -s tests` (no key, model or microphone needed); `e2e.py`, the install-and-dictate test CI runs; `msi.py`, the Windows installer test |
 | `paste` | Linux/Hyprland paste helper for Handy and `dictate` |
+| `pkg/` | the packaged app: `build.py` (PyInstaller, then the `.msi` with WiX), its setup window and entry point |
