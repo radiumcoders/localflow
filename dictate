@@ -2164,7 +2164,8 @@ def cmd_selftest(seconds):
             return "shown recording / transcribing / message (focus not checkable here)"
         moved = [f for f in samples if f != before]
         where = f"focus {before}, after start {after_init}, this process {os.getpid()}"
-        if samples and samples[-1] != before or after_init != before:
+        # A moment with no focused window at all (0 on Windows) isn't the pill taking it.
+        if samples and samples[-1] != before or after_init not in (before, 0, None):
             raise AssertionError(f"the overlay kept focus: {where}, while shown {sorted(set(samples), key=str)}")
         flicker = f", but it moved for {len(moved)} of {len(samples)} checks" if moved else ""
         return f"shown recording / transcribing / message, focus unchanged{flicker} ({where})"
