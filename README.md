@@ -181,7 +181,8 @@ chmod +x localflow-*-x86_64.AppImage
 ./localflow-*-x86_64.AppImage
 ```
 
-It needs no Python. Setup copies localflow to `~/.local/share/localflow/app`
+It needs no Python, and a distro from 2023 or later (glibc 2.38+, for Handy's
+speech engine: Ubuntu 24.04, Fedora 39, Debian 13, Arch). Setup copies localflow to `~/.local/share/localflow/app`
 (your key bindings run it from there, so the AppImage can go anywhere,
 or away), adds it to your app launcher, and shows the key bindings to add,
 with a Copy button (the `bindings.lua` lines on Hyprland). Open localflow from

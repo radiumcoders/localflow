@@ -74,9 +74,9 @@ jobs:
           path: build/localflow-*.dmg
 
   linux-appimage:
-    # The oldest supported Ubuntu, so the AppImage runs on distros with an older glibc too.
+    # Built on the oldest supported Ubuntu, so localflow's own part runs on older glibcs.
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -84,29 +84,45 @@ jobs:
           python-version: "3.12"
       - name: Build tools
         run: python -m pip install pyinstaller==6.19.0 pillow==11.3.0
-      - name: Linux packages (virtual display, X11 paste, Handy's libraries)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb xclip xdotool libwebkit2gtk-4.1-0 libgtk-3-0 libvulkan1
       - name: Version
         run: |
           if [[ $GITHUB_REF == refs/tags/v* ]]; then v=${GITHUB_REF#refs/tags/v}; else v=0.0.$GITHUB_RUN_NUMBER; fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
       - name: Build
         run: python pkg/build.py --version "$VERSION"
-      - name: Set up, run without the AppImage, self-test
-        run: xvfb-run -a python tests/appimage.py build/localflow-"$VERSION"-x86_64.AppImage
-      - name: Logs
-        if: always()
-        run: cat ~/.local/state/localflow/dictate.log 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: localflow-${{ env.VERSION }}-linux
           path: build/localflow-*.AppImage
 
+  linux-appimage-test:
+    # Handy itself needs glibc 2.38+ (Ubuntu 24.04 and later).
+    needs: linux-appimage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Linux packages (virtual display, X11 paste, Handy's libraries)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xclip xdotool libwebkit2gtk-4.1-0 libgtk-3-0t64 libvulkan1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: localflow-*-linux
+          path: build
+          merge-multiple: true
+      - name: Set up, run without the AppImage, self-test
+        run: xvfb-run -a python tests/appimage.py build/localflow-*-x86_64.AppImage
+      - name: Logs
+        if: always()
+        run: cat ~/.local/state/localflow/dictate.log 2>/dev/null || true
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows-msi, macos-dmg, linux-appimage]
+    needs: [windows-msi, macos-dmg, linux-appimage-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -125,7 +141,7 @@ jobs:
 
           **macOS:** `…-arm64.dmg` for Apple Silicon (M1 and later), `…-x64.dmg` for Intel. Open it, drag localflow into Applications, and open it from there. It isn't signed with an Apple Developer ID yet: the first time, macOS says it can't check it. Open **System Settings > Privacy & Security** and click **Open Anyway** next to localflow. Then allow it under Accessibility (for the hotkey and pasting) and Microphone when macOS asks.
 
-          **Linux:** `localflow-…-x86_64.AppImage`. Make it executable (`chmod +x`) and run it: setup opens, copies localflow to `~/.local/share/localflow/app` and adds it to your app launcher, then shows the key bindings to add (Hyprland lines included). Needs PipeWire or ALSA for recording, `wl-clipboard` + `wtype` (Wayland) or `xclip` + `xdotool` (X11) for pasting, and `curl` + `zstd` for local cleanup with Ollama.
+          **Linux:** `localflow-…-x86_64.AppImage`. Needs a distro from 2023 or later (glibc 2.38+, which Handy's speech engine needs: Ubuntu 24.04, Fedora 39, Debian 13, Arch). Make it executable (`chmod +x`) and run it: setup opens, copies localflow to `~/.local/share/localflow/app` and adds it to your app launcher, then shows the key bindings to add (Hyprland lines included). Needs PipeWire or ALSA for recording, `wl-clipboard` + `wtype` (Wayland) or `xclip` + `xdotool` (X11) for pasting, and `curl` + `zstd` for local cleanup with Ollama.
 
           Hold the hotkey (Ctrl+Shift+Space on Windows, Option+Shift+Space on macOS, your key binding on Linux) and talk; let go and it pastes.
           EOF
