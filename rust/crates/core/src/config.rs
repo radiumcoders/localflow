@@ -12,6 +12,7 @@
 //! LOCALFLOW_OLLAMA        Ollama base URL (default: http://127.0.0.1:11434)
 //! LOCALFLOW_KEEP_ALIVE    how long the model stays loaded after use (default: 1h, 2m on macOS)
 //! LOCALFLOW_USE_MMAP      1 to also keep the model file mapped in RAM (default: off, on on macOS)
+//! LOCALFLOW_SPEECH_MODEL  Handy speech model id (default: the one selected in Handy)
 //! ```
 
 use std::collections::HashMap;
@@ -36,6 +37,8 @@ pub struct Config {
     /// reads the mapped file directly (1.3 instead of 4.8 GB for qwen3.5:4b).
     pub use_mmap: bool,
     pub api_key: Option<String>,
+    /// Handy's speech model, or None for the one selected in Handy's settings.
+    pub speech_model: Option<String>,
     /// Where the env file, the api_key file and your learned words.txt live.
     pub config_dir: PathBuf,
 }
@@ -104,6 +107,7 @@ impl Config {
             keep_alive: var("LOCALFLOW_KEEP_ALIVE").unwrap_or_else(|| (if mac { "2m" } else { "1h" }).into()),
             use_mmap: var("LOCALFLOW_USE_MMAP").unwrap_or_else(|| (if mac { "1" } else { "0" }).into()) == "1",
             api_key: var("LOCALFLOW_API_KEY").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
+            speech_model: var("LOCALFLOW_SPEECH_MODEL").filter(|m| !m.is_empty()),
             api_url,
             anthropic,
             model,

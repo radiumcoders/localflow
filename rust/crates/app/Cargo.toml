@@ -7,3 +7,4 @@ repository.workspace = true
 
 [dependencies]
 localflow-core = { path = "../core" }
+localflow-speech = { path = "../speech" }
