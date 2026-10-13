@@ -560,7 +560,13 @@ class Overlay:
     def __init__(self, root):
         self.root, self.levels = root, [0.0] * self.BARS
         self.state, self.raw, self.started, self.tick = "hidden", False, 0, 0
-        root.overrideredirect(True)
+        if SYSTEM == "Darwin":
+            try:  # a borderless panel that doesn't activate the app (must be set before it's shown)
+                root.tk.call("::tk::unsupported::MacWindowStyle", "style", root._w, "help", "noActivates")
+            except Exception:
+                root.overrideredirect(True)
+        else:
+            root.overrideredirect(True)
         root.attributes("-topmost", True)
         key = BG
         if SYSTEM == "Windows":
@@ -624,8 +630,14 @@ class Overlay:
         else:
             if not self.hyprland:  # on Hyprland a window rule places it on the focused monitor
                 self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
+            prev = Mac.frontmost_pid() if SYSTEM == "Darwin" else None
             self.root.deiconify()
             self.root.lift()
+            if prev and prev != os.getpid():
+                self.root.update_idletasks()
+                if Mac.frontmost_pid() == os.getpid():
+                    log.info("overlay took focus; giving it back")
+                    Mac.activate(prev)
 
     def hide(self):
         if SYSTEM == "Windows":
@@ -807,29 +819,71 @@ def make_ui():
                 ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp, and real screen coordinates
             except (AttributeError, OSError):
                 pass
+        prev = Mac.frontmost_pid() if SYSTEM == "Darwin" else None
         root = tkinter.Tk(className="localflow-overlay")
         root.title("localflow")
         if SYSTEM == "Darwin":
-            mac_accessory_app()
-        return root, Overlay(root)
+            try:
+                Mac.accessory()
+            except Exception as e:
+                log.info("couldn't hide the Dock icon: %s", e)
+        overlay = Overlay(root)
+        if SYSTEM == "Darwin":
+            root.update()
+            if prev and prev != os.getpid() and Mac.frontmost_pid() == os.getpid():
+                Mac.activate(prev)  # Tk makes itself the active app on start
+        return root, overlay
     except Exception as e:
         log.info("no overlay (%s), using notifications", e)
         return None, Headless()
 
 
-def mac_accessory_app():
-    """No Dock icon or menu bar, and showing the pill doesn't make Python the active app."""
-    try:
-        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
-        objc.objc_getClass.restype, objc.objc_getClass.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
-        objc.sel_registerName.restype, objc.sel_registerName.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
-        send = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
-        app = send(objc.objc_getClass(b"NSApplication"), objc.sel_registerName(b"sharedApplication"))
-        policy = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long)(
-            ("objc_msgSend", objc))
-        policy(app, objc.sel_registerName(b"setActivationPolicy:"), 1)  # NSApplicationActivationPolicyAccessory
-    except Exception as e:
-        log.info("couldn't hide the Dock icon: %s", e)
+class Mac:
+    """The few AppKit calls dictate needs, through the Objective-C runtime."""
+    _objc = None
+
+    @classmethod
+    def _rt(cls):
+        if cls._objc is None:
+            ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")
+            objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+            objc.objc_getClass.restype, objc.objc_getClass.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
+            objc.sel_registerName.restype, objc.sel_registerName.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
+            cls._objc = objc
+        return cls._objc
+
+    @classmethod
+    def send(cls, obj, sel, *args, argtypes=(), restype=ctypes.c_void_p):
+        objc = cls._rt()
+        fn = ctypes.CFUNCTYPE(restype, ctypes.c_void_p, ctypes.c_void_p, *argtypes)(("objc_msgSend", objc))
+        return fn(obj, objc.sel_registerName(sel), *args)
+
+    @classmethod
+    def cls(cls, name):
+        return cls._rt().objc_getClass(name)
+
+    @classmethod
+    def frontmost_pid(cls):
+        try:
+            ws = cls.send(cls.cls(b"NSWorkspace"), b"sharedWorkspace")
+            app = cls.send(ws, b"frontmostApplication")
+            return cls.send(app, b"processIdentifier", restype=ctypes.c_int) if app else None
+        except Exception:
+            return None
+
+    @classmethod
+    def activate(cls, pid):
+        """Give focus back to another app."""
+        app = cls.send(cls.cls(b"NSRunningApplication"), b"runningApplicationWithProcessIdentifier:", pid,
+                       argtypes=(ctypes.c_int,))
+        if app:
+            cls.send(app, b"activateWithOptions:", 2, argtypes=(ctypes.c_ulong,), restype=ctypes.c_bool)
+
+    @classmethod
+    def accessory(cls):
+        """No Dock icon or menu bar: dictate is a background helper, not an app you switch to."""
+        nsapp = cls.send(cls.cls(b"NSApplication"), b"sharedApplication")
+        cls.send(nsapp, b"setActivationPolicy:", 1, argtypes=(ctypes.c_long,), restype=ctypes.c_bool)
 
 
 def run_ui(root, overlay, ui, on_tick=None, period=30):
@@ -1017,18 +1071,7 @@ def foreground():
     if SYSTEM == "Windows":
         return ctypes.windll.user32.GetForegroundWindow()
     if SYSTEM == "Darwin":
-        try:
-            ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")  # NSWorkspace
-            objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
-            objc.objc_getClass.restype, objc.objc_getClass.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
-            objc.sel_registerName.restype, objc.sel_registerName.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
-            send = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
-            pid = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
-            ws = send(objc.objc_getClass(b"NSWorkspace"), objc.sel_registerName(b"sharedWorkspace"))
-            app = send(ws, objc.sel_registerName(b"frontmostApplication"))
-            return pid(app, objc.sel_registerName(b"processIdentifier")) if app else None
-        except Exception:
-            return None
+        return Mac.frontmost_pid()
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
         r = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True)
         try:
@@ -1072,24 +1115,29 @@ def cmd_selftest(seconds):
         root, overlay = make_ui()
         if root is None:
             raise RuntimeError("Tk didn't start")
+        after_init = foreground()
         ui = queue.Queue()
         steps = [("recording", False)] + [("level", abs(math.sin(i / 3))) for i in range(40)] + \
                 [("working", "Transcribing"), ("working", "Cleaning up"), ("message", "Done")]
         t0 = time.monotonic()
-        stolen = []
+        samples = []  # focus while the pill shows
 
         def tick():
             if steps:
                 ui.put(steps.pop(0))
-            if overlay.state != "hidden" and foreground() != before and before is not None:
-                stolen.append(foreground())
+            if overlay.state != "hidden":
+                samples.append(foreground())
             return time.monotonic() - t0 < seconds
 
         run_ui(root, overlay, ui, tick, period=50)
-        if stolen:
-            raise AssertionError(f"the overlay took focus ({before} -> {stolen[0]})")
-        return "shown recording / transcribing / message, focus unchanged" + ("" if before is not None else
-                                                                             " (focus not checkable here)")
+        if before is None:
+            return "shown recording / transcribing / message (focus not checkable here)"
+        moved = [f for f in samples if f != before]
+        where = f"focus {before}, after start {after_init}, this process {os.getpid()}"
+        if samples and samples[-1] != before or after_init != before:
+            raise AssertionError(f"the overlay kept focus: {where}, while shown {sorted(set(samples), key=str)}")
+        flicker = f", but it moved for {len(moved)} of {len(samples)} checks" if moved else ""
+        return f"shown recording / transcribing / message, focus unchanged{flicker} ({where})"
 
     def clipboard():
         sample = "localflow ✓ test\nline two"
