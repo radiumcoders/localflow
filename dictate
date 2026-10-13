@@ -598,6 +598,15 @@ class Overlay:
         self.hwnd = None
         if SYSTEM == "Windows":
             self._windows_no_activate()
+        elif SYSTEM == "Darwin":
+            # Showing a window activates the app on macOS, so the pill stays
+            # shown and turns invisible instead, letting clicks through.
+            root.attributes("-alpha", 0.0)
+            root.update()
+            try:
+                Mac.click_through()
+            except Exception as e:
+                log.info("couldn't make the overlay click-through: %s", e)
         else:
             root.withdraw()
         self._animate()
@@ -627,22 +636,26 @@ class Overlay:
         x, y = self._place()
         if SYSTEM == "Windows":
             ctypes.windll.user32.SetWindowPos(self.hwnd, -1, x, y, self.W, self.H, 0x0010 | 0x0040)  # NOACTIVATE|SHOWWINDOW
-        else:
-            if not self.hyprland:  # on Hyprland a window rule places it on the focused monitor
-                self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
-            prev = Mac.frontmost_pid() if SYSTEM == "Darwin" else None
-            self.root.deiconify()
-            if SYSTEM != "Darwin":  # on macOS, raising activates the app; -topmost keeps it above
-                self.root.lift()
+        elif SYSTEM == "Darwin":
+            prev = Mac.frontmost_pid()
+            self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
+            self.root.attributes("-alpha", 1.0)
             if prev and prev != os.getpid():
                 self.root.update_idletasks()
                 if Mac.frontmost_pid() == os.getpid():
                     log.info("overlay took focus; giving it back")
                     Mac.activate(prev)
+        else:
+            if not self.hyprland:  # on Hyprland a window rule places it on the focused monitor
+                self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
+            self.root.deiconify()
+            self.root.lift()
 
     def hide(self):
         if SYSTEM == "Windows":
             ctypes.windll.user32.ShowWindow(self.hwnd, 0)
+        elif SYSTEM == "Darwin":
+            self.root.attributes("-alpha", 0.0)
         else:
             self.root.withdraw()
         self.state = "hidden"
@@ -879,6 +892,15 @@ class Mac:
                        argtypes=(ctypes.c_int,))
         if app:
             cls.send(app, b"activateWithOptions:", 2, argtypes=(ctypes.c_ulong,), restype=ctypes.c_bool)
+
+    @classmethod
+    def click_through(cls):
+        """Let clicks pass through this app's windows (the pill is never clicked)."""
+        nsapp = cls.send(cls.cls(b"NSApplication"), b"sharedApplication")
+        windows = cls.send(nsapp, b"windows")
+        for i in range(cls.send(windows, b"count", restype=ctypes.c_ulong)):
+            w = cls.send(windows, b"objectAtIndex:", i, argtypes=(ctypes.c_ulong,))
+            cls.send(w, b"setIgnoresMouseEvents:", True, argtypes=(ctypes.c_bool,), restype=None)
 
     @classmethod
     def accessory(cls):
