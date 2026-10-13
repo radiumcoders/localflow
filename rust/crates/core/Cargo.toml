@@ -1,0 +1,11 @@
+[package]
+name = "localflow-core"
+description = "localflow's dictation cleanup: rules, few-shot examples, provider clients, review pass, learned words"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+regex = "1.11"
+serde_json = "1.0"
+ureq = { version = "2.12", features = ["json"] }

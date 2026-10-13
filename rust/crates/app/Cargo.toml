@@ -1,0 +1,9 @@
+[package]
+name = "localflow"
+description = "localflow: talk, and get clean text where you type"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+localflow-core = { path = "../core" }
