@@ -683,12 +683,14 @@ def handy_models():
     try:
         r = subprocess.run([str(exe), "--list-models", "--json"], capture_output=True, timeout=60,
                            creationflags=0x08000000 if SYSTEM == "Windows" else 0)
-        out = r.stdout
+        out, err = r.stdout, r.stderr
     except subprocess.TimeoutExpired as e:  # it can linger after printing
-        out = e.stdout or b""
+        out, err = e.stdout or b"", e.stderr or b""
     try:
         return json.loads(out)
     except (ValueError, TypeError):
+        for line in (err or b"").decode("utf-8", "replace").strip().splitlines()[-5:]:
+            print(f"   handy: {line}")
         return []
 
 
