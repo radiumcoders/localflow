@@ -46,6 +46,18 @@ def misplaced():
     return sys.platform == "darwin" and (exe.startswith("/Volumes/") or "/AppTranslocation/" in exe)
 
 
+def trust_the_system():
+    """Verify HTTPS certificates with the OS's own store (Keychain, Windows'
+    store, the distro's bundle). The bundled OpenSSL only knows where the build
+    machine keeps its certificates, so on a Mac without that path every
+    download and API call fails with CERTIFICATE_VERIFY_FAILED."""
+    try:
+        import truststore
+    except ImportError:  # running from source: Python's own settings apply
+        return
+    truststore.inject_into_ssl()
+
+
 def clean_child_environment():
     """On Linux the frozen app points LD_LIBRARY_PATH at its own bundled
     libraries; programs it starts (Handy, notify-send, the paste tools) must
@@ -59,6 +71,7 @@ def clean_child_environment():
 
 
 def main():
+    trust_the_system()
     clean_child_environment()
     if sys.stdout is None:
         log_to_file()

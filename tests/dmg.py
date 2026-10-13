@@ -10,7 +10,8 @@ set it up without its window, check it runs at login, then remove it.
    needed.
 3. The background app that setup registered with launchd: running, waiting
    for the hotkey (or for the Accessibility permission, as on a new Mac).
-4. `localflow --selftest`: overlay, focus, clipboard, hotkey, microphone.
+4. `localflow --selftest`: overlay, focus, clipboard, hotkey, microphone, and
+   HTTPS with the build machine's certificate paths hidden.
 5. Removes the app and its login item.
 
 Prints PASS / FAIL per step; exits 1 if anything failed.
@@ -26,6 +27,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from e2e import SPEECH_MODEL, background_app, failures, start_fake_api, step, stop_background  # noqa: E402
+
+# The bundled OpenSSL's certificate paths are the build machine's, which CI
+# machines have and users' machines may not: hide them, as on a user's machine.
+NO_BUILD_CERTS = {"SSL_CERT_FILE": "/nonexistent/cert.pem", "SSL_CERT_DIR": "/nonexistent/certs"}
 
 APP = Path("/Applications/localflow.app")
 EXE = APP / "Contents/MacOS/localflow"
@@ -63,7 +68,7 @@ def setup(api):
 
 def selftest():
     stop_background()  # it holds the hotkey
-    r = subprocess.run([str(EXE), "--selftest", "3"], timeout=180)
+    r = subprocess.run([str(EXE), "--selftest", "3"], env=dict(os.environ, **NO_BUILD_CERTS), timeout=180)
     assert r.returncode == 0, f"--selftest exited {r.returncode}"
     return "all checks passed"
 

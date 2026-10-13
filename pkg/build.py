@@ -1,7 +1,7 @@
 """Build the packaged app: PyInstaller, then the installer (.msi on Windows,
 .dmg on macOS, AppImage on Linux).
 
-    pip install pyinstaller==6.19.0 pillow==11.3.0
+    pip install pyinstaller==6.19.0 pillow==11.3.0 truststore==0.10.1
     dotnet tool install --global wix --version 5.0.2    # Windows, for the .msi
     python pkg/build.py --version 0.1.0
 

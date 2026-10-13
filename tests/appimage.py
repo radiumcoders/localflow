@@ -8,7 +8,8 @@ check the copy it runs from and the launcher entry, then self-test that copy.
 2. The app copied to ~/.local/share/localflow/app (key bindings run it, so it
    must outlive the AppImage's mount), its launcher entry, and the settings.
 3. The copy runs with the AppImage gone, and prints its key bindings.
-4. `localflow --selftest` from the copy: overlay, clipboard, microphone.
+4. `localflow --selftest` from the copy: overlay, clipboard, microphone, and
+   HTTPS with the build machine's certificate paths hidden.
 
 Prints PASS / FAIL per step; exits 1 if anything failed.
 """
@@ -20,6 +21,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from e2e import SPEECH_MODEL, failures, start_fake_api, step  # noqa: E402
+
+# The bundled OpenSSL's certificate paths are the build machine's, which CI
+# machines have and users' machines may not: hide them, as on a user's machine.
+NO_BUILD_CERTS = {"SSL_CERT_FILE": "/nonexistent/cert.pem", "SSL_CERT_DIR": "/nonexistent/certs"}
 
 HOME = Path.home()
 APP = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "localflow/app"
@@ -59,7 +64,8 @@ def outlives(appimage):
 
 
 def selftest():
-    r = subprocess.run([str(APP / "localflow"), "--selftest", "3"], timeout=180)
+    r = subprocess.run([str(APP / "localflow"), "--selftest", "3"], env=dict(os.environ, **NO_BUILD_CERTS),
+                       timeout=180)
     assert r.returncode == 0, f"--selftest exited {r.returncode}"
     return "all checks passed"
 

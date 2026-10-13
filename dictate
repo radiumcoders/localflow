@@ -2353,6 +2353,19 @@ def cmd_selftest(seconds):
             raise SkipTest("recorder gave no audio (no microphone?)")
         return f"{len(pcm) / (2 * RATE):.2f}s recorded, level {level(pcm):.2f}"
 
+    def https():
+        import ssl
+        import urllib.error
+        try:
+            urllib.request.urlopen("https://api.github.com", timeout=10).read(1)
+        except urllib.error.HTTPError:  # an answer at all means the certificate checked out
+            pass
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, ssl.SSLError):
+                raise RuntimeError(f"HTTPS certificates can't be verified: {e.reason}") from None
+            raise SkipTest(f"offline? ({e.reason})") from None
+        return "certificates verified (api.github.com)"
+
     def handy():
         exe = handy_path()
         if not exe:
@@ -2383,6 +2396,7 @@ def cmd_selftest(seconds):
     check("clipboard", clipboard)
     check("hotkey", hotkey)
     check("microphone", microphone)
+    check("HTTPS", https)
     check("overlay", overlay_test)
     print(f"\n{results.count(False)} failed")
     return 1 if False in results else 0

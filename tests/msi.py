@@ -8,7 +8,8 @@ installed app without its window, check it runs at sign-in, then uninstall.
 2. `localflow.exe install` against a fake cleanup API (tests/fake_api.py) with
    a tiny speech model: setup's steps inside the packaged app.
 3. The background app that setup started: holds its lock port, hotkey ready.
-4. `localflow.exe --selftest`: overlay, focus, clipboard, hotkey.
+4. `localflow.exe --selftest`: overlay, focus, clipboard, hotkey, and HTTPS
+   with the build machine's certificate paths hidden.
 5. Uninstalls, and checks all of step 1 is gone.
 
 Prints PASS / FAIL per step; exits 1 if anything failed.
@@ -23,6 +24,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from e2e import SPEECH_MODEL, background_app, failures, start_fake_api, step  # noqa: E402
+
+# The bundled OpenSSL's certificate paths are the build machine's, which CI
+# machines have and users' machines may not: hide them, as on a user's machine.
+NO_BUILD_CERTS = {"SSL_CERT_FILE": "/nonexistent/cert.pem", "SSL_CERT_DIR": "/nonexistent/certs"}
 
 APP = Path(os.environ["ProgramFiles"]) / "localflow/localflow.exe"
 SHORTCUT = Path(os.environ["ProgramData"]) / "Microsoft/Windows/Start Menu/Programs/localflow.lnk"
@@ -73,7 +78,7 @@ def selftest():
     subprocess.run(["taskkill", "/IM", "localflow.exe", "/F"], capture_output=True)  # it holds the hotkey
     time.sleep(1)
     start = len(app_log())
-    r = subprocess.run([str(APP), "--selftest", "3"], timeout=120)
+    r = subprocess.run([str(APP), "--selftest", "3"], env=dict(os.environ, **NO_BUILD_CERTS), timeout=120)
     print(app_log()[start:])
     assert r.returncode == 0, f"--selftest exited {r.returncode}"
     return "all checks passed"
