@@ -22,6 +22,19 @@ multi-topic dictation, spoken commands ("new paragraph", "new line",
 dictated question stays a question. Nothing leaves your machine (unless you
 opt into [your own API key](#use-your-own-api-key-optional)).
 
+## Sponsors
+
+<a href="https://www.shadcn-labs.com/?utm_source=localflow&utm_medium=referral&utm_campaign=backed_by">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/shadcn-labs-light.svg">
+    <img src="assets/shadcn-labs-dark.svg" alt="Shadcn Labs" height="24">
+  </picture>
+</a>
+
+localflow is backed by [Shadcn Labs](https://www.shadcn-labs.com/?utm_source=localflow&utm_medium=referral&utm_campaign=backed_by).
+Want to sponsor it too? [DM me on X](https://x.com/radiumcoders) or
+[sponsor on GitHub](https://github.com/sponsors/radiumcoders).
+
 ## How it works
 
 Two checkpoints:
@@ -536,4 +549,5 @@ and misses more corrections; `qwen3.5:9b` scored lower (26/31) at ~1.5–2x the 
 | `dictate` | the dictation app: overlay, hotkey, recording, transcription, cleanup, paste |
 | `tests/` | `python -m unittest discover -s tests` (no key, model or microphone needed); `e2e.py`, the install-and-dictate test CI runs; `msi.py`, `dmg.py` and `appimage.py`, the installer tests |
 | `paste` | Linux/Hyprland paste helper for Handy and `dictate` |
+| `assets/` | images for this README |
 | `pkg/` | the packaged app: `build.py` (PyInstaller, then the `.msi` with WiX, the `.dmg` or the AppImage), its setup window and entry point |
