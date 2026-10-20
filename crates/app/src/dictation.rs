@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use localflow_core::agent::{Command, Submit, command, split_send};
 use localflow_core::{Config, Localflow};
+use localflow_desktop::history::{self, Entry};
 use localflow_desktop::learn::{Learning, learning_mode, remember};
 use localflow_desktop::paste::{Key, paste_text, press};
 use localflow_desktop::paths::{info, warn};
@@ -158,12 +159,20 @@ impl Dictation {
         };
         // In a coding agent: a command presses keys; "send it" sends the prompt.
         let agent = target.as_ref().and_then(|t| t.agent.clone());
+        let keep = |text: &str, outcome: &str| {
+            if self.lf.cfg.history {
+                let app = target.as_ref().map(|t| t.app.clone()).unwrap_or_default();
+                let (heard, text, outcome) = (heard.text.clone(), text.to_string(), outcome.to_string());
+                history::add(Entry { app, agent: agent.clone(), heard, text, outcome, ..Entry::default() });
+            }
+        };
         if let Some(agent) = &agent
             && let Some(cmd) = command(&heard.text, agent)
         {
             self.ui.send(UiMsg::Hide);
             std::thread::sleep(Duration::from_millis(100));
             let done = run_command(cmd);
+            keep(cmd.describe(), "command");
             info(format_args!("{secs:.1}s of audio: {} to {agent}{}", cmd.describe(), if done { "" } else { " (keys not sent)" }));
             return message(if done { cmd.describe() } else { "Couldn't press the keys" }, 1200);
         }
@@ -198,6 +207,7 @@ impl Dictation {
             std::thread::sleep(Duration::from_millis(150)); // the agent takes the paste first
             press(Key::Enter)
         };
+        keep(&text, if sent { "sent" } else if pasted { "pasted" } else { "copied" });
         let stamp = remember(&text);
         if pasted && !sent && !self.raw {
             crate::session::watch_for_fixes(target.as_ref().and_then(|t| t.pid), stamp);

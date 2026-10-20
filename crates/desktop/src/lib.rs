@@ -3,6 +3,7 @@
 //! and the clipboard, the hotkey on Windows and macOS, and learning from the
 //! fixes you make to what was pasted. No UI: the app crate draws the overlay.
 
+pub mod history;
 pub mod hotkey;
 pub mod learn;
 pub mod paste;
