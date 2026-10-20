@@ -32,6 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v2-portable-ggml
       - name: Version
         shell: bash
         run: |
