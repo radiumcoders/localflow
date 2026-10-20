@@ -55,6 +55,7 @@ fn main() -> ExitCode {
         Some("learn") => session::learn(),
         Some("_session") => session::run_session(raw),
         Some("_watch") => session::run_watch(&args[1..]),
+        Some("_message") => session::run_message(&args[1..]),
         Some("--selftest") => selftest::run(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(3.0)),
         Some(_) => cli::run(&args),
     }

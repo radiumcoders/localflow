@@ -1,19 +1,20 @@
-//! How dictation runs.
+//! How dictation runs: one short-lived process per dictation (`_session`),
+//! which records right away, shows the pill, and exits once it has pasted.
+//! `stop` and `cancel` leave a file for it (files, not signals: a quick tap
+//! can send stop before the session has started).
 //!
 //! Linux: compositors own the keys, so key bindings run `localflow start` /
-//! `stop`. `start` spawns a session process that records and shows the
-//! pill; `stop` and `cancel` leave a file for it (files, not signals: a
-//! quick tap can send stop before the session has started). Nothing runs
-//! between dictations.
+//! `stop`. Nothing runs between dictations.
 //!
-//! macOS and Windows: one background app waits for the hotkey (~25 MB). A
-//! second launch asks it to open the settings window. It holds 127.0.0.1:11437
-//! while it runs, so only one of it does.
+//! macOS and Windows: a background app (`--background`) waits for the
+//! hotkey. It has no UI of its own (a few MB): the hotkey starts a session
+//! process the same way. Opening localflow again opens the settings. It holds
+//! 127.0.0.1:11437 while it runs, so only one of it does.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -23,7 +24,7 @@ use localflow_desktop::learn::{last_dictation, learn_correction, watch};
 use localflow_desktop::paths::{self, error, info, make_run_dir, run_dir};
 
 use crate::dictation::{Dictation, learns_on_its_own};
-use crate::ui::{self, Start, Ui, UiMsg};
+use crate::ui::{self, Start, UiMsg};
 
 const PORT: u16 = 11437;
 
@@ -31,7 +32,7 @@ fn me() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| "localflow".into())
 }
 
-/// Set up once: the settings window has saved (or install.py wrote) the env file.
+/// Set up once: the settings window (or `localflow setup`) wrote the env file.
 pub fn configured() -> bool {
     config_dir().join("env").exists()
 }
@@ -47,10 +48,8 @@ pub fn app() -> ExitCode {
     background()
 }
 
+/// `localflow settings`: the window, in a process of its own.
 pub fn settings() -> ExitCode {
-    if !cfg!(target_os = "linux") && ask_running("settings") {
-        return ExitCode::SUCCESS;
-    }
     let _ = paths::init_log();
     let (ui, rx) = ui::channel();
     ui::run(ui, rx, Start { settings: true, quit_with_settings: true, then: Box::new(|_, _| {}) });
@@ -66,46 +65,68 @@ fn ask_running(what: &str) -> bool {
 }
 
 /// macOS / Windows: wait for the hotkey. The first time (nothing set up
-/// yet), the settings window opens; the hotkey works once it's saved.
+/// yet), the settings window opens; the hotkey works with what it saves.
 pub fn background() -> ExitCode {
     let _ = paths::init_log();
     let Ok(lock) = TcpListener::bind(("127.0.0.1", PORT)) else {
         info("already running");
         return ExitCode::SUCCESS;
     };
-    let (ui, rx) = ui::channel();
-    let requests = ui.clone();
+    if !configured() {
+        open_settings();
+    }
     std::thread::spawn(move || {
         for stream in lock.incoming().flatten() {
             let mut line = String::new();
             let _ = BufReader::new(stream).read_line(&mut line);
             match line.trim() {
-                "settings" => requests.send(UiMsg::Settings),
-                "quit" => requests.send(UiMsg::Quit),
+                "settings" => open_settings(),
+                "quit" => std::process::exit(0),
                 _ => {}
             }
         }
     });
-    let first_run = !configured();
-    ui::run(ui, rx, Start {
-        settings: first_run,
-        quit_with_settings: false,
-        then: Box::new(move |ui, _| listen(ui)),
-    });
+    listen();
     ExitCode::SUCCESS
 }
 
-/// The hotkey: its listener on one thread, what it does on another.
-fn listen(ui: Ui) {
+fn open_settings() {
+    if let Err(e) = spawn(&["settings"]) {
+        error(format_args!("couldn't open the settings: {e}"));
+    }
+}
+
+/// Show a message in the pill, from a process of its own.
+fn show(text: &str, ms: u64) {
+    let _ = spawn(&["_message", text, &ms.to_string()]);
+}
+
+/// A dictation the hotkey started: its session process.
+struct Session(Child);
+
+impl localflow_desktop::hotkey::Dictation for Session {
+    fn cancel(mut self) {
+        let _ = std::fs::write(run_dir().join(format!("cancel-{}", self.0.id())), "");
+        let _ = self.0.wait();
+    }
+}
+
+/// The hotkey: its listener on one thread, what it does on this one.
+fn listen() {
     let (tx, events) = mpsc::channel();
     let started = Instant::now();
-    let (new_ui, message_ui) = (ui.clone(), ui.clone());
     let mut keys = HotkeyController::new(
-        move || Dictation::start(new_ui.clone(), false),
-        |d: Dictation| {
-            d.finish();
+        || {
+            make_run_dir().map_err(|e| e.to_string())?;
+            let child = spawn(&["_session"]).map_err(|e| format!("couldn't start: {e}"))?;
+            let _ = std::fs::write(run_dir().join("current"), child.id().to_string());
+            Ok(Session(child))
         },
-        move |text| message_ui.send(UiMsg::Message(text, 3000)),
+        |Session(mut child)| {
+            let _ = std::fs::write(run_dir().join(format!("stop-{}", child.id())), "");
+            let _ = child.wait(); // presses wait until it has pasted
+        },
+        |text| show(&text, 3000),
     )
     .with_learn(|| learn_correction(&Localflow::new(Config::from_env())));
     let recording = keys.recording_flag();
@@ -116,21 +137,37 @@ fn listen(ui: Ui) {
             let _ = errors.send(HotkeyEvent::Error(e));
         }
     });
-    std::thread::spawn(move || {
-        for event in events {
-            match &event {
-                HotkeyEvent::Ready => {
-                    let (dictate, learn) = hotkey::names();
-                    info(format_args!("ready: hold {dictate} to dictate, {learn} to learn a correction"));
-                }
-                HotkeyEvent::Error(e) => {
-                    let shown = if e.contains("Accessibility") { "Allow localflow under Accessibility" } else { "Hotkey unavailable, see dictate.log" };
-                    ui.send(UiMsg::Message(shown.into(), 6000));
-                }
-                _ => keys.on(&event, started.elapsed().as_secs_f64()),
+    for event in events {
+        match &event {
+            HotkeyEvent::Ready => {
+                let (dictate, learn) = hotkey::names();
+                info(format_args!("ready: hold {dictate} to dictate, {learn} to learn a correction"));
             }
+            HotkeyEvent::Error(e) => {
+                show(if e.contains("Accessibility") { "Allow localflow under Accessibility" } else { "Hotkey unavailable, see dictate.log" }, 6000);
+            }
+            _ => keys.on(&event, started.elapsed().as_secs_f64()),
         }
+    }
+}
+
+/// `_message TEXT MS`: the pill with a message, then gone.
+pub fn run_message(args: &[String]) -> ExitCode {
+    let text = args.first().cloned().unwrap_or_default();
+    let ms: u64 = args.get(1).and_then(|m| m.parse().ok()).unwrap_or(2500);
+    let (ui, rx) = ui::channel();
+    ui.send(UiMsg::Message(text, ms));
+    ui::run(ui, rx, Start {
+        settings: false,
+        quit_with_settings: false,
+        then: Box::new(move |ui, _| {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(ms + 200));
+                ui.send(UiMsg::Quit);
+            });
+        }),
     });
+    ExitCode::SUCCESS
 }
 
 // --- Linux: one process per dictation ---------------------------------------------
@@ -141,6 +178,20 @@ fn session_pid() -> Option<u32> {
 }
 
 fn alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let running = GetExitCodeProcess(h, &mut code) != 0 && code == STILL_ACTIVE as u32;
+        CloseHandle(h);
+        running
+    }
+    #[cfg(not(windows))]
     if cfg!(target_os = "linux") {
         PathBuf::from(format!("/proc/{pid}")).exists()
     } else {
@@ -149,7 +200,7 @@ fn alive(pid: u32) -> bool {
 }
 
 /// Run `localflow ARGS` in the background, its output in the log.
-fn spawn_detached(args: &[&str]) -> std::io::Result<u32> {
+fn spawn(args: &[&str]) -> std::io::Result<Child> {
     let log = std::fs::OpenOptions::new().create(true).append(true).open({
         let _ = std::fs::create_dir_all(paths::state_dir());
         paths::log_file()
@@ -158,16 +209,16 @@ fn spawn_detached(args: &[&str]) -> std::io::Result<u32> {
     cmd.args(args).stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0); // outlives the key binding's shell
-    Ok(cmd.spawn()?.id())
+    cmd.spawn()
 }
 
 pub fn start(raw: bool) -> ExitCode {
     if make_run_dir().is_err() || session_pid().is_some() {
         return ExitCode::SUCCESS;
     }
-    match spawn_detached(if raw { &["_session", "raw"] } else { &["_session"] }) {
-        Ok(pid) => {
-            let _ = std::fs::write(run_dir().join("current"), pid.to_string());
+    match spawn(if raw { &["_session", "raw"] } else { &["_session"] }) {
+        Ok(child) => {
+            let _ = std::fs::write(run_dir().join("current"), child.id().to_string());
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -266,23 +317,15 @@ pub fn learn() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Watch for your fixes to what was just pasted: a short-lived process on
-/// Linux (the session exits right after pasting), a thread in the app elsewhere.
-pub fn watch_for_fixes(text: &str, pid: Option<u32>, stamp: f64, ui: &Ui) {
+/// Watch for your fixes to what was just pasted, from a short-lived process
+/// of its own (the session exits right after pasting). ~25 MB while it does.
+pub fn watch_for_fixes(pid: Option<u32>, stamp: f64) {
     if !learns_on_its_own() {
         return;
     }
-    if cfg!(target_os = "linux") {
-        if let Err(e) = spawn_detached(&["_watch", &pid.unwrap_or(0).to_string(), &stamp.to_string()]) {
-            info(format_args!("couldn't watch for fixes: {e}"));
-        }
-        return;
+    if let Err(e) = spawn(&["_watch", &pid.unwrap_or(0).to_string(), &stamp.to_string()]) {
+        info(format_args!("couldn't watch for fixes: {e}"));
     }
-    let (text, ui) = (text.to_string(), ui.clone());
-    std::thread::spawn(move || {
-        let lf = Localflow::new(Config::from_env());
-        watch(&lf, &text, pid, stamp, &|m| ui.send(UiMsg::Message(m, 3000)));
-    });
 }
 
 /// `_watch PID STAMP`: the Linux watcher, for the dictation with that stamp.
@@ -293,7 +336,9 @@ pub fn run_watch(args: &[String]) -> ExitCode {
         && latest == stamp
     {
         let lf = Localflow::new(Config::from_env());
-        watch(&lf, &text, pid, stamp, &|m| localflow_desktop::notify(&m, 4000));
+        // What it learned: a notification on Linux (any desktop has them), the pill elsewhere.
+        let tell = |m: String| if cfg!(target_os = "linux") { localflow_desktop::notify(&m, 4000) } else { show(&m, 3000) };
+        watch(&lf, &text, pid, stamp, &tell);
     }
     ExitCode::SUCCESS
 }

@@ -178,7 +178,7 @@ impl Dictation {
         let pasted = deliver(&text, target.as_ref(), &offered);
         let stamp = remember(&text);
         if pasted && !self.raw {
-            crate::session::watch_for_fixes(&text, target.as_ref().and_then(|t| t.pid), stamp, &self.ui);
+            crate::session::watch_for_fixes(target.as_ref().and_then(|t| t.pid), stamp);
         }
         info(format_args!(
             "{secs:.1}s of audio: transcribed in {:.2}s, done in {:.2}s{}{}{}",
@@ -193,12 +193,6 @@ impl Dictation {
             return message(&format!("Copied: paste with {keys}"), 2500);
         }
         0
-    }
-}
-
-impl localflow_desktop::hotkey::Dictation for Dictation {
-    fn cancel(self) {
-        Dictation::cancel(self);
     }
 }
 

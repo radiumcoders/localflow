@@ -22,8 +22,6 @@ pub enum UiMsg {
     /// A message, shown for this many milliseconds.
     Message(String, u64),
     Hide,
-    /// Open the settings window (or bring it to the front).
-    Settings,
     Quit,
 }
 
@@ -96,7 +94,6 @@ fn handle(msg: UiMsg, cx: &mut App) {
         UiMsg::Working(text) => Overlay::show(Phase::Working(text.into()), None, cx),
         UiMsg::Message(text, ms) => Overlay::show(Phase::Message(text.into()), Some(ms), cx),
         UiMsg::Hide => Overlay::hide(cx),
-        UiMsg::Settings => settings::open(cx),
         UiMsg::Quit => cx.quit(),
     }
 }
