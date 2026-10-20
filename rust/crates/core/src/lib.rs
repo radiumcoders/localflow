@@ -16,6 +16,7 @@
 mod chat;
 mod cleanup;
 mod config;
+mod ollama;
 pub mod difflib;
 pub mod eval;
 pub mod prompts;
