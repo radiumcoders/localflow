@@ -31,6 +31,7 @@ const PROVIDERS: &[(&str, &str)] = &[
     ("Other (OpenAI-compatible URL)", ""),
 ];
 const LEARN: &[(&str, &str)] = &[("On its own", "auto"), ("Only with the learn key", "key"), ("Off", "off")];
+const SUBMIT: &[(&str, &str)] = &[("When you say \"send it\"", "said"), ("Always", "always"), ("Never", "never")];
 const LANGUAGES: &[(&str, &str)] = &[
     ("Detect it", ""),
     ("English", "en"),
@@ -129,6 +130,8 @@ pub struct SettingsView {
     check: Job,
     asides: bool,
     learn: Choice,
+    submit: Choice,
+    history: bool,
     saved: Job,
 }
 
@@ -160,6 +163,7 @@ impl SettingsView {
         let provider_ix = if custom { PROVIDERS.len() - 1 } else { index_of(PROVIDERS, &provider_name.as_str()) };
         let language = cfg.language.clone().unwrap_or_default();
         let learn = file("LOCALFLOW_LEARN").unwrap_or_else(|| "auto".into()).trim().to_lowercase();
+        let submit = cfg.submit.value().unwrap_or("said");
         let has_key = cfg.api_key.is_some() || cfg.key_file().exists();
         let api_model = if cfg.anthropic || cfg.api_url.is_empty() { String::new() } else { cfg.model.clone() };
         let local_model = if cfg.api_url.is_empty() { cfg.model.clone() } else { LOCAL_MODELS[0].to_string() };
@@ -187,10 +191,12 @@ impl SettingsView {
             check: Job::Idle,
             asides: cfg.asides,
             learn: choice(LEARN, index_of(LEARN, &learn.as_str()), window, cx),
+            submit: choice(SUBMIT, index_of(SUBMIT, &submit), window, cx),
+            history: cfg.history,
             saved: Job::Idle,
             cfg,
         };
-        for entity in [&view.provider, &view.language, &view.learn] {
+        for entity in [&view.provider, &view.language, &view.learn, &view.submit] {
             cx.observe(entity, |_, _, cx| cx.notify()).detach();
         }
         view.check_ollama(cx);
@@ -222,6 +228,9 @@ impl SettingsView {
         changes.push(("LOCALFLOW_ASIDES", (!self.asides).then(|| "keep".into())));
         let learn = chosen(&self.learn, LEARN, cx);
         changes.push(("LOCALFLOW_LEARN", (learn != "auto").then(|| learn.into())));
+        let submit = chosen(&self.submit, SUBMIT, cx);
+        changes.push(("LOCALFLOW_SUBMIT", (submit != "said").then(|| submit.into())));
+        changes.push(("LOCALFLOW_HISTORY", (!self.history).then(|| "off".into())));
         changes
     }
 
@@ -426,11 +435,13 @@ impl SettingsView {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_w_0()
                     .gap_0p5()
                     .child(div().text_sm().child(label.into()))
                     .children(hint.map(|h| div().text_xs().text_color(cx.theme().muted_foreground).child(h))),
             )
-            .child(control)
+            .child(div().flex_none().child(control))
     }
 
     fn status(job: &Job, cx: &App) -> Option<Div> {
@@ -674,6 +685,21 @@ impl SettingsView {
                 "Learn from your fixes",
                 Some("When you correct a misheard word, it's spelled right from then on".into()),
                 Select::new(&self.learn).w(px(200.)).small(),
+                cx,
+            )))
+            .child(div().border_t_1().border_color(cx.theme().border).child(Self::row(
+                "Send prompts to coding agents",
+                Some("Press Enter after pasting into Claude Code, Codex...".into()),
+                Select::new(&self.submit).w(px(200.)).small(),
+                cx,
+            )))
+            .child(div().border_t_1().border_color(cx.theme().border).child(Self::row(
+                "Keep a history",
+                Some("What you said and what went out, on this computer only".into()),
+                Switch::new("history").checked(self.history).on_click(cx.listener(|this, checked, _, cx| {
+                    this.history = *checked;
+                    cx.notify();
+                })),
                 cx,
             )))
     }
