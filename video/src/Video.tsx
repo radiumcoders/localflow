@@ -4,7 +4,7 @@ import { Audio } from "@remotion/media";
 import { Dictation, dictationFrames, Messages, Notes, pasteFrame } from "./scenes/Dictation";
 import { C, SANS } from "./theme";
 import { clipFrames, sec } from "./timing";
-import { Icon, Mono } from "./ui/parts";
+import { Icon } from "./ui/parts";
 
 // What localflow made of the two clips (`localflow transcribe` with Claude Haiku 5.5),
 // word for word.
@@ -84,7 +84,6 @@ const ListTitle: React.FC = () => (
 const Outro: React.FC = () => {
   const f = useCurrentFrame();
   const sub = interpolate(f, [sec(1.0), sec(1.4)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const link = interpolate(f, [sec(2.2), sec(2.6)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   return (
     <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", gap: 36 }}>
       <Narration clip="n_outro" at={6} />
@@ -97,19 +96,6 @@ const Outro: React.FC = () => {
       </div>
       <div style={{ fontFamily: SANS, fontSize: 28, color: C.muted, opacity: sub }}>
         Private by default · macOS · Windows · Linux
-      </div>
-      <div
-        style={{
-          opacity: link,
-          marginTop: 10,
-          padding: "14px 26px",
-          borderRadius: 14,
-          background: C.violetSoft,
-          color: C.violet,
-          fontSize: 28,
-        }}
-      >
-        <Mono>github.com/radiumcoders/localflow</Mono>
       </div>
     </AbsoluteFill>
   );
