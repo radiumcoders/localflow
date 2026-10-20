@@ -94,7 +94,7 @@ pub fn run(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The release's version (set by pkg/build.py), or the crate's.
+/// The release's version (set by `cargo xtask package`), or the crate's.
 pub fn version() -> &'static str {
     option_env!("LOCALFLOW_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }

@@ -1,4 +1,4 @@
-//! localflow's dictation cleanup, ported from the Python `localflow` script.
+//! localflow's dictation cleanup.
 //!
 //! A raw speech-to-text transcript goes in; what the speaker meant to write
 //! comes out: self-corrections applied, filler dropped, punctuation, lists and

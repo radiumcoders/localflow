@@ -1,5 +1,5 @@
-//! Python's difflib.SequenceMatcher (no junk, autojunk off), so learning from
-//! your fixes finds the same changes the Python version did.
+//! difflib's SequenceMatcher, as in Python's standard library (no junk,
+//! autojunk off): the changes between what was pasted and what you kept.
 
 use std::collections::HashMap;
 use std::hash::Hash;

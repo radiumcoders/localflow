@@ -13,7 +13,7 @@ fn rms(x: &[f32]) -> f32 {
 }
 
 #[test]
-fn level_matches_the_python_meter() {
+fn level_meter_scale() {
     assert_eq!(level(&[]), 0.0);
     assert_eq!(level(&[0; 1600]), 0.0);
     // RMS 1000: (20 * log10(1000) - 25) / 45

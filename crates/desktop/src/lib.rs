@@ -1,4 +1,4 @@
-//! localflow's desktop plumbing, ported from the Python `dictate`: where
+//! localflow's desktop plumbing: where
 //! you're dictating (the app, its project, the files you may name), pasting
 //! and the clipboard, the hotkey on Windows and macOS, and learning from the
 //! fixes you make to what was pasted. No UI: the app crate draws the overlay.

@@ -8,7 +8,7 @@
 //!
 //! macOS and Windows: one background app waits for the hotkey (~25 MB). A
 //! second launch asks it to open the settings window. It holds 127.0.0.1:11437
-//! while it runs, like the Python version, so only one of them does.
+//! while it runs, so only one of it does.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};

@@ -1,5 +1,10 @@
-//! The Rust port against the Python `localflow`: parity.json holds what Python
-//! returns for each case (regenerate with `python3 crates/core/tests/parity.py`).
+//! The cleanup against parity.json: what the original Python version of
+//! localflow returned for about a thousand cases (prompts, checks, headings,
+//! file references, learning's diffs), kept as the reference now that
+//! localflow is Rust only. When you change the prompts or examples on
+//! purpose, write the new ones into it with
+//!
+//!     UPDATE_PARITY=1 cargo test -p localflow-core --test parity
 
 use localflow_core::difflib::{SequenceMatcher, Tag};
 use localflow_core::{Config, Localflow, Part, eval};
@@ -30,6 +35,12 @@ fn prompts_and_examples() {
         .iter()
         .map(|m| json!({"role": m.role, "content": m.content}))
         .collect();
+    if std::env::var_os("UPDATE_PARITY").is_some() {
+        let mut all = fixture();
+        all["prefix"] = Value::Array(messages.clone());
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/parity.json");
+        std::fs::write(path, serde_json::to_string_pretty(&all).unwrap() + "\n").unwrap();
+    }
     assert_eq!(Value::Array(messages), fixture()["prefix"]);
     for c in fixture()["user_turn"].as_array().unwrap() {
         assert_eq!(localflow_core::user_turn(s(&c[0]), &strs(&c[1])), s(&c[2]));

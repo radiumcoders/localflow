@@ -1,6 +1,6 @@
 //! Windows: the focused window, the clipboard and paste keys, the keyboard
 //! hook, and the focused text box through UI Automation (its COM interfaces,
-//! called through their vtables, as the Python version did).
+//! called through their vtables).
 
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};

@@ -465,7 +465,7 @@ mod tests {
         assert!(c("look at the button component", &f).contains(&"src/components/Button.tsx".to_string()));
         assert!(c("we need to install the package", &f).is_empty()); // no word for a file
         assert!(c("look at the file", &[]).is_empty());
-        // Near misses, as Python's difflib finds them.
+        // Near misses (difflib's close matches).
         let f = ["src/setting.py", "src/", "tests/e2e.py", "tests/"].map(String::from);
         assert_eq!(c("open the settings file", &f), ["src/setting.py"]);
         let f = ["dictate", "localflow", "tests/test_localflow.py", "tests/", "pkg/main.py", "pkg/"].map(String::from);

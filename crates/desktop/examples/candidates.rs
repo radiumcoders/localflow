@@ -1,5 +1,5 @@
-//! file_candidates for each line of stdin, over a project's files (for
-//! comparing with the Python version).
+//! file_candidates for each line of stdin, over a project's files: which
+//! paths a dictation would offer the cleanup.
 //!
 //!     cargo run -p localflow-desktop --example candidates -- PROJECT < sentences.txt
 
