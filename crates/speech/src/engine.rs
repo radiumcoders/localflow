@@ -92,7 +92,19 @@ pub fn transcribe(samples: &[i16], cfg: &SpeechConfig) -> Result<Transcript> {
         let name = model.map_or_else(|| path.display().to_string(), |m| m.name.to_string());
         return Err(Error(format!("speech model {name} isn't downloaded yet (open localflow's settings)")));
     }
-    Engine::load(&path, cfg.use_gpu)?.transcribe(samples, &cfg.options())
+    let mut opts = cfg.options();
+    if model.is_some_and(|m| !primes_well(m.id)) {
+        opts.vocabulary.clear();
+    }
+    Engine::load(&path, cfg.use_gpu)?.transcribe(samples, &opts)
+}
+
+/// Whether a model spells your names better for seeing them first. Tiny and
+/// Base don't: primed with "Claude, Omarchy, ...", Base heard "Please call
+/// Omarchy, please call Omarchy" for "Please call mom tomorrow at five".
+/// Small and up stay right with it.
+pub fn primes_well(id: &str) -> bool {
+    !(id.starts_with("tiny") || id.starts_with("base"))
 }
 
 fn quiet_logs() {
@@ -335,6 +347,12 @@ fn vocabulary_prompt(words: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_bigger_models_are_primed() {
+        assert!(!primes_well("tiny.en") && !primes_well("base") && !primes_well("base.en"));
+        assert!(primes_well("small.en") && primes_well("large-v3-turbo"));
+    }
 
     #[test]
     fn prompt_from_vocabulary() {
