@@ -27,7 +27,7 @@ use std::time::Duration;
 
 pub use chat::Msg;
 pub use cleanup::{Cleaned, Part, file_refs, find_problems, markdown_headings, plausible, prefix_messages, user_turn};
-pub use config::{Config, config_dir, home};
+pub use config::{Config, config_dir, home, save_api_key, save_settings};
 pub use vocab::{Hint, corrections, edited_region};
 
 #[derive(Debug, Clone, PartialEq)]

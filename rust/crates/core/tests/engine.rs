@@ -7,7 +7,7 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use localflow_core::{Config, Localflow, Msg, NO_FILES, corrections, edited_region};
+use localflow_core::{Config, Localflow, Msg, NO_FILES, corrections, edited_region, save_api_key, save_settings};
 use regex::Regex;
 use serde_json::{Value, json};
 
@@ -254,4 +254,26 @@ fn reasoning_models_get_a_minimal_request() {
     let bodies = bodies.lock().unwrap();
     assert_eq!(bodies.len(), 3, "one refusal, then minimal requests only");
     assert!(bodies[1].get("max_tokens").is_none() && bodies[2].get("max_tokens").is_none());
+}
+
+#[test]
+fn settings_are_saved_to_the_env_file() {
+    let dir = temp_dir("save");
+    std::fs::write(dir.join("env"), "# mine\nLOCALFLOW_MODEL=qwen3.5:2b\nLOCALFLOW_KEEP_ALIVE=5m\n").unwrap();
+    save_settings(&dir, &[("LOCALFLOW_MODEL", None), ("LOCALFLOW_API_URL", Some("anthropic")),
+                          ("LOCALFLOW_ASIDES", Some("keep"))]).unwrap();
+    let text = std::fs::read_to_string(dir.join("env")).unwrap();
+    assert_eq!(text, "# mine\nLOCALFLOW_KEEP_ALIVE=5m\nLOCALFLOW_API_URL=anthropic\nLOCALFLOW_ASIDES=keep\n");
+    save_api_key(&dir, " sk-test \n").unwrap();
+    let cfg = config(&[], dir.clone());
+    assert!(cfg.anthropic && !cfg.asides);
+    assert_eq!(cfg.keep_alive, "5m");
+    assert_eq!(std::fs::read_to_string(cfg.key_file()).unwrap(), "sk-test\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(cfg.key_file()).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    save_api_key(&dir, "").unwrap();
+    assert!(!cfg.key_file().exists());
 }

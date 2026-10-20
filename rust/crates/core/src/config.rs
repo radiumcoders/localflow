@@ -12,7 +12,11 @@
 //! LOCALFLOW_OLLAMA        Ollama base URL (default: http://127.0.0.1:11434)
 //! LOCALFLOW_KEEP_ALIVE    how long the model stays loaded after use (default: 1h, 2m on macOS)
 //! LOCALFLOW_USE_MMAP      1 to also keep the model file mapped in RAM (default: off, on on macOS)
-//! LOCALFLOW_SPEECH_MODEL  Handy speech model id (default: the one selected in Handy)
+//! LOCALFLOW_SPEECH_MODEL  speech model id (see `localflow models`; default: the recommended one)
+//! LOCALFLOW_SPEECH_GPU    off to transcribe on the CPU (default: the GPU when there is one)
+//! LOCALFLOW_LANGUAGE      what you speak, e.g. en or de (default: detected, English for .en models)
+//! LOCALFLOW_ASIDES        keep to paste what you say to yourself or others while dictating
+//!                         (default: drop it, see prompts::ASIDES_RULE)
 //! ```
 
 use std::collections::HashMap;
@@ -37,8 +41,15 @@ pub struct Config {
     /// reads the mapped file directly (1.3 instead of 4.8 GB for qwen3.5:4b).
     pub use_mmap: bool,
     pub api_key: Option<String>,
-    /// Handy's speech model, or None for the one selected in Handy's settings.
+    /// The speech model's id, or None for the recommended one.
     pub speech_model: Option<String>,
+    /// Transcribe on the GPU when there is one.
+    pub speech_gpu: bool,
+    /// The language you speak (a code like "en"), or None to detect it.
+    pub language: Option<String>,
+    /// Leave out asides: what you say to yourself or to someone else, and
+    /// what you mutter (rule 12).
+    pub asides: bool,
     /// Where the env file, the api_key file and your learned words.txt live.
     pub config_dir: PathBuf,
 }
@@ -58,6 +69,10 @@ pub fn config_dir() -> PathBuf {
         env("XDG_CONFIG_HOME").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(".config"))
     };
     base.join("localflow")
+}
+
+fn off(value: Option<String>) -> bool {
+    matches!(value.map(|v| v.trim().to_lowercase()).as_deref(), Some("off" | "0" | "no" | "false"))
 }
 
 fn read_env_file(path: &Path) -> HashMap<String, String> {
@@ -108,6 +123,9 @@ impl Config {
             use_mmap: var("LOCALFLOW_USE_MMAP").unwrap_or_else(|| (if mac { "1" } else { "0" }).into()) == "1",
             api_key: var("LOCALFLOW_API_KEY").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
             speech_model: var("LOCALFLOW_SPEECH_MODEL").filter(|m| !m.is_empty()),
+            speech_gpu: !off(var("LOCALFLOW_SPEECH_GPU")),
+            language: var("LOCALFLOW_LANGUAGE").map(|l| l.trim().to_lowercase()).filter(|l| !l.is_empty() && l != "auto"),
+            asides: !matches!(var("LOCALFLOW_ASIDES").map(|v| v.trim().to_lowercase()).as_deref(), Some("keep" | "off" | "0" | "no")),
             api_url,
             anthropic,
             model,
@@ -130,4 +148,39 @@ impl Config {
     pub fn backend(&self) -> &str {
         if self.api_url.is_empty() { &self.ollama } else { &self.api_url }
     }
+}
+
+/// Change settings in the env file in `dir`: each (VAR, Some(value)) is set,
+/// each (VAR, None) removed. Other lines, comments included, stay as they are.
+pub fn save_settings(dir: &Path, changes: &[(&str, Option<&str>)]) -> std::io::Result<()> {
+    let path = dir.join("env");
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = old
+        .lines()
+        .filter(|line| !changes.iter().any(|(k, _)| line.trim().split_once('=').is_some_and(|(name, _)| name == *k)))
+        .map(String::from)
+        .collect();
+    lines.extend(changes.iter().filter_map(|(k, v)| v.map(|v| format!("{k}={v}"))));
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join("env.tmp");
+    std::fs::write(&tmp, lines.join("\n") + "\n")?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// Save the API key where Config reads it, readable only by you. An empty
+/// key removes the file.
+pub fn save_api_key(dir: &Path, key: &str) -> std::io::Result<()> {
+    let path = dir.join("api_key");
+    if key.trim().is_empty() {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    std::fs::create_dir_all(dir)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(&path)?, format!("{}\n", key.trim()).as_bytes())
 }
