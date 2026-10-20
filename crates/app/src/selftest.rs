@@ -49,9 +49,12 @@ pub fn run(seconds: f32) -> ExitCode {
         if cfg!(target_os = "linux") {
             return skip("Linux learns from what you send (no text box access)");
         }
-        match localflow_desktop::learn::focused_text() {
-            Some((pid, text)) => pass(format!("read {} characters from pid {pid}", text.chars().count())),
-            None => pass("no text box focused (read without errors)"),
+        // On a thread of its own: on Windows it sets this thread's COM mode to
+        // multithreaded, and the overlay's window then can't start on it.
+        match std::thread::spawn(localflow_desktop::learn::focused_text).join() {
+            Ok(Some((pid, text))) => pass(format!("read {} characters from pid {pid}", text.chars().count())),
+            Ok(None) => pass("no text box focused (read without errors)"),
+            Err(_) => Err("reading the text box panicked".into()),
         }
     });
     check("clipboard", &clipboard);
