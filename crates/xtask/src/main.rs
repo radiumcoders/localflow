@@ -15,7 +15,11 @@ use std::process::{Command, ExitCode};
 use std::sync::LazyLock;
 
 /// The repository.
-static ROOT: LazyLock<PathBuf> = LazyLock::new(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap());
+static ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    // Windows canonicalizes to \\?\D:\..., which WiX can't parse as a path.
+    PathBuf::from(root.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+});
 
 /// Run a program, failing on a non-zero exit.
 fn run(program: &str, args: &[&str]) -> Result<(), String> {

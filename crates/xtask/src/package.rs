@@ -116,6 +116,7 @@ fn msi(build: &Path, exe: &Path, version: &str) -> Result<PathBuf, String> {
     Ok(out)
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const APPIMAGETOOL: &str = "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-{arch}.AppImage";
 
 /// The binary in usr/bin, started by AppRun, with its desktop entry and icon.
