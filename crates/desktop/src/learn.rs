@@ -185,6 +185,9 @@ impl SentMessages {
                 if meta.is_dir() {
                     todo.push(path);
                 } else if path.extension().is_some_and(|e| e == "jsonl") {
+                    // The file's own size: on Windows a directory listing's is
+                    // stale while the agent still has the file open.
+                    let Ok(meta) = std::fs::metadata(&path) else { continue };
                     let mtime = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64());
                     if mtime >= since {
                         found.push((path, meta.len()));
