@@ -180,7 +180,7 @@ impl Localflow {
         }
         let body = json!({
             "model": model,
-            "messages": messages_json(&crate::prefix_messages(&self.rules())),
+            "messages": messages_json(&crate::prefix_messages(&self.rules(), self.cfg.asides)),
             "stream": false,
             "think": false,
             "keep_alive": self.cfg.keep_alive,

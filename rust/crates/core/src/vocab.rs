@@ -50,6 +50,10 @@ impl Localflow {
 
     pub fn rules(&self) -> String {
         let mut system = crate::prompts::SYSTEM.to_string();
+        if self.cfg.asides {
+            system += "\n";
+            system += crate::prompts::ASIDES_RULE;
+        }
         let words = self.vocabulary();
         if !words.is_empty() {
             system += "\n\nSpeaker's vocabulary (use these exact spellings):\n";

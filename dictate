@@ -1500,6 +1500,10 @@ class Dictation:
                     self.finder.join(3)
                 files = file_candidates(text, self.target.files) if self.target else []
                 text = cleanup(text, files)
+                if not text.strip():
+                    self.ui.put(("message", "Left out an aside"))
+                    log.info("%.1fs of audio, only an aside", secs)
+                    return 1600
             self.ui.put(("hide",))
             time.sleep(0.1)
             pasted = deliver(text, self.target, files)

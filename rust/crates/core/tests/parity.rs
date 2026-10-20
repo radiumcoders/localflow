@@ -26,7 +26,7 @@ fn s(v: &Value) -> &str {
 #[test]
 fn prompts_and_examples() {
     let lf = engine();
-    let messages: Vec<Value> = localflow_core::prefix_messages(&lf.rules())
+    let messages: Vec<Value> = localflow_core::prefix_messages(&lf.rules(), lf.cfg.asides)
         .iter()
         .map(|m| json!({"role": m.role, "content": m.content}))
         .collect();

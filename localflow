@@ -104,6 +104,11 @@ USE_MMAP = os.environ.get("LOCALFLOW_USE_MMAP", "1" if MAC else "0") == "1"
 HANDY_LOG = os.environ.get("LOCALFLOW_HANDY_LOG", os.path.expanduser(
     "~/Library/Logs/com.pais.handy/handy.log") if MAC else "")
 
+# Asides: leave out what you say to yourself or to someone else while
+# dictating ("hmm, where was I", "one sec, I'm on a call") and what you mutter
+# (dictate marks much softer speech as <quiet>). "keep" pastes them as said.
+ASIDES = os.environ.get("LOCALFLOW_ASIDES", "drop").strip().lower() not in ("keep", "off", "0", "no")
+
 # The key lives in a file only you can read, not in the service definition.
 KEY_FILE = os.path.join(CONFIG_DIR, "api_key")
 
@@ -275,6 +280,18 @@ def edited_region(pasted, text):
             break
     return " ".join(words[start:end])
 
+
+# Rule 12 and its examples, with LOCALFLOW_ASIDES on (the default).
+ASIDES_RULE = """12. Asides: leave out what the speaker said to themselves or to someone else instead of dictating: thinking aloud ("hmm, where was I", "let me think", "what else", "how do you spell that", "okay, what's next"), remarks to people around them ("one sec, I'm on a call", "yeah, coming, give me a minute", "can you close the door"), and comments about the dictation itself ("is this recording"). Words inside <quiet> tags were said much more softly than the rest (muttered, or a voice in the background): leave them out too, unless they clearly continue the dictated sentence. Keep everything meant for the text, even casual or personal words; when unsure, keep it. If nothing is left, output only: <aside>"""
+
+ASIDE_EXAMPLES = [
+    ("the numbers for Q3 look solid hmm where was I oh right and churn went down to 2 percent",
+     "The numbers for Q3 look solid, and churn went down to 2 percent."),
+    ("send the deck to Priya before the meeting <quiet>yeah one second I'm on a call</quiet> and ask her to check "
+     "the pricing slide",
+     "Send the deck to Priya before the meeting and ask her to check the pricing slide."),
+    ("<quiet>hang on can you turn the music down</quiet>", "<aside>"),
+]
 
 JUDGE_SYSTEM = """A speech-to-text dictation was pasted, then the user edited it. You get the PASTED text, the EDITED text and the numbered CHANGES (old -> new).
 
@@ -483,7 +500,7 @@ def ollama_chat(model, messages, num_predict, fmt=None):
 
 
 def rules():
-    system = SYSTEM
+    system = SYSTEM + ("\n" + ASIDES_RULE if ASIDES else "")
     if words := vocabulary():
         system += "\n\nSpeaker's vocabulary (use these exact spellings):\n" + "\n".join(f"- {w}" for w in words)
     return system
@@ -508,7 +525,7 @@ def user_turn(text, files=None):
 def prefix_messages(system):
     """The part of every draft request that doesn't depend on the dictation."""
     messages = [{"role": "system", "content": system}]
-    for raw, cleaned, *files in EXAMPLES:
+    for raw, cleaned, *files in EXAMPLES + (ASIDE_EXAMPLES if ASIDES else []):
         messages += [{"role": "user", "content": user_turn(raw, *files)},
                      {"role": "assistant", "content": cleaned}]
     return messages
@@ -519,7 +536,7 @@ def draft(text, model, system, files=None):
     messages = prefix_messages(system)
     messages.append({"role": "user", "content": user_turn(text, files)})
     out = chat(model, messages, int(len(text) * 1.5) + 64 + sum(len(f) for f in files or ()))
-    return re.sub(r"</?dictation>", "", out).strip()
+    return re.sub(r"</?(?:dictation|quiet)>", "", out).strip()
 
 
 FILE_REF = re.compile(r"@(\S+)")
@@ -559,10 +576,15 @@ def misheard_hints():
     return hints
 
 
+QUIET = re.compile(r"<quiet>.*?</quiet>", re.S)
+ASIDE = "<aside>"
+
+
 def find_problems(text, out):
     """Concrete, checkable mistakes in the draft. Each is phrased as an
     instruction for the repair pass."""
     problems = []
+    text = QUIET.sub(" ", text)  # muttered asides are meant to go
     raw_words, out_words = set(words_in(text)), set(words_in(out))
     for q in QUALIFIERS:
         if q in raw_words and q not in out_words:
@@ -623,6 +645,9 @@ def clean_detailed(text, model=MODEL, review_model=REVIEW_MODEL, files=None):
     start = time.monotonic()
     first = draft(text, model, system, files)
     result["ms_draft"] = round((time.monotonic() - start) * 1000)
+    if ASIDES and first.strip() == ASIDE:
+        result.update(draft="", final="", verdict="aside")  # nothing meant for the text
+        return result
     if not plausible(first, text, files):
         return result  # keep what the speaker said
     result["draft"] = result["final"] = markdown_headings(first)

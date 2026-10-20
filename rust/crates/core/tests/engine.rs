@@ -7,7 +7,8 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use localflow_core::{Config, Localflow, Msg, NO_FILES, corrections, edited_region, save_api_key, save_settings};
+use localflow_core::{Config, Localflow, Msg, NO_FILES, corrections, edited_region, prefix_messages, save_api_key,
+                     save_settings};
 use regex::Regex;
 use serde_json::{Value, json};
 
@@ -57,7 +58,12 @@ fn reply(path: &str, headers: &[(String, String)], body: &Value) -> (u16, Value)
     };
     let text = Regex::new(r"(?s)<dictation>(.*)</dictation>").unwrap()
         .captures(&last).map_or(last.clone(), |c| c[1].to_string());
-    let text = text.trim();
+    // Like the model with rule 12: what was muttered goes.
+    let text = Regex::new(r"(?s)<quiet>.*?</quiet>").unwrap().replace_all(&text, " ");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() && last.contains("<quiet>") {
+        return (200, json!({"choices": [{"finish_reason": "stop", "message": {"content": "<aside>"}}]}));
+    }
     let mut chars = text.chars();
     let mut answer = chars.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default();
     answer += chars.as_str().trim_end_matches('.');
@@ -254,6 +260,37 @@ fn reasoning_models_get_a_minimal_request() {
     let bodies = bodies.lock().unwrap();
     assert_eq!(bodies.len(), 3, "one refusal, then minimal requests only");
     assert!(bodies[1].get("max_tokens").is_none() && bodies[2].get("max_tokens").is_none());
+}
+
+fn openai(url: &str, extra: &[(&str, &str)], name: &str) -> Localflow {
+    let mut vars = extra.to_vec();
+    vars.extend([("LOCALFLOW_API_URL", url), ("LOCALFLOW_API_KEY", "k"), ("LOCALFLOW_MODEL", "m")]);
+    Localflow::new(config(&vars, temp_dir(name)))
+}
+
+#[test]
+fn asides_are_left_out() {
+    let (url, _) = fake_api();
+    let lf = openai(&url, &[], "asides");
+    assert!(lf.cfg.asides);
+    assert!(lf.rules().contains("12. Asides"));
+    assert_eq!(lf.clean("ship it <quiet>one sec, I'm on a call</quiet> today", NO_FILES).unwrap(), "Ship it today.");
+    // Only an aside: nothing to paste (not the raw transcript).
+    let r = lf.clean_detailed("<quiet>hang on, can you turn the music down</quiet>", NO_FILES).unwrap();
+    assert_eq!((r.text.as_str(), r.verdict.as_str()), ("", "aside"));
+    // The checks don't ask to put back what was muttered.
+    assert!(localflow_core::find_problems("send it <quiet>maybe later</quiet> now", "Send it now.", &[]).is_empty());
+}
+
+#[test]
+fn asides_can_be_kept() {
+    let (url, _) = fake_api();
+    let on = openai(&url, &[], "asides-on");
+    let off = openai(&url, &[("LOCALFLOW_ASIDES", "keep")], "asides-off");
+    assert!(!off.cfg.asides);
+    assert!(!off.rules().contains("12. Asides"));
+    let examples = localflow_core::prompts::ASIDE_EXAMPLES.len() * 2;
+    assert_eq!(prefix_messages(&on.rules(), true).len(), prefix_messages(&off.rules(), false).len() + examples);
 }
 
 #[test]

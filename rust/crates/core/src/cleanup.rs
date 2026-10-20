@@ -10,7 +10,7 @@ use std::time::Instant;
 use regex::Regex;
 use serde_json::{Value, json};
 
-use crate::prompts::{EXAMPLES, QUALIFIERS, REVIEW_SYSTEM};
+use crate::prompts::{ASIDE, ASIDE_EXAMPLES, EXAMPLES, QUALIFIERS, REVIEW_SYSTEM};
 use crate::vocab::Hint;
 use crate::{Localflow, Msg, Result};
 
@@ -18,7 +18,9 @@ fn re(pattern: &str) -> Regex {
     Regex::new(pattern).unwrap()
 }
 
-static DICTATION_TAG: LazyLock<Regex> = LazyLock::new(|| re(r"</?dictation>"));
+static DICTATION_TAG: LazyLock<Regex> = LazyLock::new(|| re(r"</?(?:dictation|quiet)>"));
+/// What was muttered (rule 12): meant to go, so the checks don't miss it.
+static QUIET: LazyLock<Regex> = LazyLock::new(|| re(r"(?s)<quiet>.*?</quiet>"));
 static FILE_REF: LazyLock<Regex> = LazyLock::new(|| re(r"@(\S+)"));
 static WORD: LazyLock<Regex> = LazyLock::new(|| re(r"[a-z']+"));
 static JSON_OBJECT: LazyLock<Regex> = LazyLock::new(|| re(r"(?s)\{.*\}"));
@@ -59,11 +61,13 @@ pub fn user_turn(text: &str, files: &[impl AsRef<str>]) -> String {
 }
 
 /// The part of every draft request that doesn't depend on the dictation.
-pub fn prefix_messages(system: &str) -> Vec<Msg> {
+/// `asides`: with rule 12's examples.
+pub fn prefix_messages(system: &str, asides: bool) -> Vec<Msg> {
     let mut messages = vec![Msg::system(system)];
-    for (raw, cleaned, files) in EXAMPLES {
+    let asides = ASIDE_EXAMPLES.iter().filter(|_| asides).map(|(raw, cleaned)| (*raw, *cleaned, &[] as &[&str]));
+    for (raw, cleaned, files) in EXAMPLES.iter().copied().chain(asides) {
         messages.push(Msg::user(user_turn(raw, files)));
-        messages.push(Msg::assistant(*cleaned));
+        messages.push(Msg::assistant(cleaned));
     }
     messages
 }
@@ -114,6 +118,7 @@ fn has_phrase(t: &str, phrase: &str) -> bool {
 /// for the repair pass.
 pub fn find_problems(text: &str, out: &str, hints: &[Hint]) -> Vec<String> {
     let mut problems = vec![];
+    let text = &QUIET.replace_all(text, " ");
     let (raw_words, out_words) = (words_in(text), words_in(out));
     for q in QUALIFIERS {
         if raw_words.contains(*q) && !out_words.contains(*q) {
@@ -181,7 +186,7 @@ pub fn markdown_headings(out: &str) -> String {
 impl Localflow {
     /// Checkpoint 1: few-shot cleanup and formatting.
     fn draft(&self, text: &str, model: &str, system: &str, files: &[impl AsRef<str>]) -> Result<String> {
-        let mut messages = prefix_messages(system);
+        let mut messages = prefix_messages(system, self.cfg.asides);
         messages.push(Msg::user(user_turn(text, files)));
         let budget = (text.chars().count() as f64 * 1.5) as usize
             + 64
@@ -247,6 +252,11 @@ impl Localflow {
         let start = Instant::now();
         let first = self.draft(text, model, &system, files)?;
         result.ms_draft = start.elapsed().as_millis();
+        if self.cfg.asides && first == ASIDE {
+            // Nothing meant for the text.
+            (result.draft, result.text, result.verdict) = (String::new(), String::new(), "aside".into());
+            return Ok(result);
+        }
         if !plausible(&first, text, files) {
             return Ok(result); // keep what the speaker said
         }

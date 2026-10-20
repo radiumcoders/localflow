@@ -173,6 +173,22 @@ Photosynthesis is how plants make their own food. They use sunlight, water and c
      &["install.sh", "tests/"]),
 ];
 
+/// Rule 12, with LOCALFLOW_ASIDES on (the default): leave out what the
+/// speaker says to themselves or someone else, and what they mutter.
+pub const ASIDES_RULE: &str = r#"12. Asides: leave out what the speaker said to themselves or to someone else instead of dictating: thinking aloud ("hmm, where was I", "let me think", "what else", "how do you spell that", "okay, what's next"), remarks to people around them ("one sec, I'm on a call", "yeah, coming, give me a minute", "can you close the door"), and comments about the dictation itself ("is this recording"). Words inside <quiet> tags were said much more softly than the rest (muttered, or a voice in the background): leave them out too, unless they clearly continue the dictated sentence. Keep everything meant for the text, even casual or personal words; when unsure, keep it. If nothing is left, output only: <aside>"#;
+
+/// What the draft answers when the whole dictation was an aside.
+pub const ASIDE: &str = "<aside>";
+
+/// Few-shot pairs for rule 12, after EXAMPLES.
+pub const ASIDE_EXAMPLES: &[(&str, &str)] = &[
+    ("the numbers for Q3 look solid hmm where was I oh right and churn went down to 2 percent",
+     "The numbers for Q3 look solid, and churn went down to 2 percent."),
+    ("send the deck to Priya before the meeting <quiet>yeah one second I'm on a call</quiet> and ask her to check the pricing slide",
+     "Send the deck to Priya before the meeting and ask her to check the pricing slide."),
+    ("<quiet>hang on can you turn the music down</quiet>", "<aside>"),
+];
+
 pub const JUDGE_SYSTEM: &str = r#"A speech-to-text dictation was pasted, then the user edited it. You get the PASTED text, the EDITED text and the numbered CHANGES (old -> new).
 
 For each change, decide whether it fixes a word or name that speech recognition misheard or spelled wrong ("Claw" -> "Claude", "git hub" -> "GitHub", "Jon" -> "John"): learn it. Don't learn changes where the user changed what they meant ("Tuesday" -> "Wednesday", "three" -> "four"), reworded, or fixed grammar.

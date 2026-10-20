@@ -49,3 +49,10 @@ hey can you pick up the kids today I'm stuck at work and won't be back until sev
 So this is me testing out the new thing that I am building up the thing is called handy clean it is using handy as the back end for the voice to text and then a local 4 billion pyramidal model is fixing the all the text that it is generating to be more precise formatted and better => ? +handy clean; +parameter; -pyramidal
 and this is this is this is working out working out working out pretty good actually this is not pretty good this is awesome => ? +awesome; -pretty good; -this is this
 First, 1, 2, 3, 2nd, 2, 3, 4, 5, 6, 7, 8, 9, 3rd, ABCD => 1. 1, 2, 3\n2. 2, 3, 4, 5, 6, 7, 8, 9\n3. ABCD
+
+# Asides (rule 12): what you say to yourself or someone else isn't the text; <quiet> marks muttering
+the API returns a 404 for deleted users hmm what else oh yeah and the retry logic never backs off => The API returns a 404 for deleted users, and the retry logic never backs off.
+please review the contract by Monday <quiet>yeah yeah I'll be there in a minute</quiet> and send me your notes => Please review the contract by Monday and send me your notes.
+okay let me think the main goal for this sprint is shipping the billing page => The main goal for this sprint is shipping the billing page.
+can you remind me what else we need for the launch => Can you remind me what else we need for the launch?
+tell Sarah I'm on a call and I'll ring her back at 3 => Tell Sarah I'm on a call and I'll ring her back at 3.
