@@ -10,7 +10,7 @@ loudness.
 ```sh
 npm i
 npm run dev        # Remotion Studio
-npm run render     # out/localflow-dictation.mp4 (1920×1080, 30 fps)
+npm run render     # out/dictation.mp4 (1920×1080, 30 fps)
 ```
 
 Voices are [Gradium](https://gradium.ai) TTS. To change a line, edit `scripts/lines.json`, then:

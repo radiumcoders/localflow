@@ -5,7 +5,7 @@
  },
  "n_intro": {
   "voice": "YTpq7expH9539ERJ",
-  "text": "So talk instead. <break time=\"0.2s\" /> localflow turns what you say into what you meant."
+  "text": "So talk instead. <break time=\"0.3s\" /> Say it messy, and get what you meant."
  },
  "d_msg": {
   "voice": "9QHzSiOYUD-RzEzM",
@@ -28,7 +28,7 @@
  },
  "n_outro": {
   "voice": "YTpq7expH9539ERJ",
-  "text": "localflow. <break time=\"0.25s\" /> Private by default, on Mac, Windows and Linux."
+  "text": "Private by default. <break time=\"0.2s\" /> On Mac, Windows and Linux. <break time=\"0.35s\" /> Coming soon."
  },
  "n_after": {
   "voice": "YTpq7expH9539ERJ",

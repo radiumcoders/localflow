@@ -37,38 +37,33 @@
   ]
  },
  "n_intro": {
-  "hash": "62e5cc4713c7e48953f42950c0f208abfd588147",
-  "duration": 4.56,
+  "hash": "a44340eeb4a8af88bc22b250ca66a8ac0752315f",
+  "duration": 4.16,
   "words": [
    {
-    "text": "So talk instead. localflow turns what you",
+    "text": "So talk instead. Say it messy, and",
     "start": 0.0,
-    "end": 2.88
+    "end": 2.8
    },
    {
-    "text": "say",
-    "start": 2.88,
-    "end": 3.12
-   },
-   {
-    "text": "into",
-    "start": 3.12,
-    "end": 3.36
+    "text": "get",
+    "start": 2.8,
+    "end": 2.96
    },
    {
     "text": "what",
-    "start": 3.36,
-    "end": 3.52
+    "start": 2.96,
+    "end": 3.12
    },
    {
     "text": "you",
-    "start": 3.52,
-    "end": 3.68
+    "start": 3.12,
+    "end": 3.28
    },
    {
     "text": "meant.",
-    "start": 3.68,
-    "end": 4.16
+    "start": 3.28,
+    "end": 3.76
    }
   ],
   "timed": [
@@ -78,47 +73,43 @@
    },
    {
     "text": "talk",
-    "start": 0.411
+    "start": 0.4
    },
    {
     "text": "instead.",
-    "start": 0.823
+    "start": 0.8
    },
    {
-    "text": "localflow",
-    "start": 1.234
+    "text": "Say",
+    "start": 1.2
    },
    {
-    "text": "turns",
-    "start": 1.646
+    "text": "it",
+    "start": 1.6
+   },
+   {
+    "text": "messy,",
+    "start": 2.0
+   },
+   {
+    "text": "and",
+    "start": 2.4
+   },
+   {
+    "text": "get",
+    "start": 2.8
    },
    {
     "text": "what",
-    "start": 2.057
+    "start": 2.96
    },
    {
     "text": "you",
-    "start": 2.469
-   },
-   {
-    "text": "say",
-    "start": 2.88
-   },
-   {
-    "text": "into",
     "start": 3.12
    },
    {
-    "text": "what",
-    "start": 3.36
-   },
-   {
-    "text": "you",
-    "start": 3.52
-   },
-   {
     "text": "meant.",
-    "start": 3.68
+    "start": 3.28
    }
   ]
  },
@@ -502,66 +493,75 @@
   ]
  },
  "n_outro": {
-  "hash": "22bb3be7320d5263a848dca8a83b73c6eaf43d30",
-  "duration": 5.52,
+  "hash": "5545a3d8fa3a88a19e7d9645da7d60bc2040c661",
+  "duration": 5.76,
   "words": [
    {
-    "text": "localflow. Private by default, on Mac,",
+    "text": "Private by default. On Mac, Windows",
     "start": 0.0,
-    "end": 3.76
-   },
-   {
-    "text": "Windows",
-    "start": 3.76,
-    "end": 4.32
+    "end": 3.04
    },
    {
     "text": "and",
-    "start": 4.32,
-    "end": 4.48
+    "start": 3.04,
+    "end": 3.2
    },
    {
     "text": "Linux.",
+    "start": 3.2,
+    "end": 4.48
+   },
+   {
+    "text": "Coming",
     "start": 4.48,
-    "end": 5.12
+    "end": 4.8
+   },
+   {
+    "text": "soon.",
+    "start": 4.8,
+    "end": 5.36
    }
   ],
   "timed": [
    {
-    "text": "localflow.",
+    "text": "Private",
     "start": 0.0
    },
    {
-    "text": "Private",
-    "start": 0.627
-   },
-   {
     "text": "by",
-    "start": 1.253
+    "start": 0.507
    },
    {
-    "text": "default,",
-    "start": 1.88
+    "text": "default.",
+    "start": 1.013
    },
    {
-    "text": "on",
-    "start": 2.507
+    "text": "On",
+    "start": 1.52
    },
    {
     "text": "Mac,",
-    "start": 3.133
+    "start": 2.027
    },
    {
     "text": "Windows",
-    "start": 3.76
+    "start": 2.533
    },
    {
     "text": "and",
-    "start": 4.32
+    "start": 3.04
    },
    {
     "text": "Linux.",
+    "start": 3.2
+   },
+   {
+    "text": "Coming",
     "start": 4.48
+   },
+   {
+    "text": "soon.",
+    "start": 4.8
    }
   ]
  },

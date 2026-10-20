@@ -1,10 +1,10 @@
 {
-  "name": "localflow-video",
+  "name": "dictation-video",
   "private": true,
-  "description": "A short video of localflow's dictation, made with Remotion",
+  "description": "A short video of the dictation, made with Remotion",
   "scripts": {
     "dev": "remotion studio",
-    "render": "remotion render Dictation out/localflow-dictation.mp4",
+    "render": "remotion render Dictation out/dictation.mp4",
     "lint": "tsc"
   },
   "dependencies": {

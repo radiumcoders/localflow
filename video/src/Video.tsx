@@ -6,7 +6,7 @@ import { C, SANS } from "./theme";
 import { clipFrames, sec } from "./timing";
 import { Icon } from "./ui/parts";
 
-// What localflow made of the two clips (`localflow transcribe` with Claude Haiku 5.5),
+// What the app made of the two clips (`localflow transcribe` with Claude Haiku 5.5),
 // word for word.
 const MESSAGE = "Can we move the design review to Friday at 3, and ask Priya to bring the pricing slides?";
 const LIST_TITLE = "My tasks today:";
@@ -52,20 +52,20 @@ const Hook: React.FC = () => {
 
 const Intro: React.FC = () => {
   const f = useCurrentFrame();
-  const logo = interpolate(f, [sec(1.1), sec(1.5)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.out(Easing.back(1.6)) });
-  const tag = interpolate(f, [sec(1.9), sec(2.3)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const first = interpolate(f, [sec(0.9), sec(1.2)], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const first = interpolate(f, [sec(1.0), sec(1.25)], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const messy = interpolate(f, [sec(1.25), sec(1.6)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.out(Easing.back(1.6)) });
+  const meant = interpolate(f, [sec(2.6), sec(2.95)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   return (
     <AbsoluteFill style={{ alignItems: "center", justifyContent: "center" }}>
       <Narration clip="n_intro" />
       <Big style={{ position: "absolute", opacity: first }}>So talk instead.</Big>
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 34, opacity: logo }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 30, transform: `scale(${0.85 + 0.15 * logo})` }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 40, opacity: messy }}>
+        <div style={{ transform: `scale(${0.85 + 0.15 * messy})` }}>
           <Icon size={132} />
-          <Big style={{ fontSize: 120, letterSpacing: -4 }}>localflow</Big>
         </div>
-        <div style={{ fontFamily: SANS, fontSize: 40, color: C.muted, opacity: tag }}>
-          turns what you say into what you meant.
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+          <Big>Say it messy.</Big>
+          <Big style={{ color: C.violet, opacity: meant, transform: `translateY(${(1 - meant) * 16}px)` }}>Get what you meant.</Big>
         </div>
       </div>
     </AbsoluteFill>
@@ -83,19 +83,37 @@ const ListTitle: React.FC = () => (
 
 const Outro: React.FC = () => {
   const f = useCurrentFrame();
-  const sub = interpolate(f, [sec(1.0), sec(1.4)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const sub = interpolate(f, [sec(0.2), sec(0.6)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  // With "Coming soon" in the narration (it starts 6 frames in).
+  const soon = interpolate(f, [6 + sec(4.4), 6 + sec(4.8)], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.back(1.8)),
+  });
   return (
     <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", gap: 36 }}>
       <Narration clip="n_outro" at={6} />
-      <div style={{ display: "flex", alignItems: "center", gap: 28 }}>
-        <Icon size={112} />
-        <Big style={{ fontSize: 104, letterSpacing: -3.5 }}>localflow</Big>
-      </div>
-      <div style={{ fontFamily: SANS, fontSize: 38, color: C.ink, opacity: sub }}>
-        Talk, and get clean text where you type.
-      </div>
+      <Icon size={132} />
+      <Big style={{ fontSize: 80, letterSpacing: -2 }}>Talk, and get clean text where you type.</Big>
       <div style={{ fontFamily: SANS, fontSize: 28, color: C.muted, opacity: sub }}>
         Private by default · macOS · Windows · Linux
+      </div>
+      <div
+        style={{
+          marginTop: 8,
+          padding: "14px 30px",
+          borderRadius: 999,
+          background: C.violet,
+          color: "#fff",
+          fontFamily: SANS,
+          fontSize: 32,
+          fontWeight: 600,
+          letterSpacing: 0.5,
+          opacity: soon,
+          transform: `scale(${0.8 + 0.2 * soon})`,
+        }}
+      >
+        Coming soon
       </div>
     </AbsoluteFill>
   );
