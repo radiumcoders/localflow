@@ -15,11 +15,14 @@ use std::process::{Command, ExitCode};
 use std::sync::LazyLock;
 
 /// The repository.
-static ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
-    // Windows canonicalizes to \\?\D:\..., which WiX can't parse as a path.
-    PathBuf::from(root.to_string_lossy().trim_start_matches(r"\\?\").to_string())
-});
+static ROOT: LazyLock<PathBuf> = LazyLock::new(|| absolute(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap());
+
+/// The full path, as other programs take it: Windows canonicalizes to
+/// \\?\D:\..., which neither WiX nor msiexec can open.
+fn absolute(path: &Path) -> std::io::Result<PathBuf> {
+    let full = path.canonicalize()?;
+    Ok(PathBuf::from(full.to_string_lossy().trim_start_matches(r"\\?\").to_string()))
+}
 
 /// Run a program, failing on a non-zero exit.
 fn run(program: &str, args: &[&str]) -> Result<(), String> {

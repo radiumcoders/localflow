@@ -298,7 +298,7 @@ pub fn e2e(_: &[String]) -> Result<(), String> {
 /// `cargo xtask installed INSTALLER`.
 pub fn installed(args: &[String]) -> Result<(), String> {
     let installer = PathBuf::from(args.first().ok_or("cargo xtask installed INSTALLER")?);
-    let installer = std::fs::canonicalize(&installer).map_err(|e| format!("{}: {e}", installer.display()))?;
+    let installer = crate::absolute(&installer).map_err(|e| format!("{}: {e}", installer.display()))?;
     run("cargo", &["build", "--release", "--locked", "-p", "localflow-testbox"])?;
     let api = crate::fake_api::start();
     let dir = temp();
