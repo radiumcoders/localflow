@@ -92,10 +92,10 @@ fn take_foreground(window: &mut Window) {
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            AttachThreadInput, BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+            BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
         };
         if let Ok(handle) = window.window_handle()
             && let RawWindowHandle::Win32(h) = handle.as_raw()
