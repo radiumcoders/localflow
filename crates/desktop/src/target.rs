@@ -10,7 +10,9 @@ use localflow_core::{Part, file_refs};
 use regex::Regex;
 use serde_json::Value;
 
-use crate::project::{editor_base, editor_name, editor_project, project_files, project_root, recent_project, terminal_cwd};
+use crate::project::{
+    agent_in, editor_base, editor_name, editor_project, project_files, project_root, recent_project, terminal_cwd,
+};
 #[cfg(not(any(windows, target_os = "macos")))]
 use crate::{command, output, which};
 
@@ -102,6 +104,8 @@ pub struct Target {
     pub pid: Option<u32>,
     /// A terminal's working directory.
     pub cwd: Option<PathBuf>,
+    /// The coding agent running in a terminal ("claude", "codex"...).
+    pub agent: Option<String>,
     pub project: Option<PathBuf>,
     /// The project's files and folders ("src/"), relative to it.
     pub files: Vec<String>,
@@ -128,10 +132,11 @@ impl Target {
             Kind::Other
         };
         let base = editor_base();
-        let (mut cwd, mut project) = (None, None);
+        let (mut cwd, mut agent, mut project) = (None, None, None);
         match (kind, window.pid) {
             (Kind::Editor, _) => project = editor_project(&base, editor_name(&app).unwrap_or_default(), &window.title),
             (Kind::Terminal, Some(pid)) => {
+                agent = agent_in(pid);
                 cwd = terminal_cwd(pid, &window.title);
                 project = cwd.as_deref().and_then(project_root);
             }
@@ -140,7 +145,7 @@ impl Target {
         // No project here (or none we can see): the one you last had open.
         let project = project.or_else(|| recent_project(&base));
         let files = project.as_deref().map(project_files).unwrap_or_default();
-        Target { kind, app: window.app.clone(), pid: window.pid, cwd, project, files }
+        Target { kind, app: window.app.clone(), pid: window.pid, cwd, agent, project, files }
     }
 
     /// How this app takes a reference to `path` (relative to the project).
@@ -169,7 +174,8 @@ fn posix(path: &Path) -> String {
 impl std::fmt::Display for Target {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let project = self.project.as_ref().map_or("None".into(), |p| p.display().to_string());
-        write!(f, "{:?} {:?}, project {project}, {} files", self.kind, self.app, self.files.len())
+        let agent = self.agent.as_ref().map_or(String::new(), |a| format!(" running {a}"));
+        write!(f, "{:?} {:?}{agent}, project {project}, {} files", self.kind, self.app, self.files.len())
     }
 }
 
@@ -214,7 +220,7 @@ mod tests {
     use super::*;
 
     fn target(kind: Kind, root: &Path, cwd: Option<PathBuf>) -> Target {
-        Target { kind, app: "x".into(), pid: None, cwd, project: Some(root.into()), files: vec![] }
+        Target { kind, app: "x".into(), pid: None, cwd, agent: None, project: Some(root.into()), files: vec![] }
     }
 
     #[test]

@@ -105,7 +105,7 @@ impl Dictation {
             let found = target.clone();
             finder = Some(std::thread::spawn(move || {
                 let t = Target::new(&focused_window());
-                info(format_args!("dictating into {:?} {:?}, project {:?}, {} files", t.kind, t.app, t.project, t.files.len()));
+                info(format_args!("dictating into {t}"));
                 *found.lock().unwrap() = Some(t);
             }));
         }
