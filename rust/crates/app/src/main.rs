@@ -1,7 +1,7 @@
 //! localflow: dictation (the Rust port, in progress: no overlay, hotkey or paste yet).
 //!
-//!     localflow listen 5               # record 5 s, transcribe with Handy, clean up, print
-//!     localflow transcribe talk.wav    # a 16-bit WAV through Handy and the cleanup
+//!     localflow listen 5               # record 5 s, transcribe, clean up, print
+//!     localflow transcribe talk.wav    # a 16-bit WAV through the speech model and the cleanup
 //!     localflow record 3 out.wav       # just the microphone, as 16 kHz mono
 //!     echo "meet at 3 wait at 2" | localflow
 //!     localflow --check                # one tiny request: is the model reachable?
@@ -19,12 +19,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use localflow_core::{Config, Localflow, Msg, NO_FILES, eval};
-use localflow_speech::{RATE, Recorder, level, read_wav, transcribe, wav_bytes};
+use localflow_speech::{RATE, Recorder, SpeechConfig, level, read_wav, transcribe, wav_bytes};
 
 const USAGE: &str = "localflow: dictation
 
     localflow listen [SECONDS]       # record (default 5 s), transcribe, clean up, print
-    localflow transcribe FILE.wav    # a 16-bit WAV through Handy and the cleanup
+    localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
     localflow record SECONDS FILE.wav
     echo \"meet at 3 wait at 2\" | localflow
     localflow --check                # one tiny request: is the model reachable?
@@ -50,8 +50,10 @@ fn record(seconds: f32) -> Result<Vec<i16>, String> {
 fn dictate(lf: &Localflow, samples: &[i16]) -> ExitCode {
     eprintln!("  {:.1}s of audio, level {:.2}", samples.len() as f32 / RATE as f32, level(samples));
     let start = Instant::now();
-    let raw = match transcribe(samples, lf.cfg.speech_model.as_deref()) {
-        Ok(raw) => raw,
+    let cfg = SpeechConfig { model: lf.cfg.speech_model.clone(), use_gpu: lf.cfg.speech_gpu, language: lf.cfg.language.clone(),
+                             ..Default::default() };
+    let raw = match transcribe(samples, &cfg) {
+        Ok(heard) => heard.text,
         Err(e) => {
             eprintln!("localflow: {e}");
             return ExitCode::FAILURE;

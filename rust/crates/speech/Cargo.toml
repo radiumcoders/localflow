@@ -1,10 +1,22 @@
 [package]
 name = "localflow-speech"
-description = "localflow's speech input: the microphone (16 kHz mono), its level, and transcription with Handy's engine"
+description = "localflow's speech input: the microphone (16 kHz mono), its level, and transcription with whisper.cpp in-process"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
 
+[features]
+# GPU transcription through Vulkan (Linux, Windows): needs the Vulkan headers
+# and glslc at build time. Metal is always on for macOS.
+vulkan = ["whisper-rs/vulkan"]
+metal = ["whisper-rs/metal"]
+
 [dependencies]
 cpal = "0.16"
 serde_json = "1.0"
+sha2 = "0.10"
+ureq = "2.12"
+whisper-rs = "0.16"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }

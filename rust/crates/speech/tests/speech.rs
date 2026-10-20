@@ -2,7 +2,7 @@
 
 use std::f32::consts::PI;
 
-use localflow_speech::{RATE, level, read_wav, resample, wav_bytes};
+use localflow_speech::{Engine, RATE, SpeechConfig, level, models, read_wav, resample, wav_bytes};
 
 fn sine(freq: f32, rate: u32, seconds: f32, amplitude: f32) -> Vec<f32> {
     (0..(rate as f32 * seconds) as usize).map(|i| amplitude * (2.0 * PI * freq * i as f32 / rate as f32).sin()).collect()
@@ -72,23 +72,95 @@ fn stereo_48k_wav_becomes_16k_mono() {
     assert!(read_wav(b"not a wav file").is_err());
 }
 
-#[cfg(unix)]
+/// Speech from espeak-ng, as 16 kHz mono at `gain` (1.0: as espeak makes it).
+fn say(text: &str, gain: f32) -> Option<Vec<i16>> {
+    let path = std::env::temp_dir().join(format!("localflow-say-{}-{}.wav", std::process::id(), text.len()));
+    let ok = std::process::Command::new("espeak-ng")
+        .args(["-v", "en-us", "-s", "165", "-w"])
+        .arg(&path)
+        .arg(text)
+        .status()
+        .is_ok_and(|s| s.success());
+    let wav = std::fs::read(&path).ok();
+    let _ = std::fs::remove_file(&path);
+    if !ok {
+        return None;
+    }
+    let samples = read_wav(&wav?).ok()?;
+    Some(
+        samples
+            .iter()
+            .map(|&s| (f32::from(s) * gain).clamp(-32768.0, 32767.0) as i16)
+            .collect(),
+    )
+}
+
+fn silence(seconds: f32) -> Vec<i16> {
+    vec![0; (seconds * RATE as f32) as usize]
+}
+
+/// With a real model: LOCALFLOW_TEST_MODEL=small.en cargo test -p localflow-speech --release
+/// (downloads the model and the voice detector if they aren't there; needs espeak-ng).
 #[test]
-fn transcribes_with_handy() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = std::env::temp_dir().join(format!("localflow-handy-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let fake = dir.join("handy");
-    // A stand-in for Handy: checks its arguments and the WAV, answers like --json does.
-    std::fs::write(&fake, "#!/bin/sh\n\
-        [ \"$1\" = --transcribe-file ] && [ \"$3\" = --json ] && [ \"$5\" = tiny-model ] || exit 3\n\
-        head -c 4 \"$2\" | grep -q RIFF || exit 4\n\
-        echo '{\"text\": \" call mom tomorrow \"}'\n").unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // SAFETY: the only test in this binary that reads or writes the environment.
-    unsafe { std::env::set_var("DICTATE_HANDY", &fake) };
-    assert_eq!(localflow_speech::handy_path(), Some(fake.clone()));
-    assert_eq!(localflow_speech::transcribe(&[0; 1600], Some("tiny-model")).unwrap(), "call mom tomorrow");
-    let e = localflow_speech::transcribe(&[0; 1600], Some("other")).unwrap_err();
-    assert!(e.0.starts_with("Handy couldn't transcribe"), "{e}");
+fn transcribes_with_whisper() {
+    let Ok(id) = std::env::var("LOCALFLOW_TEST_MODEL") else {
+        eprintln!("skipped: set LOCALFLOW_TEST_MODEL to a model id to run it");
+        return;
+    };
+    let Some(speech) = say("Please send the quarterly report to Sarah by Friday.", 1.0) else {
+        eprintln!("skipped: no espeak-ng");
+        return;
+    };
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    for m in [id.as_str(), "silero-vad"] {
+        models::download(m, &mut |_, _| {}, &cancel).unwrap();
+    }
+    let cfg = SpeechConfig {
+        model: Some(id.clone()),
+        use_gpu: false,
+        ..Default::default()
+    };
+    let mut engine = Engine::load(&cfg.model_file().0, false).unwrap();
+    assert!(engine.has_vad());
+
+    let mut audio = silence(1.0);
+    audio.extend(&speech);
+    audio.extend(silence(1.0));
+    let t = engine.transcribe(&audio, &cfg.options()).unwrap();
+    let words = t.text.to_lowercase();
+    for w in ["send", "quarterly", "report", "friday"] {
+        assert!(words.contains(w), "{w} in {:?}", t.text);
+    }
+    assert!(!t.has_quiet(), "{t:?}");
+    let first = &t.segments[0];
+    assert!(
+        (0.7..1.6).contains(&first.start_s),
+        "timing back in the recording's time: {first:?}"
+    );
+
+    // Nothing said: nothing heard (not "Thank you.")
+    let t = engine.transcribe(&silence(3.0), &cfg.options()).unwrap();
+    assert!(t.is_empty(), "{t:?}");
+    let noise: Vec<i16> = (0..3 * RATE as i32).map(|i| ((i * 7919) % 401 - 200) as i16).collect();
+    let t = engine.transcribe(&noise, &cfg.options()).unwrap();
+    assert!(t.is_empty(), "faint noise: {t:?}");
+
+    // A muttered aside between two loud sentences is marked quiet
+    let mut audio = say("Let's meet at four tomorrow to go over the launch plan.", 1.0).unwrap();
+    audio.extend(silence(0.8));
+    audio.extend(say("where did I put my coffee", 0.12).unwrap()); // about 18 dB down
+    audio.extend(silence(0.8));
+    audio.extend(say("And please bring the budget numbers.", 1.0).unwrap());
+    let t = engine.transcribe(&audio, &cfg.options()).unwrap();
+    let marked = t.for_cleanup(true);
+    eprintln!("{marked}");
+    let quiet: Vec<_> = t
+        .segments
+        .iter()
+        .filter(|s| s.quiet)
+        .map(|s| s.text.to_lowercase())
+        .collect();
+    assert_eq!(quiet.len(), 1, "{t:?}");
+    assert!(quiet[0].contains("coffee"), "{quiet:?}");
+    assert!(marked.contains("<quiet>") && marked.to_lowercase().contains("budget"));
 }
