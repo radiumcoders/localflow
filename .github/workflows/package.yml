@@ -1,9 +1,9 @@
 name: package
 
 # The installers: build the Windows .msi, the macOS .dmg (Apple Silicon and
-# Intel) and the Linux AppImage, install each on a fresh machine and check the
-# installed app (tests/msi.py, tests/dmg.py, tests/appimage.py). A v* tag also
-# publishes them as a GitHub release.
+# Intel) and the Linux AppImage with `cargo xtask package`, install each on a
+# fresh machine and check the installed app (`cargo xtask installed`). A v*
+# tag also publishes them as a GitHub release.
 
 on:
   push:
@@ -13,116 +13,65 @@ permissions:
   contents: write
 
 jobs:
-  windows-msi:
-    runs-on: windows-latest
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Build tools
-        run: |
-          python -m pip install pyinstaller==6.19.0 pillow==11.3.0 truststore==0.10.1
-          dotnet tool install --global wix --version 5.0.2
-      - name: Version
-        shell: bash
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then v=${GITHUB_REF#refs/tags/v}; else v=0.0.$GITHUB_RUN_NUMBER; fi
-          echo "VERSION=$v" >> "$GITHUB_ENV"
-      - name: Build
-        run: python pkg/build.py --version $env:VERSION
-      - name: Install, set up, run and uninstall
-        run: python tests/msi.py build/localflow-$env:VERSION-x64.msi
-      - name: Logs
-        if: always()
-        shell: bash
-        run: cat "$LOCALAPPDATA/localflow/app.log" "$LOCALAPPDATA/localflow/dictate.log" 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: localflow-${{ env.VERSION }}-windows
-          path: build/localflow-*.msi
-
-  macos-dmg:
+  build:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, macos-15-intel]  # Apple Silicon, Intel
+        include:
+          - os: windows-latest
+            name: windows
+          - os: macos-latest       # Apple Silicon
+            name: macos-arm64
+          - os: macos-15-intel     # Intel
+            name: macos-x64
+          - os: ubuntu-24.04
+            name: linux
+            features: vulkan       # transcription on the GPU
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Build tools
-        run: python -m pip install pyinstaller==6.19.0 pillow==11.3.0 truststore==0.10.1
+      - uses: Swatinem/rust-cache@v2
       - name: Version
+        shell: bash
         run: |
           if [[ $GITHUB_REF == refs/tags/v* ]]; then v=${GITHUB_REF#refs/tags/v}; else v=0.0.$GITHUB_RUN_NUMBER; fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
-      - name: Build
-        run: python pkg/build.py --version "$VERSION"
-      - name: Install, set up, run and remove
-        run: python tests/dmg.py build/localflow-"$VERSION"-*.dmg
-      - name: Logs
-        if: always()
-        run: cat ~/Library/Logs/localflow/dictate.log ~/Library/Logs/localflow/app.log 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: localflow-${{ env.VERSION }}-${{ matrix.os }}
-          path: build/localflow-*.dmg
-
-  linux-appimage:
-    # Built on the oldest supported Ubuntu, so localflow's own part runs on older glibcs.
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Build tools
-        run: python -m pip install pyinstaller==6.19.0 pillow==11.3.0 truststore==0.10.1
-      - name: Version
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then v=${GITHUB_REF#refs/tags/v}; else v=0.0.$GITHUB_RUN_NUMBER; fi
-          echo "VERSION=$v" >> "$GITHUB_ENV"
-      - name: Build
-        run: python pkg/build.py --version "$VERSION"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: localflow-${{ env.VERSION }}-linux
-          path: build/localflow-*.AppImage
-
-  linux-appimage-test:
-    # Handy itself needs glibc 2.38+ (Ubuntu 24.04 and later).
-    needs: linux-appimage
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Linux packages (virtual display, X11 paste, Handy's libraries)
+      - name: WiX (the .msi)
+        if: runner.os == 'Windows'
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Linux packages (headers to build, Vulkan shaders; Xvfb, paste tools, speech to test)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xclip xdotool libwebkit2gtk-4.1-0 libgtk-3-0t64 libvulkan1
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: localflow-*-linux
-          path: build
-          merge-multiple: true
-      - name: Set up, run without the AppImage, self-test
-        run: xvfb-run -a python tests/appimage.py build/localflow-*-x86_64.AppImage
-      - name: Logs
+          sudo apt-get install -y libasound2-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libfontconfig-dev libfreetype-dev libvulkan-dev glslc \
+            xvfb xclip xdotool espeak-ng ffmpeg mesa-vulkan-drivers libvulkan1 libfuse2t64
+      - name: Build
+        shell: bash
+        run: cargo xtask package --version "$VERSION" ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+      - name: Install, set up, check, remove (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo xtask installed build/localflow-$VERSION-x86_64.AppImage
+      - name: Install, set up, check, remove
+        if: runner.os != 'Linux'
+        shell: bash
+        run: cargo xtask installed build/localflow-"$VERSION"-*.$([[ $RUNNER_OS == Windows ]] && echo msi || echo dmg)
+      - name: Log
         if: always()
-        run: cat ~/.local/state/localflow/dictate.log 2>/dev/null || true
+        shell: bash
+        run: cat "$LOCALAPPDATA/localflow/dictate.log" ~/Library/Logs/localflow/dictate.log ~/.local/state/localflow/dictate.log 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: localflow-${{ env.VERSION }}-${{ matrix.name }}
+          path: |
+            build/localflow-*.msi
+            build/localflow-*.dmg
+            build/localflow-*.AppImage
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows-msi, macos-dmg, linux-appimage-test]
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -137,11 +86,13 @@ jobs:
           ls -l installers
           gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" \
             --title "localflow ${GITHUB_REF_NAME#v}" --notes-file - <<'EOF'
-          **Windows:** `localflow-…-x64.msi`. Open it, then open localflow from the Start menu: the first time, it sets up (on this computer or with your API key). The installer isn't signed yet: in the SmartScreen warning, click **More info**, then **Run anyway**.
+          localflow, now a native app written in Rust, with its own speech engine (no Handy needed).
+
+          **Windows:** `localflow-…-x64.msi`. Open it, then open localflow from the Start menu: the first time, the settings window opens (pick a speech model, and cleanup on this computer or with your API key). The installer isn't signed yet: in the SmartScreen warning, click **More info**, then **Run anyway**.
 
           **macOS:** `…-arm64.dmg` for Apple Silicon (M1 and later), `…-x64.dmg` for Intel. Open it, drag localflow into Applications, and open it from there. It isn't signed with an Apple Developer ID yet: the first time, macOS says it can't check it. Open **System Settings > Privacy & Security** and click **Open Anyway** next to localflow. Then allow it under Accessibility (for the hotkey and pasting) and Microphone when macOS asks.
 
-          **Linux:** `localflow-…-x86_64.AppImage`. Needs a distro from 2023 or later (glibc 2.38+, which Handy's speech engine needs: Ubuntu 24.04, Fedora 39, Debian 13, Arch). Make it executable (`chmod +x`) and run it: setup opens, copies localflow to `~/.local/share/localflow/app` and adds it to your app launcher, then shows the key bindings to add (Hyprland lines included). Needs PipeWire or ALSA for recording, `wl-clipboard` + `wtype` (Wayland) or `xclip` + `xdotool` (X11) for pasting, and `curl` + `zstd` for local cleanup with Ollama.
+          **Linux:** `localflow-…-x86_64.AppImage`. Make it executable (`chmod +x`) and run it: the settings window opens; Save copies localflow to `~/.local/share/localflow/app` and adds it to your app launcher, and shows the key bindings to add (Hyprland lines included, with a Copy button). Needs PipeWire or ALSA for recording, and `wl-clipboard` + `wtype` (Wayland) or `xclip` + `xdotool` (X11) for pasting.
 
-          Hold the hotkey (Ctrl+Shift+Space on Windows, Option+Shift+Space on macOS, your key binding on Linux) and talk; let go and it pastes.
+          Hold the hotkey (Ctrl+Shift+Space on Windows, Option+Shift+Space on macOS, your key binding on Linux) and talk; let go and it pastes. What you say to yourself or to someone else in the room is left out.
           EOF

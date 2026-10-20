@@ -1,0 +1,44 @@
+name: ci
+
+# Every push, on Linux, macOS and Windows: the tests, clippy, and a dictation
+# end to end with the release build (cargo xtask e2e): text-to-speech through
+# our speech engine and a fake cleanup API, pasted into a text box through
+# the hotkey (macOS, Windows) or `localflow start` / `stop` (Linux, on Xvfb).
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux packages (headers to build; Xvfb, paste tools, speech and Vulkan to run)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libfontconfig-dev libfreetype-dev libvulkan-dev \
+            xvfb xclip xdotool espeak-ng ffmpeg mesa-vulkan-drivers libvulkan1
+      - name: Tests
+        run: cargo test --locked --workspace
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Dictate end to end (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo xtask e2e
+      - name: Dictate end to end
+        if: runner.os != 'Linux'
+        run: cargo xtask e2e
+      - name: Log
+        if: always()
+        shell: bash
+        run: cat "$LOCALAPPDATA/localflow/dictate.log" ~/Library/Logs/localflow/dictate.log ~/.local/state/localflow/dictate.log 2>/dev/null || true
