@@ -21,6 +21,23 @@ pub fn paste_parts(parts: &[Part]) -> bool {
     linux::paste(parts)
 }
 
+/// A key pressed on its own (a spoken command, or sending a prompt).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Enter,
+    Escape,
+}
+
+/// Press `key` in the focused window. False when it can't be sent.
+pub fn press(key: Key) -> bool {
+    #[cfg(windows)]
+    return crate::windows::press_key(key);
+    #[cfg(target_os = "macos")]
+    return crate::macos::press_key(key);
+    #[cfg(not(any(windows, target_os = "macos")))]
+    linux::press_key(key)
+}
+
 /// Text you may have selected or copied, most likely first (the learn key's
 /// input). Linux reads the selection directly; macOS and Windows copy it,
 /// then put the clipboard back.
@@ -107,7 +124,7 @@ mod linux {
 
     use localflow_core::Part;
 
-    use super::{wayland_keys, x11_key};
+    use super::{Key, wayland_keys, x11_key};
     use crate::project::file_uri;
     use crate::target::hyprland_window;
     use crate::{command, output, run, which};
@@ -222,6 +239,20 @@ mod linux {
         }
         restore_later(old, copy);
         true
+    }
+
+    pub fn press_key(key: Key) -> bool {
+        let name = match key {
+            Key::Enter => "Return",
+            Key::Escape => "Escape",
+        };
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() && which("wtype").is_some() {
+            quiet(command("wtype").args(["-k", name]))
+        } else if std::env::var_os("DISPLAY").is_some() {
+            quiet(command("xdotool").args(["key", "--clearmodifiers", name]))
+        } else {
+            false
+        }
     }
 
     fn text(cmd: &mut Command) -> String {

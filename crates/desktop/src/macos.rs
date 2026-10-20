@@ -185,6 +185,17 @@ fn key(code: u16, flags: u64) {
     }
 }
 
+pub fn press_key(k: crate::paste::Key) -> bool {
+    if !trusted() {
+        return false;
+    }
+    key(match k {
+        crate::paste::Key::Enter => 36,
+        crate::paste::Key::Escape => 53,
+    }, 0);
+    true
+}
+
 fn modifiers_held() -> bool {
     unsafe { CGEventSourceFlagsState(1) & (CMD | SHIFT | ALT | CTRL) != 0 }
 }

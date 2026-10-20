@@ -189,6 +189,14 @@ fn press(vk: u8, ctrl: bool) {
     }
 }
 
+pub fn press_key(key: crate::paste::Key) -> bool {
+    press(match key {
+        crate::paste::Key::Enter => 0x0D, // VK_RETURN
+        crate::paste::Key::Escape => VK_ESCAPE as u8,
+    }, false);
+    true
+}
+
 fn held(vk: u16) -> bool {
     unsafe { GetAsyncKeyState(i32::from(vk)) as u16 & 0x8000 != 0 }
 }
