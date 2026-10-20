@@ -2,7 +2,7 @@
 Rust port has to match exactly (prompts, checks, headings, file references,
 learning's diffs). tests/parity.rs reads it.
 
-    python3 rust/crates/core/tests/parity.py
+    python3 crates/core/tests/parity.py
 """
 
 import difflib
@@ -14,7 +14,7 @@ import random
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = Path(__file__).resolve().parents[3]
 os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = tempfile.mkdtemp()  # no learned words
 for k in [k for k in os.environ if k.startswith("LOCALFLOW_")]:
     del os.environ[k]

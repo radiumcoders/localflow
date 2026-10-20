@@ -7,7 +7,7 @@ use regex::Regex;
 use crate::{Localflow, NO_FILES, Result};
 
 /// Raw transcript => expected output, one per line ("\n" for line breaks).
-pub const CASES: &str = include_str!("../../../../cases.txt");
+pub const CASES: &str = include_str!("../../../cases.txt");
 
 static NOT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\w\s]").unwrap());
 static LIST_ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\d+\.").unwrap());

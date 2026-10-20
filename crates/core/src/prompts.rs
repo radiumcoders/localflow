@@ -1,5 +1,5 @@
 //! Prompts and few-shot examples, the same text as the Python `localflow`
-//! (rust/crates/core/tests/parity.rs checks they stay identical).
+//! (crates/core/tests/parity.rs checks they stay identical).
 
 /// On Anthropic, cleanup always runs on Claude Haiku 5.5: small, fast and
 /// cheap. Any other model name is ignored.

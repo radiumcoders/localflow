@@ -12,7 +12,7 @@ use crate::prompts::{COMMON, JUDGE_SYSTEM};
 use crate::{Localflow, Msg, Result};
 
 /// Names and terms that ship with localflow, before your own.
-const WORDS: &str = include_str!("../../../../words.txt");
+const WORDS: &str = include_str!("../../../words.txt");
 
 /// A term and the ways speech recognition mishears it.
 pub type Hint = (String, Vec<String>);

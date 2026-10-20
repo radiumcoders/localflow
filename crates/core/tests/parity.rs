@@ -1,5 +1,5 @@
 //! The Rust port against the Python `localflow`: parity.json holds what Python
-//! returns for each case (regenerate with `python3 rust/crates/core/tests/parity.py`).
+//! returns for each case (regenerate with `python3 crates/core/tests/parity.py`).
 
 use localflow_core::difflib::{SequenceMatcher, Tag};
 use localflow_core::{Config, Localflow, Part, eval};

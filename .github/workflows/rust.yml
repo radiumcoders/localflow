@@ -1,7 +1,7 @@
 name: rust
 
-# The Rust rewrite (rust/): tests, including parity with the Python version,
-# and clippy on every OS it has to run on.
+# localflow (crates/): tests, including parity with the Python version, and
+# clippy on every OS it has to run on.
 
 on:
   push:
@@ -15,17 +15,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: ALSA headers (the microphone on Linux)
+      - name: Linux headers (ALSA for the microphone; Wayland, X11, xkbcommon and fontconfig for the UI)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libfontconfig-dev libfreetype-dev libvulkan-dev
       - name: Parity fixture is up to date with the Python version
         shell: bash
         run: |
