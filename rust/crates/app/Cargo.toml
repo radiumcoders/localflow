@@ -5,6 +5,26 @@ version.workspace = true
 edition.workspace = true
 repository.workspace = true
 
+[features]
+# Transcription on the GPU through Vulkan (Linux, Windows; see localflow-speech).
+vulkan = ["localflow-speech/vulkan"]
+
 [dependencies]
 localflow-core = { path = "../core" }
 localflow-speech = { path = "../speech" }
+localflow-desktop = { path = "../desktop" }
+anyhow = "1.0"
+async-channel = "2.5"
+gpui-kit = "0.7.0"
+ureq = "2.12"
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std"] }
