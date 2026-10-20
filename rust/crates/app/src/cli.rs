@@ -23,7 +23,8 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     echo \"meet at 3 wait at 2\" | localflow -
     localflow --check                # one tiny request: is the cleanup model reachable?
     localflow --eval [MODEL [REVIEW_MODEL|off]]   # run cases.txt
-    localflow --selftest             # check each piece that doesn't need a person";
+    localflow --selftest             # check each piece that doesn't need a person
+    localflow --version";
 
 fn fail(e: impl std::fmt::Display) -> ExitCode {
     eprintln!("localflow: {e}");
@@ -84,12 +85,18 @@ pub fn run(args: &[String]) -> ExitCode {
             let _ = std::io::stdout().flush();
         }
         "-h" | "--help" | "help" => println!("{USAGE}"),
+        "--version" | "-V" => println!("localflow {}", version()),
         other => {
             eprintln!("localflow: unknown command {other}\n\n{USAGE}");
             return ExitCode::from(2);
         }
     }
     ExitCode::SUCCESS
+}
+
+/// The release's version (set by pkg/build.py), or the crate's.
+pub fn version() -> &'static str {
+    option_env!("LOCALFLOW_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
 fn usage() -> ExitCode {
