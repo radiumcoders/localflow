@@ -303,12 +303,13 @@ pub fn chips<T: Copy + PartialEq + 'static>(
     const PAD: f32 = 12.;
     const GAP: f32 = 2.;
     let widths: Vec<f32> = options.iter().map(|(_, l)| text_width(l, 13., FontWeight::MEDIUM, window) + PAD * 2.).collect();
-    let chosen = options.iter().position(|(v, _)| *v == value).unwrap_or(0);
+    let found = options.iter().position(|(v, _)| *v == value);
+    let chosen = found.unwrap_or(0);
     let left: f32 = widths[..chosen].iter().map(|w| w + GAP).sum();
     let total: f32 = widths.iter().sum::<f32>() + GAP * (widths.len().saturating_sub(1)) as f32;
     let on_pick = std::rc::Rc::new(on_pick);
     let (fg, dim) = (p.fg, p.dim);
-    let indicator = raised(div(), p).h(px(28.)).rounded_full().with_spring((id, 0usize), spring(SPRING, widths[chosen]), |el, w| el.w(px(w)));
+    let indicator = raised(div(), p).h(px(28.)).rounded_full().when(found.is_none(), |d| d.opacity(0.)).with_spring((id, 0usize), spring(SPRING, widths[chosen]), |el, w| el.w(px(w)));
     div()
         .relative()
         .flex_none()
@@ -318,7 +319,7 @@ pub fn chips<T: Copy + PartialEq + 'static>(
         .child(div().relative().flex().gap(px(GAP)).children(options.iter().enumerate().map(|(i, (v, label))| {
             let v = *v;
             let on_pick = on_pick.clone();
-            let selected = i == chosen;
+            let selected = found == Some(i);
             div()
                 .id((id, i + 2))
                 .w(px(widths[i]))
@@ -454,5 +455,94 @@ pub fn logo(px_size: f32, t: f32, p: &Palette) -> impl IntoElement {
         },
     )
     .size(px(px_size))
+}
+
+
+/// Give gpui-kit's own components (inputs, selects, switches, popovers) the
+/// site's colours, for the current light or dark mode. Run it again after
+/// the mode changes: the kit reloads its theme then.
+pub fn apply_theme(cx: &mut App) {
+    use gpui_kit::component::theme::Theme;
+    let theme = Theme::global_mut(cx);
+    let dark = theme.mode.is_dark();
+    let p = if dark { Palette::DARK } else { Palette::LIGHT };
+    let solid = |l: f32| Hsla { h: 0., s: 0., l, a: 1. };
+    let border = if dark { solid(0.16) } else { solid(0.89) };
+    let popover = if dark { solid(0.04) } else { solid(1.) };
+    let mut selection = p.primary;
+    selection.a = 0.3;
+    theme.font_family = SANS.into();
+    theme.mono_font_family = MONO.into();
+    theme.radius = px(10.);
+    let c = &mut theme.colors;
+    c.background = p.bg;
+    c.foreground = p.fg;
+    c.muted = p.muted;
+    c.muted_foreground = p.dim;
+    c.border = border;
+    c.input = border;
+    c.ring = p.primary;
+    c.caret = p.primary;
+    c.selection = selection;
+    c.primary = p.primary;
+    c.primary_hover = p.primary_hi;
+    c.primary_active = p.primary_edge;
+    c.primary_foreground = p.primary_fg;
+    c.secondary = p.muted;
+    c.secondary_hover = p.hover;
+    c.secondary_foreground = p.fg;
+    c.accent = p.muted;
+    c.accent_foreground = p.fg;
+    c.popover = popover;
+    c.popover_foreground = p.fg;
+    c.list_hover = p.muted;
+    c.list_active = p.tint_strong;
+    c.list_active_border = p.primary;
+    c.switch = if dark { solid(0.22) } else { solid(0.84) };
+    c.switch_thumb = solid(1.);
+    c.success = p.primary;
+    c.danger = p.record;
+    c.link = p.primary;
+    c.progress_bar = p.primary;
+    c.window_border = border;
+    // Components read the tokens; make them the colors just set.
+    theme.tokens = (&theme.colors).into();
+    Theme::sync_base(cx);
+    cx.refresh_windows();
+}
+
+/// Keycaps, as (icon, label, wide).
+pub type Keys = &'static [(&'static str, &'static str, bool)];
+
+/// A keycap: an icon (or nothing) at the top, the key's name below. Held,
+/// it goes down and lights up.
+pub fn keycap(glyph: &str, label: &str, wide: bool, held: bool, p: &Palette) -> impl IntoElement {
+    let ink = if held { p.primary } else { p.fg.opacity(0.8) };
+    let key = div()
+        .relative()
+        .h(px(48.))
+        .min_w(px(48.))
+        .when(wide, |d| d.w(px(144.)))
+        .px(px(8.))
+        .py(px(6.))
+        .flex()
+        .flex_col()
+        .justify_between()
+        .rounded(px(8.))
+        .child(div().h(px(14.)).when(!glyph.is_empty(), |d| d.child(svg().path(SharedString::from(format!("icons/{glyph}.svg"))).size(px(13.)).flex_none().text_color(ink))))
+        .child(
+            div()
+                .when(wide, |d| d.mx_auto())
+                .text_size(px(if glyph.is_empty() { 13. } else { 11. }))
+                .line_height(px(13.))
+                .font_weight(FontWeight::MEDIUM)
+                .child(label.to_string()),
+        );
+    let key = if held {
+        key.bg(p.tint_strong).border_1().border_color(p.primary.opacity(0.4)).text_color(p.primary)
+    } else {
+        raised(key, p).text_color(p.fg.opacity(0.8))
+    };
+    key.with_spring(SharedString::from(format!("key-{label}")), spring(SPRING, if held { 2. } else { 0. }), |el, y| el.top(px(y)))
 }
 

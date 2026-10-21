@@ -17,7 +17,7 @@ use localflow_core::{Config, Localflow, Msg, config_dir, prompts::HAIKU, save_ap
 use localflow_speech::models;
 
 use super::jobs::{Job, Jobs};
-use super::look::{self, Palette, SOFT, SPRING, band, chips, dashes, dot_grid, ghost_button, primary_button, raised, secondary_button, spring};
+use super::look::{self, Palette, SOFT, SPRING, band, chips, dashes, dot_grid, ghost_button, primary_button, secondary_button, spring};
 use super::settings::{LOCAL_MODELS, after_save, env_file_value};
 
 const WINDOW: (f32, f32) = (760., 564.);
@@ -550,6 +550,29 @@ fn run(args: &[&str]) {
     }
 }
 
+/// Linux: the Hyprland key bindings, short enough to read in a window.
+/// `all` adds raw dictation (F10) and learning from a fix (F8).
+pub(super) fn bindings(all: bool) -> String {
+    let exe = crate::setup::app_exe().display().to_string();
+    let exe = if exe.contains(' ') { format!("'{exe}'") } else { exe };
+    let mut lines = vec![
+        format!("local lf = \"{exe}\""),
+        "hl.unbind(\"SUPER + CTRL + X\")".to_string(),
+        "hl.unbind(\"F9\")".to_string(),
+        "o.bind(\"SUPER + CTRL + X\", \"Toggle dictation\", lf .. \" toggle\")".to_string(),
+        "o.bind(\"F9\", \"Start dictation\", lf .. \" start\")".to_string(),
+        "o.bind(\"F9\", \"Stop dictation\", lf .. \" stop\", { release = true })".to_string(),
+    ];
+    if all {
+        lines.extend([
+            "o.bind(\"F10\", \"Start raw dictation\", lf .. \" start raw\")".to_string(),
+            "o.bind(\"F10\", \"Stop raw dictation\", lf .. \" stop\", { release = true })".to_string(),
+            "o.bind(\"F8\", \"Learn from a fix\", lf .. \" learn\")".to_string(),
+        ]);
+    }
+    lines.join("\n")
+}
+
 /* ------------------------------------------------------------- pieces */
 
 fn icon(name: &str, size: f32, color: Hsla) -> Svg {
@@ -1052,23 +1075,9 @@ impl Onboarding {
             .child(band(cells, p))
     }
 
-    /// Linux: the key bindings, compact (the settings show every key).
-    fn bindings() -> String {
-        let exe = crate::setup::app_exe().display().to_string();
-        let exe = if exe.contains(' ') { format!("'{exe}'") } else { exe };
-        [
-            format!("local lf = \"{exe}\""),
-            "hl.unbind(\"SUPER + CTRL + X\")".to_string(),
-            "hl.unbind(\"F9\")".to_string(),
-            "o.bind(\"SUPER + CTRL + X\", \"Toggle dictation\", lf .. \" toggle\")".to_string(),
-            "o.bind(\"F9\", \"Start dictation\", lf .. \" start\")".to_string(),
-            "o.bind(\"F9\", \"Stop dictation\", lf .. \" stop\", { release = true })".to_string(),
-        ]
-        .join("\n")
-    }
 
     fn keys(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
-        let text = Self::bindings();
+        let text = bindings(false);
         let copy = text.clone();
         div()
             .flex()
@@ -1133,7 +1142,7 @@ impl Onboarding {
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.press(window, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.release(cx)))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| this.release(cx)))
-            .children(self.platform.keys().iter().map(|(glyph, label, wide)| keycap(glyph, label, *wide, held, p)));
+            .children(self.platform.keys().iter().map(|(glyph, label, wide)| look::keycap(glyph, label, *wide, held, p)));
         let hint = if ready {
             None
         } else {
@@ -1358,36 +1367,6 @@ impl Onboarding {
                     .child(primary_button("next", label, enabled, p).when(enabled, |b| b.on_click(cx.listener(|this, _, window, cx| this.next(window, cx))))),
             )
     }
-}
-
-fn keycap(glyph: &str, label: &str, wide: bool, held: bool, p: &Palette) -> impl IntoElement {
-    let ink = if held { p.primary } else { p.fg.opacity(0.8) };
-    let key = div()
-        .relative()
-        .h(px(48.))
-        .min_w(px(48.))
-        .when(wide, |d| d.w(px(144.)))
-        .px(px(8.))
-        .py(px(6.))
-        .flex()
-        .flex_col()
-        .justify_between()
-        .rounded(px(8.))
-        .child(div().h(px(14.)).when(!glyph.is_empty(), |d| d.child(icon(glyph, 13., ink))))
-        .child(
-            div()
-                .when(wide, |d| d.mx_auto())
-                .text_size(px(if glyph.is_empty() { 13. } else { 11. }))
-                .line_height(px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .child(label.to_string()),
-        );
-    let key = if held {
-        key.bg(p.tint_strong).border_1().border_color(p.primary.opacity(0.4)).text_color(p.primary)
-    } else {
-        raised(key, p).text_color(p.fg.opacity(0.8))
-    };
-    key.with_spring(SharedString::from(format!("key-{label}")), spring(SPRING, if held { 2. } else { 0. }), |el, y| el.top(px(y)))
 }
 
 impl Render for Onboarding {

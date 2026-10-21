@@ -74,9 +74,7 @@ pub fn run(ui: Ui, rx: async_channel::Receiver<UiMsg>, start: Start) {
         gpui_kit::init(cx);
         Theme::sync_system_appearance(None, cx);
         look::init(cx);
-        let theme = Theme::global_mut(cx);
-        theme.font_family = look::SANS.into();
-        theme.mono_font_family = look::MONO.into();
+        look::apply_theme(cx);
         jobs::Jobs::init(cx);
         crate::platform::background_app();
         Overlay::init(ui.level.clone(), cx);
