@@ -13,6 +13,7 @@
 //! # Ok::<(), localflow_core::Error>(())
 //! ```
 
+pub mod agent;
 mod chat;
 mod cleanup;
 mod config;

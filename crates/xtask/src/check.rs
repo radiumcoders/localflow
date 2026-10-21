@@ -298,7 +298,7 @@ pub fn e2e(_: &[String]) -> Result<(), String> {
 /// `cargo xtask installed INSTALLER`.
 pub fn installed(args: &[String]) -> Result<(), String> {
     let installer = PathBuf::from(args.first().ok_or("cargo xtask installed INSTALLER")?);
-    let installer = std::fs::canonicalize(&installer).map_err(|e| format!("{}: {e}", installer.display()))?;
+    let installer = crate::absolute(&installer).map_err(|e| format!("{}: {e}", installer.display()))?;
     run("cargo", &["build", "--release", "--locked", "-p", "localflow-testbox"])?;
     let api = crate::fake_api::start();
     let dir = temp();
@@ -315,7 +315,7 @@ pub fn installed(args: &[String]) -> Result<(), String> {
 
 fn windows(steps: &mut Steps, msi: &Path, api: &str, dir: &Path) {
     let program_files = env_dir("ProgramFiles", || "C:\\Program Files".into());
-    let exe = program_files.join("localflow/localflow.exe");
+    let exe = program_files.join("localflow").join("localflow.exe"); // backslashes, as the Run entry has it
     let shortcut = env_dir("ProgramData", || "C:\\ProgramData".into()).join("Microsoft/Windows/Start Menu/Programs/localflow.lnk");
     let run_entry = || {
         Command::new("reg").args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "localflow"]).output()

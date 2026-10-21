@@ -32,6 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v2-portable-ggml
       - name: Version
         shell: bash
         run: |
@@ -86,13 +88,13 @@ jobs:
           ls -l installers
           gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" \
             --title "localflow ${GITHUB_REF_NAME#v}" --notes-file - <<'EOF'
-          localflow, now a native app written in Rust, with its own speech engine (no Handy needed).
+          localflow, a native app written in Rust, with its own speech engine. The first time you open it, a short onboarding walks you through it: a speech model (it downloads while you go on), where cleanup runs (on this computer with Ollama, or with your API key), what macOS asks to allow, your keys on Linux, and a dictation you try right in the window.
 
-          **Windows:** `localflow-…-x64.msi`. Open it, then open localflow from the Start menu: the first time, the settings window opens (pick a speech model, and cleanup on this computer or with your API key). The installer isn't signed yet: in the SmartScreen warning, click **More info**, then **Run anyway**.
+          **Windows:** `localflow-…-x64.msi`. Open it, then open localflow from the Start menu: the first time, the onboarding opens. The installer isn't signed yet: in the SmartScreen warning, click **More info**, then **Run anyway**.
 
-          **macOS:** `…-arm64.dmg` for Apple Silicon (M1 and later), `…-x64.dmg` for Intel. Open it, drag localflow into Applications, and open it from there. It isn't signed with an Apple Developer ID yet: the first time, macOS says it can't check it. Open **System Settings > Privacy & Security** and click **Open Anyway** next to localflow. Then allow it under Accessibility (for the hotkey and pasting) and Microphone when macOS asks.
+          **macOS:** `…-arm64.dmg` for Apple Silicon (M1 and later), `…-x64.dmg` for Intel. Open it, drag localflow into Applications, and open it from there. It isn't signed with an Apple Developer ID yet: the first time, macOS says it can't check it. Open **System Settings > Privacy & Security** and click **Open Anyway** next to localflow. The onboarding then asks you to allow it under Accessibility (for the hotkey and pasting) and Microphone.
 
-          **Linux:** `localflow-…-x86_64.AppImage`. Make it executable (`chmod +x`) and run it: the settings window opens; Save copies localflow to `~/.local/share/localflow/app` and adds it to your app launcher, and shows the key bindings to add (Hyprland lines included, with a Copy button). Needs PipeWire or ALSA for recording, and `wl-clipboard` + `wtype` (Wayland) or `xclip` + `xdotool` (X11) for pasting.
+          **Linux:** `localflow-…-x86_64.AppImage`. Make it executable (`chmod +x`) and run it: the onboarding opens, copies localflow to `~/.local/share/localflow/app`, adds it to your app launcher, and shows the key bindings to add (Hyprland lines, with a Copy button). Needs PipeWire or ALSA for recording, and `wl-clipboard` + `wtype` (Wayland) or `xclip` + `xdotool` (X11) for pasting.
 
           Hold the hotkey (Ctrl+Shift+Space on Windows, Option+Shift+Space on macOS, your key binding on Linux) and talk; let go and it pastes. What you say to yourself or to someone else in the room is left out.
           EOF

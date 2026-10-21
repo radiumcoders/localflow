@@ -3,6 +3,7 @@
 //! and the clipboard, the hotkey on Windows and macOS, and learning from the
 //! fixes you make to what was pasted. No UI: the app crate draws the overlay.
 
+pub mod history;
 pub mod hotkey;
 pub mod learn;
 pub mod paste;
@@ -20,6 +21,25 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub use localflow_core::Part;
+
+/// Whether localflow may press keys and paste for you: macOS asks for this
+/// under Privacy & Security > Accessibility. Nothing to allow elsewhere.
+pub fn accessibility_allowed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::trusted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Show macOS's prompt to allow localflow under Accessibility.
+pub fn ask_accessibility() {
+    #[cfg(target_os = "macos")]
+    macos::ask_accessibility();
+}
 
 /// A program on PATH (with .exe on Windows).
 pub fn which(name: &str) -> Option<PathBuf> {

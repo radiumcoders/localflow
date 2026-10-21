@@ -20,7 +20,7 @@ use localflow_speech::models;
 
 /// Hosted providers, as shown, and their LOCALFLOW_API_URL names. The last
 /// one takes any OpenAI-compatible base URL.
-const PROVIDERS: &[(&str, &str)] = &[
+pub(super) const PROVIDERS: &[(&str, &str)] = &[
     ("Anthropic (Claude Haiku)", "anthropic"),
     ("OpenAI", "openai"),
     ("OpenRouter", "openrouter"),
@@ -31,6 +31,7 @@ const PROVIDERS: &[(&str, &str)] = &[
     ("Other (OpenAI-compatible URL)", ""),
 ];
 const LEARN: &[(&str, &str)] = &[("On its own", "auto"), ("Only with the learn key", "key"), ("Off", "off")];
+const SUBMIT: &[(&str, &str)] = &[("When you say \"send it\"", "said"), ("Always", "always"), ("Never", "never")];
 const LANGUAGES: &[(&str, &str)] = &[
     ("Detect it", ""),
     ("English", "en"),
@@ -46,7 +47,7 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("Chinese", "zh"),
 ];
 /// Local cleanup models offered first (any Ollama model works).
-const LOCAL_MODELS: &[&str] = &["qwen3.5:4b", "qwen3.5:2b"];
+pub(super) const LOCAL_MODELS: &[&str] = &["qwen3.5:4b", "qwen3.5:2b"];
 
 type Choice = Entity<SelectState<SearchableVec<&'static str>>>;
 
@@ -67,30 +68,44 @@ enum Ollama {
 
 struct State {
     quit_with_settings: bool,
+    /// The first-run window instead of the settings, even when set up.
+    onboarding: bool,
     window: Option<AnyWindowHandle>,
 }
 
 impl Global for State {}
 
-pub fn init(quit_with_settings: bool, cx: &mut App) {
-    cx.set_global(State { quit_with_settings, window: None });
+pub fn init(quit_with_settings: bool, onboarding: bool, cx: &mut App) {
+    cx.set_global(State { quit_with_settings, onboarding, window: None });
     cx.on_window_closed(|cx, id| {
         let state = cx.global_mut::<State>();
         if state.window.is_some_and(|w| w.window_id() == id) {
             state.window = None;
             if state.quit_with_settings {
-                cx.quit();
+                // A download started in the window finishes first.
+                super::jobs::Jobs::quit_when_idle(cx);
             }
         }
     })
     .detach();
 }
 
-/// Open the settings window, or bring it to the front.
+/// Open the settings window, or bring it to the front. The first time (or
+/// until the onboarding is finished), the onboarding opens instead.
 pub fn open(cx: &mut App) {
     if let Some(window) = cx.global::<State>().window
         && window.update(cx, |_, window, _| window.activate_window()).is_ok()
     {
+        return;
+    }
+    if cx.global::<State>().onboarding || super::onboarding::needed() {
+        match super::onboarding::open(cx) {
+            Ok(window) => {
+                cx.global_mut::<State>().window = Some(window);
+                cx.activate(true);
+            }
+            Err(e) => eprintln!("onboarding: {e:#}"),
+        }
         return;
     }
     let bounds = Bounds::centered(None, size(px(640.), px(780.)), cx);
@@ -129,6 +144,8 @@ pub struct SettingsView {
     check: Job,
     asides: bool,
     learn: Choice,
+    submit: Choice,
+    history: bool,
     saved: Job,
 }
 
@@ -160,6 +177,7 @@ impl SettingsView {
         let provider_ix = if custom { PROVIDERS.len() - 1 } else { index_of(PROVIDERS, &provider_name.as_str()) };
         let language = cfg.language.clone().unwrap_or_default();
         let learn = file("LOCALFLOW_LEARN").unwrap_or_else(|| "auto".into()).trim().to_lowercase();
+        let submit = cfg.submit.value().unwrap_or("said");
         let has_key = cfg.api_key.is_some() || cfg.key_file().exists();
         let api_model = if cfg.anthropic || cfg.api_url.is_empty() { String::new() } else { cfg.model.clone() };
         let local_model = if cfg.api_url.is_empty() { cfg.model.clone() } else { LOCAL_MODELS[0].to_string() };
@@ -187,10 +205,12 @@ impl SettingsView {
             check: Job::Idle,
             asides: cfg.asides,
             learn: choice(LEARN, index_of(LEARN, &learn.as_str()), window, cx),
+            submit: choice(SUBMIT, index_of(SUBMIT, &submit), window, cx),
+            history: cfg.history,
             saved: Job::Idle,
             cfg,
         };
-        for entity in [&view.provider, &view.language, &view.learn] {
+        for entity in [&view.provider, &view.language, &view.learn, &view.submit] {
             cx.observe(entity, |_, _, cx| cx.notify()).detach();
         }
         view.check_ollama(cx);
@@ -222,6 +242,9 @@ impl SettingsView {
         changes.push(("LOCALFLOW_ASIDES", (!self.asides).then(|| "keep".into())));
         let learn = chosen(&self.learn, LEARN, cx);
         changes.push(("LOCALFLOW_LEARN", (learn != "auto").then(|| learn.into())));
+        let submit = chosen(&self.submit, SUBMIT, cx);
+        changes.push(("LOCALFLOW_SUBMIT", (submit != "said").then(|| submit.into())));
+        changes.push(("LOCALFLOW_HISTORY", (!self.history).then(|| "off".into())));
         changes
     }
 
@@ -369,7 +392,7 @@ impl SettingsView {
 
 /// Once saved: the app where it runs from, when it isn't there yet (the
 /// Linux AppImage copies itself out, a Mac app adds its login item).
-fn after_save() -> Result<(), String> {
+pub(super) fn after_save() -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| e.to_string())?.display().to_string();
     let linux = cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some();
     let mac = cfg!(target_os = "macos") && me.contains(".app/Contents/MacOS/") && !me.starts_with("/Volumes/");
@@ -381,7 +404,7 @@ fn after_save() -> Result<(), String> {
 
 /// A value from the env file only (not the environment), for settings
 /// Config doesn't keep in its own form.
-fn env_file_value(cfg: &Config, name: &str) -> Option<String> {
+pub(super) fn env_file_value(cfg: &Config, name: &str) -> Option<String> {
     let text = std::fs::read_to_string(cfg.config_dir.join("env")).ok()?;
     text.lines().filter_map(|l| l.trim().split_once('=')).find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
 }
@@ -426,11 +449,13 @@ impl SettingsView {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_w_0()
                     .gap_0p5()
                     .child(div().text_sm().child(label.into()))
                     .children(hint.map(|h| div().text_xs().text_color(cx.theme().muted_foreground).child(h))),
             )
-            .child(control)
+            .child(div().flex_none().child(control))
     }
 
     fn status(job: &Job, cx: &App) -> Option<Div> {
@@ -674,6 +699,21 @@ impl SettingsView {
                 "Learn from your fixes",
                 Some("When you correct a misheard word, it's spelled right from then on".into()),
                 Select::new(&self.learn).w(px(200.)).small(),
+                cx,
+            )))
+            .child(div().border_t_1().border_color(cx.theme().border).child(Self::row(
+                "Send prompts to coding agents",
+                Some("Press Enter after pasting into Claude Code, Codex...".into()),
+                Select::new(&self.submit).w(px(200.)).small(),
+                cx,
+            )))
+            .child(div().border_t_1().border_color(cx.theme().border).child(Self::row(
+                "Keep a history",
+                Some("What you said and what went out, on this computer only".into()),
+                Switch::new("history").checked(self.history).on_click(cx.listener(|this, checked, _, cx| {
+                    this.history = *checked;
+                    cx.notify();
+                })),
                 cx,
             )))
     }

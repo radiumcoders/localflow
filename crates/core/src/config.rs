@@ -17,11 +17,16 @@
 //! LOCALFLOW_LANGUAGE      what you speak, e.g. en or de (default: detected, English for .en models)
 //! LOCALFLOW_ASIDES        keep to paste what you say to yourself or others while dictating
 //!                         (default: drop it, see prompts::ASIDES_RULE)
+//! LOCALFLOW_SUBMIT        in a coding agent, press Enter after pasting: said (when you end
+//!                         with "send it", the default), always, or never
+//! LOCALFLOW_HISTORY       off to keep no history of what you dictated (default: the last 200,
+//!                         for `localflow history`)
 //! ```
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::agent::Submit;
 use crate::prompts::{HAIKU, PROVIDERS};
 
 #[derive(Debug, Clone)]
@@ -50,6 +55,10 @@ pub struct Config {
     /// Leave out asides: what you say to yourself or to someone else, and
     /// what you mutter (rule 12).
     pub asides: bool,
+    /// When a prompt dictated into a coding agent is sent.
+    pub submit: Submit,
+    /// Keep what you said and what went out, for `localflow history`.
+    pub history: bool,
     /// Where the env file, the api_key file and your learned words.txt live.
     pub config_dir: PathBuf,
 }
@@ -126,6 +135,8 @@ impl Config {
             speech_gpu: !off(var("LOCALFLOW_SPEECH_GPU")),
             language: var("LOCALFLOW_LANGUAGE").map(|l| l.trim().to_lowercase()).filter(|l| !l.is_empty() && l != "auto"),
             asides: !matches!(var("LOCALFLOW_ASIDES").map(|v| v.trim().to_lowercase()).as_deref(), Some("keep" | "off" | "0" | "no")),
+            submit: Submit::parse(var("LOCALFLOW_SUBMIT").as_deref()),
+            history: !off(var("LOCALFLOW_HISTORY")),
             api_url,
             anthropic,
             model,

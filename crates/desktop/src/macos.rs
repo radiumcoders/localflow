@@ -162,7 +162,7 @@ pub fn focused_text() -> Option<(u32, String)> {
 
 // --- Keys and the clipboard ------------------------------------------------------------
 
-fn trusted() -> bool {
+pub(crate) fn trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
@@ -183,6 +183,17 @@ fn key(code: u16, flags: u64) {
             e.post(CGEventTapLocation::HID);
         }
     }
+}
+
+pub fn press_key(k: crate::paste::Key) -> bool {
+    if !trusted() {
+        return false;
+    }
+    key(match k {
+        crate::paste::Key::Enter => 36,
+        crate::paste::Key::Escape => 53,
+    }, 0);
+    true
 }
 
 fn modifiers_held() -> bool {

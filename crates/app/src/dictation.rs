@@ -5,8 +5,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use localflow_core::agent::{Command, Submit, command, split_send};
 use localflow_core::{Config, Localflow};
+use localflow_desktop::history::{self, Entry};
 use localflow_desktop::learn::{Learning, learning_mode, remember};
+use localflow_desktop::paste::{Key, paste_text, press};
 use localflow_desktop::paths::{info, warn};
 use localflow_desktop::project::file_candidates;
 use localflow_desktop::target::{Target, deliver, focused_window};
@@ -105,7 +108,7 @@ impl Dictation {
             let found = target.clone();
             finder = Some(std::thread::spawn(move || {
                 let t = Target::new(&focused_window());
-                info(format_args!("dictating into {:?} {:?}, project {:?}, {} files", t.kind, t.app, t.project, t.files.len()));
+                info(format_args!("dictating into {t}"));
                 *found.lock().unwrap() = Some(t);
             }));
         }
@@ -154,18 +157,42 @@ impl Dictation {
             }
             self.target.lock().unwrap().take()
         };
+        // In a coding agent: a command presses keys; "send it" sends the prompt.
+        let agent = target.as_ref().and_then(|t| t.agent.clone());
+        let keep = |text: &str, outcome: &str| {
+            if self.lf.cfg.history {
+                let app = target.as_ref().map(|t| t.app.clone()).unwrap_or_default();
+                let (heard, text, outcome) = (heard.text.clone(), text.to_string(), outcome.to_string());
+                history::add(Entry { app, agent: agent.clone(), heard, text, outcome, ..Entry::default() });
+            }
+        };
+        if let Some(agent) = &agent
+            && let Some(cmd) = command(&heard.text, agent)
+        {
+            self.ui.send(UiMsg::Hide);
+            std::thread::sleep(Duration::from_millis(100));
+            let done = run_command(cmd);
+            keep(cmd.describe(), "command");
+            info(format_args!("{secs:.1}s of audio: {} to {agent}{}", cmd.describe(), if done { "" } else { " (keys not sent)" }));
+            return message(if done { cmd.describe() } else { "Couldn't press the keys" }, 1200);
+        }
+        let mut input = heard.for_cleanup(self.lf.cfg.asides);
+        let mut send = agent.is_some() && self.lf.cfg.submit == Submit::Always;
+        if agent.is_some() && self.lf.cfg.submit == Submit::Said {
+            let (rest, said_send) = split_send(&input);
+            (input, send) = (rest, said_send);
+        }
         let text = if self.raw {
             heard.text.clone()
         } else {
             self.ui.send(UiMsg::Working("Cleaning up".into()));
-            let input = heard.for_cleanup(self.lf.cfg.asides);
             offered = target.as_ref().map(|t| file_candidates(&heard.text, &t.files, 12)).unwrap_or_default();
             match self.lf.clean(&input, &offered) {
                 Ok(text) => text,
                 Err(e) => {
                     // Never lose a dictation: the transcript as heard.
                     warn(format_args!("cleanup failed, pasting the raw transcript: {e}"));
-                    heard.text.clone()
+                    input.replace("<quiet>", "").replace("</quiet>", "")
                 }
             }
         };
@@ -176,8 +203,13 @@ impl Dictation {
         self.ui.send(UiMsg::Hide);
         std::thread::sleep(Duration::from_millis(100)); // the overlay goes before the paste
         let pasted = deliver(&text, target.as_ref(), &offered);
+        let sent = pasted && send && {
+            std::thread::sleep(Duration::from_millis(150)); // the agent takes the paste first
+            press(Key::Enter)
+        };
+        keep(&text, if sent { "sent" } else if pasted { "pasted" } else { "copied" });
         let stamp = remember(&text);
-        if pasted && !self.raw {
+        if pasted && !sent && !self.raw {
             crate::session::watch_for_fixes(target.as_ref().and_then(|t| t.pid), stamp);
         }
         info(format_args!(
@@ -186,13 +218,33 @@ impl Dictation {
             start.elapsed().as_secs_f32(),
             if offered.is_empty() { String::new() } else { format!(" ({} files offered)", offered.len()) },
             if quiet > 0 { format!(" ({quiet} quiet segments)") } else { String::new() },
-            if pasted { "" } else { " (left on the clipboard)" },
+            if sent { " and sent" } else if pasted { "" } else { " (left on the clipboard)" },
         ));
         if !pasted {
             let keys = if cfg!(target_os = "macos") { "Cmd+V" } else { "Ctrl+V" };
             return message(&format!("Copied: paste with {keys}"), 2500);
         }
         0
+    }
+}
+
+/// Press a command's keys in the focused window.
+fn run_command(cmd: Command) -> bool {
+    match cmd {
+        Command::Stop => press(Key::Escape),
+        Command::Rewind => {
+            press(Key::Escape) && {
+                std::thread::sleep(Duration::from_millis(80));
+                press(Key::Escape)
+            }
+        }
+        Command::Slash(slash) => {
+            paste_text(slash) && {
+                std::thread::sleep(Duration::from_millis(150));
+                press(Key::Enter)
+            }
+        }
+        Command::Send => press(Key::Enter),
     }
 }
 

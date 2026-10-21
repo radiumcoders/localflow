@@ -88,7 +88,11 @@ fn write_log(level: &str, msg: impl Display) {
 
 /// Now in UTC, as 2026-10-20T14:45:04Z (no time zone database needed).
 fn timestamp() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    utc(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64)
+}
+
+/// Seconds since 1970 as 2026-10-20T14:45:04Z.
+pub fn utc(secs: i64) -> String {
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
     let z = days + 719_468;
@@ -110,5 +114,7 @@ mod tests {
         let t = super::timestamp();
         assert_eq!(t.len(), 20, "{t}");
         assert!(t.starts_with("20") && t.ends_with('Z'), "{t}");
+        assert_eq!(super::utc(1_792_500_304), "2026-10-20T12:45:04Z");
+        assert_eq!(super::utc(0), "1970-01-01T00:00:00Z");
     }
 }

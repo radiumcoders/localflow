@@ -187,7 +187,8 @@ pub fn recent_project(base: &Path) -> Option<PathBuf> {
         .map(|(_, folder)| folder)
 }
 
-/// {pid: (parent pid, program name)} for every process (Linux and macOS).
+/// {pid: (parent pid, program name)} for every process. Names are as in
+/// AGENTS: "claude", not "claude.exe" or a path.
 pub fn processes() -> HashMap<u32, (u32, String)> {
     let mut procs = HashMap::new();
     if cfg!(target_os = "linux") {
@@ -200,7 +201,12 @@ pub fn processes() -> HashMap<u32, (u32, String)> {
                 procs.insert(pid, (ppid, stat[open + 1..close].to_string()));
             }
         }
-    } else if !cfg!(windows) {
+    } else if cfg!(windows) {
+        #[cfg(windows)]
+        for (pid, ppid, exe) in crate::windows::processes() {
+            procs.insert(pid, (ppid, windows_exe_name(&exe)));
+        }
+    } else {
         let out = crate::output(command("ps").args(["-axo", "pid=,ppid=,comm="]), Duration::from_secs(3));
         for line in out.lines() {
             let mut fields = line.split_whitespace();
@@ -214,6 +220,35 @@ pub fn processes() -> HashMap<u32, (u32, String)> {
         }
     }
     procs
+}
+
+/// "claude.exe" -> "claude", to match AGENTS.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_exe_name(exe: &str) -> String {
+    let lower = exe.to_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+/// The processes started from `pid`, newest first.
+fn descendants(pid: u32, procs: &HashMap<u32, (u32, String)>) -> Vec<u32> {
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&p, (parent, _)) in procs {
+        children.entry(*parent).or_default().push(p);
+    }
+    let (mut under, mut todo) = (vec![], children.get(&pid).cloned().unwrap_or_default());
+    while let Some(p) = todo.pop() {
+        under.push(p);
+        todo.extend(children.get(&p).into_iter().flatten());
+    }
+    under.sort_by_key(|p| std::cmp::Reverse(*p));
+    under
+}
+
+/// The coding agent (Claude Code, Codex...) running in the window of `pid`,
+/// by its program name ("claude").
+pub fn agent_in(pid: u32) -> Option<String> {
+    let procs = processes();
+    descendants(pid, &procs).into_iter().find_map(|p| AGENTS.iter().find(|a| **a == procs[&p].1).map(|a| a.to_string()))
 }
 
 /// {pid: working directory} for those of `pids` we can see.
@@ -263,15 +298,7 @@ pub fn terminal_cwd(pid: u32, title: &str) -> Option<PathBuf> {
         return None; // another process's directory isn't readable there
     }
     let procs = processes();
-    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-    for (&p, (parent, _)) in &procs {
-        children.entry(*parent).or_default().push(p);
-    }
-    let (mut under, mut todo) = (vec![], children.get(&pid).cloned().unwrap_or_default());
-    while let Some(p) = todo.pop() {
-        under.push(p);
-        todo.extend(children.get(&p).into_iter().flatten());
-    }
+    let mut under = descendants(pid, &procs);
     // Agents first, then the newest.
     under.sort_by_key(|p| std::cmp::Reverse((AGENTS.contains(&procs[p].1.as_str()), *p)));
     under.truncate(30);
@@ -545,6 +572,42 @@ mod tests {
         assert_eq!(found, [".gitignore", "a.py", "src/", "src/b.py"]);
         assert_eq!(project_root(&root.join("src")), Some(root.clone()));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn agents_in_a_window() {
+        let procs: HashMap<u32, (u32, String)> = [
+            (10, (1, "kitty".to_string())),
+            (11, (10, "zsh".to_string())),
+            (12, (11, "claude".to_string())),
+            (13, (12, "node".to_string())),
+            (20, (1, "kitty".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(descendants(10, &procs), [13, 12, 11]);
+        assert!(descendants(20, &procs).is_empty());
+        assert_eq!(windows_exe_name("Claude.EXE"), "claude");
+        assert_eq!(windows_exe_name("node"), "node");
+        // This test's own process runs no agent, until it starts one: any
+        // program, copied as "claude".
+        assert_eq!(agent_in(std::process::id()), None);
+        let dir = temp("agent");
+        let (program, args): (PathBuf, &[&str]) = if cfg!(windows) {
+            (PathBuf::from(std::env::var("SystemRoot").unwrap_or("C:\\Windows".into())).join("System32\\PING.EXE"),
+             &["-n", "6", "127.0.0.1"])
+        } else {
+            (which("sleep").unwrap(), &["5"])
+        };
+        let claude = dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
+        std::fs::copy(&program, &claude).unwrap();
+        let mut child = command(&claude).args(args).stdout(std::process::Stdio::null()).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let found = agent_in(std::process::id());
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(found.as_deref(), Some("claude"));
     }
 
     #[test]

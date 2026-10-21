@@ -8,14 +8,20 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use localflow_core::{Config, Localflow, Msg, NO_FILES, eval};
+use localflow_desktop::history;
+use localflow_desktop::paths::utc;
 use localflow_speech::{RATE, Recorder, level, models, read_wav, wav_bytes};
 
 const USAGE: &str = "localflow: talk, and get clean text where you type
 
     localflow                        # settings (Linux), or the background app (macOS / Windows)
     localflow settings
+    localflow onboarding             # the first-run window, again
     localflow setup [--api PROVIDER|URL] [--model MODEL] [--speech-model ID]
     localflow start [raw] | stop | toggle [raw] | cancel | learn
+    localflow history [N]            # the last N dictations (default 10): what was heard, what went out
+    localflow history --last         # just the last text that went out
+    localflow history --clear
     localflow models [download ID]   # speech models: list, or download one
     localflow listen [SECONDS]       # record (default 5 s), transcribe, clean up, print
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
@@ -50,6 +56,7 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         }
         "models" => return models_command(&lf.cfg, &args[1..]),
+        "history" => return history_command(&lf.cfg, &args[1..]),
         "listen" => {
             let seconds = arg(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
             return match record(seconds) {
@@ -134,6 +141,39 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
             }
         }
         _ => return usage(),
+    }
+    ExitCode::SUCCESS
+}
+
+fn history_command(cfg: &Config, args: &[String]) -> ExitCode {
+    match args.first().map(String::as_str) {
+        Some("--clear") => {
+            if let Err(e) = history::clear() {
+                return fail(e);
+            }
+            println!("history cleared");
+        }
+        Some("--last") => match history::recent(usize::MAX).into_iter().rev().find(|e| e.outcome != "command") {
+            Some(e) => println!("{}", e.text),
+            None => return fail("no dictations yet"),
+        },
+        n => {
+            let Ok(n) = n.map_or(Ok(10), str::parse::<usize>) else { return usage() };
+            let entries = history::recent(n);
+            if entries.is_empty() {
+                println!("no dictations yet{}", if cfg.history { "" } else { " (LOCALFLOW_HISTORY is off)" });
+            }
+            for e in entries {
+                let into = match (&e.agent, e.app.is_empty()) {
+                    (Some(agent), _) => format!(" into {agent} in {}", e.app),
+                    (None, false) => format!(" into {}", e.app),
+                    (None, true) => String::new(),
+                };
+                println!("{}{into} ({})", utc(e.time as i64), e.outcome);
+                println!("  heard: {}", e.heard);
+                println!("  wrote: {}\n", e.text.replace('\n', "\n         "));
+            }
+        }
     }
     ExitCode::SUCCESS
 }

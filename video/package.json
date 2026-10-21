@@ -1,0 +1,22 @@
+{
+  "name": "dictation-video",
+  "private": true,
+  "description": "A short video of the dictation, made with Remotion",
+  "scripts": {
+    "dev": "remotion studio",
+    "render": "remotion render Dictation out/dictation.mp4",
+    "lint": "tsc"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.536",
+    "@remotion/google-fonts": "4.0.536",
+    "@remotion/media": "4.0.536",
+    "remotion": "4.0.536",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.7",
+    "typescript": "5.9.3"
+  }
+}

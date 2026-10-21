@@ -1,0 +1,605 @@
+{
+ "n_hook": {
+  "hash": "fa14563f4ef20da80191e87b8802fd559b7bee29",
+  "duration": 2.24,
+  "words": [
+   {
+    "text": "You think faster than you type.",
+    "start": 0.0,
+    "end": 1.2768
+   }
+  ],
+  "timed": [
+   {
+    "text": "You",
+    "start": 0.0
+   },
+   {
+    "text": "think",
+    "start": 0.3
+   },
+   {
+    "text": "faster",
+    "start": 0.6
+   },
+   {
+    "text": "than",
+    "start": 0.9
+   },
+   {
+    "text": "you",
+    "start": 1.2
+   },
+   {
+    "text": "type.",
+    "start": 1.5
+   }
+  ]
+ },
+ "n_intro": {
+  "hash": "a44340eeb4a8af88bc22b250ca66a8ac0752315f",
+  "duration": 4.16,
+  "words": [
+   {
+    "text": "So talk instead. Say it messy, and",
+    "start": 0.0,
+    "end": 2.8
+   },
+   {
+    "text": "get",
+    "start": 2.8,
+    "end": 2.96
+   },
+   {
+    "text": "what",
+    "start": 2.96,
+    "end": 3.12
+   },
+   {
+    "text": "you",
+    "start": 3.12,
+    "end": 3.28
+   },
+   {
+    "text": "meant.",
+    "start": 3.28,
+    "end": 3.76
+   }
+  ],
+  "timed": [
+   {
+    "text": "So",
+    "start": 0.0
+   },
+   {
+    "text": "talk",
+    "start": 0.4
+   },
+   {
+    "text": "instead.",
+    "start": 0.8
+   },
+   {
+    "text": "Say",
+    "start": 1.2
+   },
+   {
+    "text": "it",
+    "start": 1.6
+   },
+   {
+    "text": "messy,",
+    "start": 2.0
+   },
+   {
+    "text": "and",
+    "start": 2.4
+   },
+   {
+    "text": "get",
+    "start": 2.8
+   },
+   {
+    "text": "what",
+    "start": 2.96
+   },
+   {
+    "text": "you",
+    "start": 3.12
+   },
+   {
+    "text": "meant.",
+    "start": 3.28
+   }
+  ]
+ },
+ "d_msg": {
+  "hash": "63e24bdc1b77388ac863ad3638c02ccc5908980f",
+  "duration": 11.52,
+  "words": [
+   {
+    "text": "Um, so, can we move the, uh, design",
+    "start": 0.0,
+    "end": 2.72
+   },
+   {
+    "text": "review",
+    "start": 2.72,
+    "end": 3.04
+   },
+   {
+    "text": "to",
+    "start": 3.04,
+    "end": 3.2
+   },
+   {
+    "text": "Thursday",
+    "start": 3.2,
+    "end": 3.76
+   },
+   {
+    "text": "at",
+    "start": 3.76,
+    "end": 4.0
+   },
+   {
+    "text": "three?",
+    "start": 4.0,
+    "end": 5.44
+   },
+   {
+    "text": "Wait,",
+    "start": 5.44,
+    "end": 5.92
+   },
+   {
+    "text": "no,",
+    "start": 5.92,
+    "end": 6.32
+   },
+   {
+    "text": "Friday",
+    "start": 6.32,
+    "end": 6.64
+   },
+   {
+    "text": "at",
+    "start": 6.64,
+    "end": 6.8
+   },
+   {
+    "text": "three.",
+    "start": 6.8,
+    "end": 8.48
+   },
+   {
+    "text": "And,",
+    "start": 8.48,
+    "end": 8.8
+   },
+   {
+    "text": "uh,",
+    "start": 8.8,
+    "end": 9.12
+   },
+   {
+    "text": "ask",
+    "start": 9.12,
+    "end": 9.36
+   },
+   {
+    "text": "Priya",
+    "start": 9.36,
+    "end": 9.76
+   },
+   {
+    "text": "to",
+    "start": 9.76,
+    "end": 9.84
+   },
+   {
+    "text": "bring",
+    "start": 9.84,
+    "end": 10.0
+   },
+   {
+    "text": "the",
+    "start": 10.0,
+    "end": 10.08
+   },
+   {
+    "text": "pricing",
+    "start": 10.08,
+    "end": 10.48
+   },
+   {
+    "text": "slides.",
+    "start": 10.48,
+    "end": 11.12
+   }
+  ],
+  "timed": [
+   {
+    "text": "Um,",
+    "start": 0.0
+   },
+   {
+    "text": "so,",
+    "start": 0.34
+   },
+   {
+    "text": "can",
+    "start": 0.68
+   },
+   {
+    "text": "we",
+    "start": 1.02
+   },
+   {
+    "text": "move",
+    "start": 1.36
+   },
+   {
+    "text": "the,",
+    "start": 1.7
+   },
+   {
+    "text": "uh,",
+    "start": 2.04
+   },
+   {
+    "text": "design",
+    "start": 2.38
+   },
+   {
+    "text": "review",
+    "start": 2.72
+   },
+   {
+    "text": "to",
+    "start": 3.04
+   },
+   {
+    "text": "Thursday",
+    "start": 3.2
+   },
+   {
+    "text": "at",
+    "start": 3.76
+   },
+   {
+    "text": "three?",
+    "start": 4.0
+   },
+   {
+    "text": "Wait,",
+    "start": 5.44
+   },
+   {
+    "text": "no,",
+    "start": 5.92
+   },
+   {
+    "text": "Friday",
+    "start": 6.32
+   },
+   {
+    "text": "at",
+    "start": 6.64
+   },
+   {
+    "text": "three.",
+    "start": 6.8
+   },
+   {
+    "text": "And,",
+    "start": 8.48
+   },
+   {
+    "text": "uh,",
+    "start": 8.8
+   },
+   {
+    "text": "ask",
+    "start": 9.12
+   },
+   {
+    "text": "Priya",
+    "start": 9.36
+   },
+   {
+    "text": "to",
+    "start": 9.76
+   },
+   {
+    "text": "bring",
+    "start": 9.84
+   },
+   {
+    "text": "the",
+    "start": 10.0
+   },
+   {
+    "text": "pricing",
+    "start": 10.08
+   },
+   {
+    "text": "slides.",
+    "start": 10.48
+   }
+  ]
+ },
+ "n_list": {
+  "hash": "2b75b7dd01657cff5f075b6dc8629d5f3648f331",
+  "duration": 2.8,
+  "words": [
+   {
+    "text": "Ramble a list. Get a list.",
+    "start": 0.0,
+    "end": 2.4
+   }
+  ],
+  "timed": [
+   {
+    "text": "Ramble",
+    "start": 0.0
+   },
+   {
+    "text": "a",
+    "start": 0.4
+   },
+   {
+    "text": "list.",
+    "start": 0.8
+   },
+   {
+    "text": "Get",
+    "start": 1.2
+   },
+   {
+    "text": "a",
+    "start": 1.6
+   },
+   {
+    "text": "list.",
+    "start": 2.0
+   }
+  ]
+ },
+ "d_list": {
+  "hash": "44c4a0883c23ae846efc551bbe7d2cbf11e57afb",
+  "duration": 7.36,
+  "words": [
+   {
+    "text": "My tasks today are, first, buy milk, second,",
+    "start": 0.0,
+    "end": 4.0
+   },
+   {
+    "text": "call",
+    "start": 4.0,
+    "end": 4.16
+   },
+   {
+    "text": "the",
+    "start": 4.16,
+    "end": 4.24
+   },
+   {
+    "text": "bank,",
+    "start": 4.24,
+    "end": 4.96
+   },
+   {
+    "text": "and",
+    "start": 4.96,
+    "end": 5.12
+   },
+   {
+    "text": "third,",
+    "start": 5.12,
+    "end": 5.84
+   },
+   {
+    "text": "fix",
+    "start": 5.84,
+    "end": 6.08
+   },
+   {
+    "text": "the",
+    "start": 6.08,
+    "end": 6.16
+   },
+   {
+    "text": "login",
+    "start": 6.16,
+    "end": 6.48
+   },
+   {
+    "text": "bug.",
+    "start": 6.48,
+    "end": 6.96
+   }
+  ],
+  "timed": [
+   {
+    "text": "My",
+    "start": 0.0
+   },
+   {
+    "text": "tasks",
+    "start": 0.5
+   },
+   {
+    "text": "today",
+    "start": 1.0
+   },
+   {
+    "text": "are,",
+    "start": 1.5
+   },
+   {
+    "text": "first,",
+    "start": 2.0
+   },
+   {
+    "text": "buy",
+    "start": 2.5
+   },
+   {
+    "text": "milk,",
+    "start": 3.0
+   },
+   {
+    "text": "second,",
+    "start": 3.5
+   },
+   {
+    "text": "call",
+    "start": 4.0
+   },
+   {
+    "text": "the",
+    "start": 4.16
+   },
+   {
+    "text": "bank,",
+    "start": 4.24
+   },
+   {
+    "text": "and",
+    "start": 4.96
+   },
+   {
+    "text": "third,",
+    "start": 5.12
+   },
+   {
+    "text": "fix",
+    "start": 5.84
+   },
+   {
+    "text": "the",
+    "start": 6.08
+   },
+   {
+    "text": "login",
+    "start": 6.16
+   },
+   {
+    "text": "bug.",
+    "start": 6.48
+   }
+  ]
+ },
+ "n_outro": {
+  "hash": "5545a3d8fa3a88a19e7d9645da7d60bc2040c661",
+  "duration": 5.76,
+  "words": [
+   {
+    "text": "Private by default. On Mac, Windows",
+    "start": 0.0,
+    "end": 3.04
+   },
+   {
+    "text": "and",
+    "start": 3.04,
+    "end": 3.2
+   },
+   {
+    "text": "Linux.",
+    "start": 3.2,
+    "end": 4.48
+   },
+   {
+    "text": "Coming",
+    "start": 4.48,
+    "end": 4.8
+   },
+   {
+    "text": "soon.",
+    "start": 4.8,
+    "end": 5.36
+   }
+  ],
+  "timed": [
+   {
+    "text": "Private",
+    "start": 0.0
+   },
+   {
+    "text": "by",
+    "start": 0.507
+   },
+   {
+    "text": "default.",
+    "start": 1.013
+   },
+   {
+    "text": "On",
+    "start": 1.52
+   },
+   {
+    "text": "Mac,",
+    "start": 2.027
+   },
+   {
+    "text": "Windows",
+    "start": 2.533
+   },
+   {
+    "text": "and",
+    "start": 3.04
+   },
+   {
+    "text": "Linux.",
+    "start": 3.2
+   },
+   {
+    "text": "Coming",
+    "start": 4.48
+   },
+   {
+    "text": "soon.",
+    "start": 4.8
+   }
+  ]
+ },
+ "n_after": {
+  "hash": "242893307814582927bc3d2af0fe7a504063dd9e",
+  "duration": 3.52,
+  "words": [
+   {
+    "text": "No ums. And Friday, not Thursday.",
+    "start": 0.0,
+    "end": 3.12
+   }
+  ],
+  "timed": [
+   {
+    "text": "No",
+    "start": 0.0
+   },
+   {
+    "text": "ums.",
+    "start": 0.52
+   },
+   {
+    "text": "And",
+    "start": 1.04
+   },
+   {
+    "text": "Friday,",
+    "start": 1.56
+   },
+   {
+    "text": "not",
+    "start": 2.08
+   },
+   {
+    "text": "Thursday.",
+    "start": 2.6
+   }
+  ]
+ }
+}

@@ -32,14 +32,7 @@ fn skip(why: impl Into<String>) -> Check {
 pub fn run(seconds: f32) -> ExitCode {
     println!("localflow self-test on {} {}", std::env::consts::OS, std::env::consts::ARCH);
     let mut failed = 0;
-    let mut check = |name: &str, f: &dyn Fn() -> Check| match f() {
-        Ok(Outcome::Pass(d)) => println!("PASS {name}{}", if d.is_empty() { String::new() } else { format!(": {d}") }),
-        Ok(Outcome::Skip(why)) => println!("SKIP {name}: {why}"),
-        Err(e) => {
-            failed += 1;
-            println!("FAIL {name}: {e}");
-        }
-    };
+    let mut check = |name: &str, f: &dyn Fn() -> Check| failed += report(name, f());
     check("audio and WAV", &audio);
     check("cleanup settings", &|| {
         let cfg = Config::from_env();
@@ -56,17 +49,39 @@ pub fn run(seconds: f32) -> ExitCode {
         if cfg!(target_os = "linux") {
             return skip("Linux learns from what you send (no text box access)");
         }
-        match localflow_desktop::learn::focused_text() {
-            Some((pid, text)) => pass(format!("read {} characters from pid {pid}", text.chars().count())),
-            None => pass("no text box focused (read without errors)"),
+        // On a thread of its own: on Windows it sets this thread's COM mode to
+        // multithreaded, and the overlay's window then can't start on it.
+        match std::thread::spawn(localflow_desktop::learn::focused_text).join() {
+            Ok(Some((pid, text))) => pass(format!("read {} characters from pid {pid}", text.chars().count())),
+            Ok(None) => pass("no text box focused (read without errors)"),
+            Err(_) => Err("reading the text box panicked".into()),
         }
     });
     check("clipboard", &clipboard);
     check("hotkey", &hotkey_check);
     check("microphone", &microphone);
     check("HTTPS", &https);
-    check("overlay", &|| overlay(seconds));
+    // Last, and it prints the summary itself: on macOS, closing the overlay's
+    // app ends the process, so nothing after it would run.
+    overlay(seconds, failed)
+}
+
+/// Print a check's line; 1 if it failed.
+fn report(name: &str, check: Check) -> u32 {
+    match check {
+        Ok(Outcome::Pass(d)) => println!("PASS {name}{}", if d.is_empty() { String::new() } else { format!(": {d}") }),
+        Ok(Outcome::Skip(why)) => println!("SKIP {name}: {why}"),
+        Err(e) => {
+            println!("FAIL {name}: {e}");
+            return 1;
+        }
+    }
+    0
+}
+
+fn summary(failed: u32) -> ExitCode {
     println!("\n{failed} failed");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     if failed > 0 { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
@@ -161,20 +176,23 @@ fn https() -> Check {
 
 /// Show the pill through recording, working and a message, and check the
 /// focused window stays the same.
-fn overlay(seconds: f32) -> Check {
+/// The overlay check, then the summary with `failed` from the checks before.
+fn overlay(seconds: f32, failed: u32) -> ExitCode {
     if cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
-        return skip("no display");
+        return summary(failed + report("overlay", skip("no display")));
     }
     let before = foreground();
-    let samples: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
-    let seen = samples.clone();
+    let code: Arc<Mutex<Option<ExitCode>>> = Arc::default();
+    let done = code.clone();
     let (ui, rx) = ui::channel();
     ui::run(ui, rx, Start {
         settings: false,
         quit_with_settings: false,
+        onboarding: false,
         then: Box::new(move |ui, _| {
             std::thread::spawn(move || {
                 let start = Instant::now();
+                let mut samples = vec![];
                 ui.send(UiMsg::Recording { raw: false });
                 let mut i = 0;
                 while start.elapsed().as_secs_f32() < seconds {
@@ -186,14 +204,20 @@ fn overlay(seconds: f32) -> Check {
                         50 => ui.send(UiMsg::Message("Done".into(), 1000)),
                         _ => {}
                     }
-                    seen.lock().unwrap().push(foreground());
+                    samples.push(foreground());
                     std::thread::sleep(Duration::from_millis(50));
                 }
+                let failed = failed + report("overlay", focus_kept(before, &samples));
+                *done.lock().unwrap() = Some(summary(failed));
                 ui.send(UiMsg::Quit);
             });
         }),
     });
-    let samples = samples.lock().unwrap();
+    code.lock().unwrap().take().unwrap_or(ExitCode::FAILURE)
+}
+
+/// Whether the focus stayed where it was while the overlay showed.
+fn focus_kept(before: Option<String>, samples: &[Option<String>]) -> Check {
     let Some(before) = before else { return pass("shown recording / working / message (focus not checkable here)") };
     let moved = samples.iter().filter(|f| f.as_deref() != Some(before.as_str())).count();
     if samples.last().is_some_and(|f| f.as_deref() != Some(before.as_str())) {

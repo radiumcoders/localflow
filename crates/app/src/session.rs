@@ -50,9 +50,18 @@ pub fn app() -> ExitCode {
 
 /// `localflow settings`: the window, in a process of its own.
 pub fn settings() -> ExitCode {
+    window(false)
+}
+
+/// `localflow onboarding`: the first-run window again.
+pub fn onboarding() -> ExitCode {
+    window(true)
+}
+
+fn window(onboarding: bool) -> ExitCode {
     let _ = paths::init_log();
     let (ui, rx) = ui::channel();
-    ui::run(ui, rx, Start { settings: true, quit_with_settings: true, then: Box::new(|_, _| {}) });
+    ui::run(ui, rx, Start { settings: true, quit_with_settings: true, onboarding, then: Box::new(|_, _| {}) });
     ExitCode::SUCCESS
 }
 
@@ -160,6 +169,7 @@ pub fn run_message(args: &[String]) -> ExitCode {
     ui::run(ui, rx, Start {
         settings: false,
         quit_with_settings: false,
+        onboarding: false,
         then: Box::new(move |ui, _| {
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(ms + 200));
@@ -263,6 +273,7 @@ pub fn run_session(raw: bool) -> ExitCode {
     ui::run(ui, rx, Start {
         settings: false,
         quit_with_settings: false,
+        onboarding: false,
         then: Box::new(move |ui, _| {
             std::thread::spawn(move || {
                 let started = Instant::now();
@@ -307,6 +318,7 @@ pub fn learn() -> ExitCode {
     ui::run(ui, rx, Start {
         settings: false,
         quit_with_settings: false,
+        onboarding: false,
         then: Box::new(|ui, _| {
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(2700));

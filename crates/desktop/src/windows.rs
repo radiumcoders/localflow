@@ -67,6 +67,32 @@ pub fn focused_window() -> Window {
     }
 }
 
+/// Every process: its id, its parent's, and its program file ("claude.exe").
+pub fn processes() -> Vec<(u32, u32, String)> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    let mut out = vec![];
+    // SAFETY: a snapshot handle, walked with a correctly sized entry, then closed.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return out;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+        while more {
+            let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+            out.push((entry.th32ProcessID, entry.th32ParentProcessID, String::from_utf16_lossy(&entry.szExeFile[..len])));
+            more = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+    }
+    out
+}
+
 /// The foreground window's handle ("0" when no window has focus).
 pub fn foreground() -> Option<String> {
     Some((unsafe { GetForegroundWindow() } as usize).to_string())
@@ -161,6 +187,14 @@ fn press(vk: u8, ctrl: bool) {
             keybd_event(VK_CONTROL as u8, 0, 2, 0);
         }
     }
+}
+
+pub fn press_key(key: crate::paste::Key) -> bool {
+    press(match key {
+        crate::paste::Key::Enter => 0x0D, // VK_RETURN
+        crate::paste::Key::Escape => VK_ESCAPE as u8,
+    }, false);
+    true
 }
 
 fn held(vk: u16) -> bool {

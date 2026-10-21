@@ -23,6 +23,12 @@ multi-topic dictation, spoken commands ("new paragraph", "new line",
 else while dictating is left out. It never answers what you say: a dictated
 question stays a question.
 
+For coding, files you name become `@path` references
+([Referring to files](#referring-to-files)), and in a terminal running Claude
+Code, Codex and the like, "…and send it" sends the prompt while "stop",
+"undo that" and "clear the chat" press the keys for you
+([Talking to a coding agent](#talking-to-a-coding-agent)).
+
 ## Install
 
 ### Windows
@@ -31,10 +37,10 @@ Download `localflow-<version>-x64.msi` from
 [Releases](https://github.com/radiumcoders/localflow/releases) and open it. It
 installs localflow to Program Files, adds it to the Start menu and starts it
 when you sign in. Open localflow from the Start menu: the first time, the
-settings window opens. Pick a speech model (it downloads with a progress bar)
-and where cleanup runs (on this computer with Ollama, or with your API key),
-and Save. Open it from the Start menu again to change the settings. Uninstall
-it from Settings > Apps.
+onboarding opens. Pick a speech model (it downloads while you go on) and where
+cleanup runs (on this computer with Ollama, or with your API key), then try a
+dictation in the window. Open it from the Start menu again to change the
+settings. Uninstall it from Settings > Apps.
 
 The installer isn't signed yet, so SmartScreen warns about an unknown
 publisher: click **More info**, then **Run anyway**.
@@ -47,8 +53,8 @@ For IT deployment: `msiexec /i localflow-<version>-x64.msi /qn`, then
 
 Download `localflow-<version>-arm64.dmg` (Apple Silicon) or `-x64.dmg` (Intel)
 from [Releases](https://github.com/radiumcoders/localflow/releases), open it
-and drag localflow into Applications. Open it from Applications: the settings
-window opens, and Save adds localflow as a login item. When macOS asks, allow
+and drag localflow into Applications. Open it from Applications: the
+onboarding opens and adds localflow as a login item. It asks you to allow
 localflow under Accessibility (the hotkey and pasting) and Microphone. To
 remove it: `launchctl bootout gui/$(id -u)/computer.localflow.dictate`, then
 delete the app and `~/Library/LaunchAgents/computer.localflow.dictate.plist`.
@@ -68,10 +74,11 @@ chmod +x localflow-*-x86_64.AppImage
 ./localflow-*-x86_64.AppImage
 ```
 
-The settings window opens. Save copies localflow to
-`~/.local/share/localflow/app` (your key bindings run it from there, so the
-AppImage can go anywhere, or away) and adds it to your app launcher; the
-window shows the key bindings to add, with a Copy button. It needs glibc 2.39+
+The onboarding opens. Once you've picked where cleanup runs, it copies
+localflow to `~/.local/share/localflow/app` (your key bindings run it from
+there, so the AppImage can go anywhere, or away) and adds it to your app
+launcher; then it shows the key bindings to add, with a Copy button, and lets
+you try a dictation. `localflow onboarding` opens it again. It needs glibc 2.39+
 (Ubuntu 24.04, Fedora 40, Debian 13, Arch), PipeWire or ALSA for recording,
 and for pasting `wl-clipboard` + `wtype` on Wayland or `xclip` + `xdotool` on
 X11 (Omarchy ships all of these). Transcription runs on the GPU through Vulkan
@@ -257,6 +264,40 @@ Only those paths are sent, never file contents; raw dictation skips all this.
 On Windows, a terminal's own folder can't be read, so terminals there use the
 editor's project.
 
+## Talking to a coding agent
+
+When the terminal you dictate into runs a coding agent (Claude Code, Codex,
+opencode, Gemini CLI, aider, Amp, Goose…), localflow notices it (from the
+programs running in that window) and a few things change:
+
+| You say | It does |
+| --- | --- |
+| "…and send it" at the end ("send it", "submit it", "and send") | pastes the prompt without those words, then presses Enter |
+| just "stop" ("cancel", "hold on", "wait") | Esc: interrupts the agent |
+| just "undo that" ("go back", "rewind") | Esc Esc: Claude Code's rewind |
+| just "clear the chat" ("start over", "new chat") | `/clear` (`/new` in Codex and opencode) |
+| just "compact" ("compact the context") | `/compact` (`/compress` in Gemini CLI) |
+| just "send it" | Enter: sends what's in the prompt already |
+
+A command only counts when it's the whole dictation: "stop using the old API"
+is a prompt. Without "send it", the prompt is pasted and left for you to read
+over (and fix: localflow learns from that). "Send prompts to coding agents"
+in the settings (`LOCALFLOW_SUBMIT`): `said` (default), `always`, `never`.
+Anywhere else, what you say is pasted as always and nothing is pressed.
+
+## History
+
+Every dictation is kept on your computer: when, where it went, what was heard
+and what went out (pasted, sent, or a command's keys). The last 200, readable
+only by you, next to the log; "Keep a history" in the settings
+(`LOCALFLOW_HISTORY=off`) turns it off.
+
+```sh
+localflow history       # the last 10 (or: localflow history 50)
+localflow history --last | wl-copy   # the last text again, e.g. when a paste went astray
+localflow history --clear
+```
+
 ## Learning from your fixes
 
 When localflow gets a word wrong and you fix it, it learns the fix. For 3
@@ -313,15 +354,18 @@ speech model and puts the app in place.
 | `LOCALFLOW_REVIEW_MODEL` | the repair pass's model, or `off` |
 | `LOCALFLOW_ASIDES` | `keep` to paste asides as said |
 | `LOCALFLOW_LEARN` | `auto`, `key` or `off` |
+| `LOCALFLOW_SUBMIT` | in a coding agent, press Enter after pasting: `said` (when you end with "send it", default), `always`, `never` |
+| `LOCALFLOW_HISTORY` | `off` to keep no history of your dictations |
 | `LOCALFLOW_OLLAMA`, `LOCALFLOW_KEEP_ALIVE`, `LOCALFLOW_USE_MMAP` | Ollama's address, how long it keeps the model loaded, memory mapping |
 
-Logs (never your words) go to `~/.local/state/localflow/dictate.log`,
+Logs (never your words; those are in the [history](#history)) go to `~/.local/state/localflow/dictate.log`,
 `~/Library/Logs/localflow/dictate.log` or `%LOCALAPPDATA%\localflow\dictate.log`.
 
 ## Tools and tuning
 
 ```sh
 localflow models [download ID]       # speech models
+localflow history [N]                # what you said and what went out
 localflow listen 5                   # record 5 s, transcribe, clean up, print (segments and levels on stderr)
 localflow transcribe talk.wav        # the same from a WAV file
 echo "call mom tomorrow actually tonight" | localflow -

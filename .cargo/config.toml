@@ -1,2 +1,14 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# whisper.cpp (ggml) builds for the build machine's CPU by default, so an
+# installer built on a newer machine crashed with SIGILL on an older one (and
+# CI on a cached build). Build for any x86-64 CPU with AVX2 (2013 on) instead;
+# on ARM these are ignored. whisper-rs-sys passes GGML_* to cmake but doesn't
+# rebuild when they change: bump the CI cache key with them.
+[env]
+GGML_NATIVE = "OFF"
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"
