@@ -224,7 +224,8 @@ impl Dictation {
             let keys = if cfg!(target_os = "macos") { "Cmd+V" } else { "Ctrl+V" };
             return message(&format!("Copied: paste with {keys}"), 2500);
         }
-        0
+        // A moment of "it went in", once the text is there.
+        message(if sent { "Sent" } else { "Pasted" }, 900)
     }
 }
 
