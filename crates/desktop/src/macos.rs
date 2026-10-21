@@ -162,7 +162,7 @@ pub fn focused_text() -> Option<(u32, String)> {
 
 // --- Keys and the clipboard ------------------------------------------------------------
 
-fn trusted() -> bool {
+pub(crate) fn trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 

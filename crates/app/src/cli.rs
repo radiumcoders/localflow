@@ -16,6 +16,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
 
     localflow                        # settings (Linux), or the background app (macOS / Windows)
     localflow settings
+    localflow onboarding             # the first-run window, again
     localflow setup [--api PROVIDER|URL] [--model MODEL] [--speech-model ID]
     localflow start [raw] | stop | toggle [raw] | cancel | learn
     localflow history [N]            # the last N dictations (default 10): what was heard, what went out

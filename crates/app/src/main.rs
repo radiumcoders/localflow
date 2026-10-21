@@ -3,6 +3,7 @@
 //!     localflow                        # settings (Linux), or the background app
 //!                                      # (macOS / Windows: the hotkey; settings the first time)
 //!     localflow settings               # the settings window
+//!     localflow onboarding             # the first-run window, again
 //!     localflow setup [--api P] [--model M] [--speech-model ID]   # the same without the window
 //!
 //! Dictation (Linux: bind keys to these; nothing runs between dictations):
@@ -46,6 +47,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         None => session::app(),
         Some("settings") => session::settings(),
+        Some("onboarding") => session::onboarding(),
         Some("setup") => setup::run(&args[1..]),
         Some("--background") => session::background(),
         Some("start") => session::start(raw),

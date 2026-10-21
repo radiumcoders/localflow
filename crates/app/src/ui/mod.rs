@@ -2,6 +2,9 @@
 //! thread. Everything else (recording, transcription, cleanup, paste) runs on
 //! worker threads and talks to it through `Ui`.
 
+pub mod jobs;
+pub mod look;
+pub mod onboarding;
 pub mod overlay;
 pub mod settings;
 
@@ -51,6 +54,8 @@ pub struct Start {
     pub settings: bool,
     /// Quit when the settings window closes (it's the only thing running).
     pub quit_with_settings: bool,
+    /// Open the onboarding rather than the settings, even when set up.
+    pub onboarding: bool,
     /// Runs on the main thread once the UI is ready, with a handle for workers.
     pub then: Then,
 }
@@ -68,9 +73,14 @@ pub fn run(ui: Ui, rx: async_channel::Receiver<UiMsg>, start: Start) {
     application().with_assets(gpui_kit::assets::AllAssets).with_quit_mode(QuitMode::Explicit).run(move |cx: &mut App| {
         gpui_kit::init(cx);
         Theme::sync_system_appearance(None, cx);
+        look::init(cx);
+        let theme = Theme::global_mut(cx);
+        theme.font_family = look::SANS.into();
+        theme.mono_font_family = look::MONO.into();
+        jobs::Jobs::init(cx);
         crate::platform::background_app();
         Overlay::init(ui.level.clone(), cx);
-        settings::init(start.quit_with_settings, cx);
+        settings::init(start.quit_with_settings, start.onboarding, cx);
         cx.spawn(async move |cx| {
             while let Ok(msg) = rx.recv().await {
                 let quit = msg == UiMsg::Quit;

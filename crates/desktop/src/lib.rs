@@ -22,6 +22,25 @@ use std::time::{Duration, Instant};
 
 pub use localflow_core::Part;
 
+/// Whether localflow may press keys and paste for you: macOS asks for this
+/// under Privacy & Security > Accessibility. Nothing to allow elsewhere.
+pub fn accessibility_allowed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::trusted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Show macOS's prompt to allow localflow under Accessibility.
+pub fn ask_accessibility() {
+    #[cfg(target_os = "macos")]
+    macos::ask_accessibility();
+}
+
 /// A program on PATH (with .exe on Windows).
 pub fn which(name: &str) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };

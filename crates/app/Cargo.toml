@@ -17,6 +17,8 @@ anyhow = "1.0"
 async-channel = "2.5"
 gpui-kit = "0.7.0"
 ureq = "2.12"
+# Round caps on the logo's strokes (the same lyon GPUI tessellates with).
+lyon = "1.0"
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 raw-window-handle = "0.6"

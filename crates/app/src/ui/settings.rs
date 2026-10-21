@@ -20,7 +20,7 @@ use localflow_speech::models;
 
 /// Hosted providers, as shown, and their LOCALFLOW_API_URL names. The last
 /// one takes any OpenAI-compatible base URL.
-const PROVIDERS: &[(&str, &str)] = &[
+pub(super) const PROVIDERS: &[(&str, &str)] = &[
     ("Anthropic (Claude Haiku)", "anthropic"),
     ("OpenAI", "openai"),
     ("OpenRouter", "openrouter"),
@@ -47,7 +47,7 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("Chinese", "zh"),
 ];
 /// Local cleanup models offered first (any Ollama model works).
-const LOCAL_MODELS: &[&str] = &["qwen3.5:4b", "qwen3.5:2b"];
+pub(super) const LOCAL_MODELS: &[&str] = &["qwen3.5:4b", "qwen3.5:2b"];
 
 type Choice = Entity<SelectState<SearchableVec<&'static str>>>;
 
@@ -68,30 +68,44 @@ enum Ollama {
 
 struct State {
     quit_with_settings: bool,
+    /// The first-run window instead of the settings, even when set up.
+    onboarding: bool,
     window: Option<AnyWindowHandle>,
 }
 
 impl Global for State {}
 
-pub fn init(quit_with_settings: bool, cx: &mut App) {
-    cx.set_global(State { quit_with_settings, window: None });
+pub fn init(quit_with_settings: bool, onboarding: bool, cx: &mut App) {
+    cx.set_global(State { quit_with_settings, onboarding, window: None });
     cx.on_window_closed(|cx, id| {
         let state = cx.global_mut::<State>();
         if state.window.is_some_and(|w| w.window_id() == id) {
             state.window = None;
             if state.quit_with_settings {
-                cx.quit();
+                // A download started in the window finishes first.
+                super::jobs::Jobs::quit_when_idle(cx);
             }
         }
     })
     .detach();
 }
 
-/// Open the settings window, or bring it to the front.
+/// Open the settings window, or bring it to the front. The first time (or
+/// until the onboarding is finished), the onboarding opens instead.
 pub fn open(cx: &mut App) {
     if let Some(window) = cx.global::<State>().window
         && window.update(cx, |_, window, _| window.activate_window()).is_ok()
     {
+        return;
+    }
+    if cx.global::<State>().onboarding || super::onboarding::needed() {
+        match super::onboarding::open(cx) {
+            Ok(window) => {
+                cx.global_mut::<State>().window = Some(window);
+                cx.activate(true);
+            }
+            Err(e) => eprintln!("onboarding: {e:#}"),
+        }
         return;
     }
     let bounds = Bounds::centered(None, size(px(640.), px(780.)), cx);
@@ -378,7 +392,7 @@ impl SettingsView {
 
 /// Once saved: the app where it runs from, when it isn't there yet (the
 /// Linux AppImage copies itself out, a Mac app adds its login item).
-fn after_save() -> Result<(), String> {
+pub(super) fn after_save() -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| e.to_string())?.display().to_string();
     let linux = cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some();
     let mac = cfg!(target_os = "macos") && me.contains(".app/Contents/MacOS/") && !me.starts_with("/Volumes/");
@@ -390,7 +404,7 @@ fn after_save() -> Result<(), String> {
 
 /// A value from the env file only (not the environment), for settings
 /// Config doesn't keep in its own form.
-fn env_file_value(cfg: &Config, name: &str) -> Option<String> {
+pub(super) fn env_file_value(cfg: &Config, name: &str) -> Option<String> {
     let text = std::fs::read_to_string(cfg.config_dir.join("env")).ok()?;
     text.lines().filter_map(|l| l.trim().split_once('=')).find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
 }

@@ -188,6 +188,7 @@ fn overlay(seconds: f32, failed: u32) -> ExitCode {
     ui::run(ui, rx, Start {
         settings: false,
         quit_with_settings: false,
+        onboarding: false,
         then: Box::new(move |ui, _| {
             std::thread::spawn(move || {
                 let start = Instant::now();

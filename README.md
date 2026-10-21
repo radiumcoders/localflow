@@ -37,10 +37,10 @@ Download `localflow-<version>-x64.msi` from
 [Releases](https://github.com/radiumcoders/localflow/releases) and open it. It
 installs localflow to Program Files, adds it to the Start menu and starts it
 when you sign in. Open localflow from the Start menu: the first time, the
-settings window opens. Pick a speech model (it downloads with a progress bar)
-and where cleanup runs (on this computer with Ollama, or with your API key),
-and Save. Open it from the Start menu again to change the settings. Uninstall
-it from Settings > Apps.
+onboarding opens. Pick a speech model (it downloads while you go on) and where
+cleanup runs (on this computer with Ollama, or with your API key), then try a
+dictation in the window. Open it from the Start menu again to change the
+settings. Uninstall it from Settings > Apps.
 
 The installer isn't signed yet, so SmartScreen warns about an unknown
 publisher: click **More info**, then **Run anyway**.
@@ -53,8 +53,8 @@ For IT deployment: `msiexec /i localflow-<version>-x64.msi /qn`, then
 
 Download `localflow-<version>-arm64.dmg` (Apple Silicon) or `-x64.dmg` (Intel)
 from [Releases](https://github.com/radiumcoders/localflow/releases), open it
-and drag localflow into Applications. Open it from Applications: the settings
-window opens, and Save adds localflow as a login item. When macOS asks, allow
+and drag localflow into Applications. Open it from Applications: the
+onboarding opens and adds localflow as a login item. It asks you to allow
 localflow under Accessibility (the hotkey and pasting) and Microphone. To
 remove it: `launchctl bootout gui/$(id -u)/computer.localflow.dictate`, then
 delete the app and `~/Library/LaunchAgents/computer.localflow.dictate.plist`.
@@ -74,10 +74,11 @@ chmod +x localflow-*-x86_64.AppImage
 ./localflow-*-x86_64.AppImage
 ```
 
-The settings window opens. Save copies localflow to
-`~/.local/share/localflow/app` (your key bindings run it from there, so the
-AppImage can go anywhere, or away) and adds it to your app launcher; the
-window shows the key bindings to add, with a Copy button. It needs glibc 2.39+
+The onboarding opens. Once you've picked where cleanup runs, it copies
+localflow to `~/.local/share/localflow/app` (your key bindings run it from
+there, so the AppImage can go anywhere, or away) and adds it to your app
+launcher; then it shows the key bindings to add, with a Copy button, and lets
+you try a dictation. `localflow onboarding` opens it again. It needs glibc 2.39+
 (Ubuntu 24.04, Fedora 40, Debian 13, Arch), PipeWire or ALSA for recording,
 and for pasting `wl-clipboard` + `wtype` on Wayland or `xclip` + `xdotool` on
 X11 (Omarchy ships all of these). Transcription runs on the GPU through Vulkan
