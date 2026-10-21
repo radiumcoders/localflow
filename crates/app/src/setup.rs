@@ -181,6 +181,17 @@ pub fn install_app(start: bool) -> Result<String, String> {
         return Ok("starts at login (allow it under Accessibility and Microphone when macOS asks)".into());
     }
     if start {
+        // Windows hands a child every inheritable handle we hold, our own
+        // stdout and stderr included: the background app would keep the pipes
+        // of whoever ran setup open, and they'd wait for it forever.
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+            use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+            for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                SetHandleInformation(GetStdHandle(which), HANDLE_FLAG_INHERIT, 0);
+            }
+        }
         let mut cmd = Command::new(&me);
         cmd.arg("--background").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         #[cfg(windows)]
