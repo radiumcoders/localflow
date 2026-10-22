@@ -62,6 +62,7 @@ jobs:
       # The pill, as it shows on this OS: a screenshot to look at (Windows
       # used to draw a window frame around it).
       - name: The pill, on screen (Windows)
+        continue-on-error: true
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -73,16 +74,18 @@ jobs:
           [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
           $bmp.Save("$PWD/build/pill-${{ matrix.name }}.png")
       - name: The pill, on screen (macOS)
+        continue-on-error: true
         if: runner.os == 'macOS'
         run: |
           target/release/localflow _message Transcribing 8000 &
           sleep 3
           screencapture -x build/pill-${{ matrix.name }}.png || true
       - name: The pill, on screen (Linux)
+        continue-on-error: true
         if: runner.os == 'Linux'
         run: |
           xvfb-run -a -s "-screen 0 1280x800x24" bash -c \
-            'target/release/localflow _message Transcribing 8000 & sleep 3; import -window root build/pill-${{ matrix.name }}.png'
+            'target/release/localflow _message Transcribing 8000 & sleep 3; ffmpeg -loglevel error -f x11grab -video_size 1280x800 -i "$DISPLAY" -frames:v 1 build/pill-${{ matrix.name }}.png'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
