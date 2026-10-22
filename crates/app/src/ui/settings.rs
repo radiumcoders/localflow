@@ -346,8 +346,13 @@ impl SettingsView {
                     Update::Finished(Ok(r)) => Job::Done(done(r)),
                     Update::Finished(Err(e)) => Job::Failed(e),
                 };
+                let finished = !matches!(job, Job::Running(_));
                 if this.update(cx, |this, cx| {
                     set(this, job);
+                    // Ollama may have come up, or got a model.
+                    if finished {
+                        this.check_ollama(cx);
+                    }
                     cx.notify();
                 })
                 .is_err()
@@ -387,6 +392,19 @@ impl SettingsView {
             |_| "Downloaded".into(),
         );
         self.check_ollama(cx);
+    }
+
+    /// Install Ollama, start it, and pull the model, whatever's missing.
+    fn get_ollama(&mut self, cx: &mut Context<Self>) {
+        let typed = self.local_model.read(cx).value().trim().to_string();
+        let model = if typed.is_empty() { LOCAL_MODELS[0].to_string() } else { typed };
+        let lf = Localflow::new(self.cfg.clone());
+        self.job(
+            cx,
+            move |progress| crate::ollama::get_ready(&lf, &model, &mut |_, done, total| progress(done, total)),
+            |this, job| this.pull = job,
+            |_| "Ollama is ready".into(),
+        );
     }
 
     fn test(&mut self, cx: &mut Context<Self>) {
@@ -719,6 +737,7 @@ impl SettingsView {
         let (dot, text): (Hsla, String) = match &self.ollama {
             Ollama::Checking => (p.faint, "Looking for Ollama…".into()),
             Ollama::Up(models) => (p.primary, format!("Ollama is running, with {} model{}", models.len(), if models.len() == 1 { "" } else { "s" })),
+            Ollama::Down(_) if !crate::ollama::is_installed() => (p.faint, "Ollama isn't installed".into()),
             Ollama::Down(_) => (p.record, "Ollama isn't running".into()),
         };
         let status_line = div()
@@ -730,8 +749,17 @@ impl SettingsView {
             .child(div().size(px(8.)).rounded_full().bg(dot))
             .child(text)
             .when(matches!(self.ollama, Ollama::Down(_)), |d| {
+                let (label, busy) = match (&self.pull, crate::ollama::is_installed()) {
+                    (Job::Running(_), _) => ("Setting up…", true),
+                    (_, true) => ("Start Ollama", false),
+                    (_, false) => ("Install Ollama", false),
+                };
                 d.child(div().flex_1())
-                    .child(look::secondary_button("get-ollama", "Get Ollama", true, p).on_click(|_, _, cx| cx.open_url("https://ollama.com/download")))
+                    .child(look::secondary_button("get-ollama", label, !busy, p).on_click(cx.listener(move |this, _, _, cx| {
+                        if !busy {
+                            this.get_ollama(cx);
+                        }
+                    })))
                     .child(look::ghost_button("recheck", "Check again", p).h(px(32.)).text_size(px(13.)).on_click(cx.listener(|this, _, _, cx| {
                         this.ollama = Ollama::Checking;
                         this.check_ollama(cx);

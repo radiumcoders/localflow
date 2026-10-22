@@ -15,6 +15,7 @@
 //!
 //! Tools:
 //!     localflow models [download ID]   # speech models: list, or download one
+//!     localflow ollama [MODEL]         # install Ollama if it isn't here, start it, pull the model
 //!     localflow listen [SECONDS]       # record, transcribe, clean up, print
 //!     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
 //!     localflow record SECONDS FILE.wav
@@ -30,6 +31,7 @@
 
 mod cli;
 mod dictation;
+mod ollama;
 mod platform;
 mod selftest;
 mod session;

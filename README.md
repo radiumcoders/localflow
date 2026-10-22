@@ -39,7 +39,9 @@ installs localflow to Program Files, adds it to the Start menu and starts it
 when you sign in. Open localflow from the Start menu: the first time, the
 onboarding opens. Pick a speech model (it downloads while you go on) and where
 cleanup runs (on this computer with Ollama, or with your API key), then try a
-dictation in the window. Open it from the Start menu again to change the
+dictation in the window. If Ollama isn't installed, localflow installs it
+(Ollama's own build, checked against its release's checksums) and downloads the
+model, also while you go on. Open it from the Start menu again to change the
 settings. Uninstall it from Settings > Apps.
 
 The installer isn't signed yet, so SmartScreen warns about an unknown
@@ -365,6 +367,7 @@ Logs (never your words; those are in the [history](#history)) go to `~/.local/st
 
 ```sh
 localflow models [download ID]       # speech models
+localflow ollama [MODEL]             # install Ollama if it isn't here, start it, pull the model
 localflow history [N]                # what you said and what went out
 localflow listen 5                   # record 5 s, transcribe, clean up, print (segments and levels on stderr)
 localflow transcribe talk.wav        # the same from a WAV file

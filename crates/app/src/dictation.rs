@@ -103,6 +103,11 @@ impl Dictation {
                 // With Ollama, load the model while you speak (nothing to do on an API).
                 if let Err(e) = warm.warm(&warm.cfg.model) {
                     info(format_args!("warm failed: {e}"));
+                    // Installed but not running: start it, in time for the cleanup.
+                    if warm.cfg.api_url.is_empty() && crate::ollama::wake(&warm) {
+                        info("started Ollama");
+                        let _ = warm.warm(&warm.cfg.model);
+                    }
                 }
             });
             let found = target.clone();

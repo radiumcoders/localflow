@@ -88,7 +88,7 @@ jobs:
           ls -l installers
           gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" \
             --title "localflow ${GITHUB_REF_NAME#v}" --notes-file - <<'EOF'
-          localflow, a native app written in Rust, with its own speech engine. The first time you open it, a short onboarding walks you through it: a speech model (it downloads while you go on), where cleanup runs (on this computer with Ollama, or with your API key), what macOS asks to allow, your keys on Linux, and a dictation you try right in the window.
+          localflow, a native app written in Rust, with its own speech engine. The first time you open it, a short onboarding walks you through it: a speech model (it downloads while you go on), where cleanup runs (on this computer with Ollama, which it installs for you if it isn't there, or with your API key), what macOS asks to allow, your keys on Linux, and a dictation you try right in the window.
 
           **Windows:** `localflow-…-x64.msi`. Open it, then open localflow from the Start menu: the first time, the onboarding opens. The installer isn't signed yet: in the SmartScreen warning, click **More info**, then **Run anyway**.
 

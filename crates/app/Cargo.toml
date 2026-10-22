@@ -19,6 +19,13 @@ gpui-kit = "0.7.0"
 ureq = "2.12"
 # Round caps on the logo's strokes (the same lyon GPUI tessellates with).
 lyon = "1.0"
+# Checking Ollama's download against its release's checksums.
+sha2 = "0.10"
+
+# Unpacking Ollama's Linux build (a .tar.zst).
+[target.'cfg(target_os = "linux")'.dependencies]
+tar = "0.4"
+zstd = "0.13"
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 raw-window-handle = "0.6"

@@ -23,6 +23,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow history --last         # just the last text that went out
     localflow history --clear
     localflow models [download ID]   # speech models: list, or download one
+    localflow ollama [MODEL]         # install Ollama if it isn't here, start it, pull the model
     localflow listen [SECONDS]       # record (default 5 s), transcribe, clean up, print
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
     localflow record SECONDS FILE.wav
@@ -56,6 +57,22 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         }
         "models" => return models_command(&lf.cfg, &args[1..]),
+        "ollama" => {
+            let model = arg(1).unwrap_or(&lf.cfg.model).to_string();
+            let mut last = ("", u64::MAX);
+            let mut report = |step: &'static str, done: u64, total: u64| {
+                let pct = (done * 100).checked_div(total).unwrap_or(0);
+                if (step, pct) != last {
+                    last = (step, pct);
+                    eprint!("\r  {step}{}   ", if total > 0 { format!(" {pct}%") } else { String::new() });
+                }
+            };
+            if let Err(e) = crate::ollama::get_ready(&lf, &model, &mut report) {
+                eprintln!();
+                return fail(e);
+            }
+            eprintln!("\r  Ollama is running, with {model}          ");
+        }
         "history" => return history_command(&lf.cfg, &args[1..]),
         "listen" => {
             let seconds = arg(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);

@@ -17,6 +17,7 @@ use localflow_core::{Config, Localflow, Msg, config_dir, prompts::HAIKU, save_ap
 use localflow_speech::models;
 
 use super::jobs::{Job, Jobs};
+use crate::ollama;
 use super::look::{self, Palette, SOFT, SPRING, band, chips, dashes, dot_grid, ghost_button, primary_button, secondary_button, spring};
 use super::settings::{LOCAL_MODELS, after_save, env_file_value};
 
@@ -181,6 +182,28 @@ fn pull_key(model: &str) -> String {
     format!("ollama:{model}")
 }
 
+/// What getting Ollama ready is doing, as a line.
+fn job_label(job: &Job, model: &str) -> String {
+    match job {
+        Job::Running(_, _, stage) if !stage.is_empty() && *stage != ollama::PULLING => stage.to_string(),
+        _ => format!("Downloading {model}"),
+    }
+}
+
+/// Getting Ollama ready: a bar, the step, how far.
+fn job_progress(job: &Job, model: &str, p: &Palette) -> Div {
+    let known = matches!(job, Job::Running(_, total, _) if *total > 0);
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .text_size(px(13.))
+        .text_color(p.dim)
+        .child(progress_bar(job.fraction(), p))
+        .child(job_label(job, model))
+        .when(known, |d| d.child(mono(format!("{}%", (job.fraction() * 100.) as u32), p)))
+}
+
 fn has_model(installed: &[String], model: &str) -> bool {
     installed.iter().any(|m| m == model || m.strip_suffix(":latest") == Some(model))
 }
@@ -257,7 +280,7 @@ impl Onboarding {
         cx.observe_global::<Jobs>(|this, cx| {
             // Once Ollama has the model, list its models again.
             if Jobs::get(&pull_key(this.local_model), cx) == Some(Job::Done)
-                && matches!(&this.ollama, Ollama::Up(m) if !has_model(m, this.local_model))
+                && !matches!(&this.ollama, Ollama::Up(m) if has_model(m, this.local_model))
             {
                 this.check_ollama(cx);
             }
@@ -342,6 +365,23 @@ impl Onboarding {
 
     fn provider_id(&self) -> &'static str {
         PROVIDERS[self.provider].1
+    }
+
+    fn local_ready(&self) -> bool {
+        matches!(&self.ollama, Ollama::Up(installed) if has_model(installed, self.local_model))
+    }
+
+    fn cleanup_job(&self, cx: &App) -> Option<Job> {
+        if self.api { None } else { Jobs::get(&pull_key(self.local_model), cx) }
+    }
+
+    /// Install Ollama if it isn't here, start it, and pull the model: on
+    /// a thread of its own, going on after the window closes.
+    fn get_ollama(&mut self, cx: &mut Context<Self>) {
+        let model = self.local_model;
+        let lf = Localflow::new(self.cfg.clone());
+        Jobs::start_staged(pull_key(model), cx, move |report| ollama::get_ready(&lf, model, report));
+        cx.notify();
     }
 
     fn check_ollama(&mut self, cx: &mut Context<Self>) {
@@ -462,13 +502,8 @@ impl Onboarding {
                 let url = !id.is_empty() || !self.api_url.read(cx).value().trim().is_empty();
                 key && model && url
             }
-            Step::Cleanup => match &self.ollama {
-                Ollama::Up(installed) => {
-                    has_model(installed, self.local_model)
-                        || matches!(Jobs::get(&pull_key(self.local_model), cx), Some(Job::Running(..) | Job::Done))
-                }
-                _ => false,
-            },
+            // Continue installs what's missing.
+            Step::Cleanup => self.ollama != Ollama::Checking,
             _ => true,
         }
     }
@@ -500,6 +535,9 @@ impl Onboarding {
                     self.error = Some(format!("Couldn't save the settings: {e}"));
                     cx.notify();
                     return;
+                }
+                if !self.api && !self.local_ready() && !matches!(self.cleanup_job(cx), Some(Job::Running(..) | Job::Done)) {
+                    self.get_ollama(cx);
                 }
             }
             Step::Done => return self.finish(window, cx),
@@ -864,6 +902,7 @@ impl Onboarding {
     fn local_detail(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
         let (dot, text) = match &self.ollama {
             Ollama::Checking => (p.faint, "Looking for Ollama…"),
+            Ollama::Down if !ollama::is_installed() => (p.faint, "Ollama isn't installed yet"),
             Ollama::Down => (p.record, "Ollama isn't running"),
             Ollama::Up(_) => (p.primary, "Ollama is running"),
         };
@@ -876,69 +915,45 @@ impl Onboarding {
             .child(div().size(px(8.)).rounded_full().bg(dot))
             .child(text);
         let mut col = div().flex().flex_col().items_center().gap(px(14.)).child(status);
-        match &self.ollama {
-            Ollama::Down => {
-                col = col.child(
-                    div()
-                        .flex()
-                        .gap(px(6.))
-                        .child(secondary_button("get-ollama", "Get Ollama", true, p).on_click(|_, _, cx| cx.open_url("https://ollama.com/download")))
-                        .child(ghost_button("recheck", "Check again", p).h(px(32.)).text_size(px(13.)).on_click(cx.listener(|this, _, _, cx| {
-                            this.ollama = Ollama::Checking;
-                            this.check_ollama(cx);
-                            cx.notify();
-                        }))),
-                );
-            }
-            Ollama::Up(installed) => {
-                let this = cx.entity();
-                let options: Vec<(&'static str, SharedString)> = LOCAL_MODELS.iter().map(|m| (*m, SharedString::from(*m))).collect();
-                col = col.child(chips(
-                    "local-model",
-                    &options,
-                    self.local_model,
-                    move |m, _, cx| {
-                        this.update(cx, |this, cx| {
-                            this.local_model = m;
-                            cx.notify();
-                        })
-                    },
-                    p,
-                    window,
-                ));
-                let model = self.local_model;
-                let action = if has_model(installed, model) {
-                    div().flex().items_center().gap(px(6.)).text_size(px(13.)).text_color(p.primary).child(icon("check", 14., p.primary)).child("Installed")
-                } else {
-                    match Jobs::get(&pull_key(model), cx) {
-                        Some(job @ Job::Running(..)) => div()
-                            .flex()
-                            .items_center()
-                            .gap(px(10.))
-                            .text_size(px(13.))
-                            .text_color(p.dim)
-                            .child(progress_bar(job.fraction(), p))
-                            .child(format!("Downloading {model}"))
-                            .child(mono(format!("{}%", (job.fraction() * 100.) as u32), p)),
-                        Some(Job::Failed(e)) => div().text_size(px(12.)).text_color(p.record).child(format!("Couldn't download it: {e}")),
-                        _ => div().child(
-                            secondary_button("pull", if model == LOCAL_MODELS[0] { "Download · 3.3 GB" } else { "Download" }, true, p).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    let lf = Localflow::new(this.cfg.clone());
-                                    Jobs::start(pull_key(model), cx, move |progress| {
-                                        lf.ollama_pull(model, progress, &AtomicBool::new(false)).map_err(|e| e.0)
-                                    });
-                                    cx.notify();
-                                }),
-                            ),
-                        ),
-                    }
-                };
-                col = col.child(action);
-            }
-            Ollama::Checking => {}
+        if self.ollama == Ollama::Checking {
+            return col;
         }
-        col.child(
+        let this = cx.entity();
+        let options: Vec<(&'static str, SharedString)> = LOCAL_MODELS.iter().map(|m| (*m, SharedString::from(*m))).collect();
+        col = col.child(chips(
+            "local-model",
+            &options,
+            self.local_model,
+            move |m, _, cx| {
+                this.update(cx, |this, cx| {
+                    this.local_model = m;
+                    cx.notify();
+                })
+            },
+            p,
+            window,
+        ));
+        let model = self.local_model;
+        let size = if model == LOCAL_MODELS[0] { " (3.3 GB)" } else { "" };
+        let note = |text: String| div().max_w(px(520.)).text_center().text_size(px(13.)).line_height(px(18.)).text_color(p.dim).child(text);
+        let action = if self.local_ready() {
+            div().flex().items_center().gap(px(6.)).text_size(px(13.)).text_color(p.primary).child(icon("check", 14., p.primary)).child("Installed")
+        } else {
+            match Jobs::get(&pull_key(model), cx) {
+                Some(job @ Job::Running(..)) => job_progress(&job, model, p),
+                Some(Job::Failed(e)) => div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().max_w(px(420.)).text_center().text_size(px(12.)).text_color(p.record).child(format!("Couldn't set it up: {e}")))
+                    .child(secondary_button("retry-ollama", "Try again", true, p).on_click(cx.listener(|this, _, _, cx| this.get_ollama(cx)))),
+                _ if matches!(self.ollama, Ollama::Up(_)) => note(format!("Continue downloads {model}{size} while you go on.")),
+                _ if ollama::is_installed() => note(format!("Continue starts Ollama and downloads {model}{size}.")),
+                _ => note(format!("Continue installs Ollama and {model}{size} while you go on.")),
+            }
+        };
+        col.child(action).child(
             div()
                 .max_w(px(400.))
                 .text_center()
@@ -1212,7 +1227,12 @@ impl Onboarding {
         let (where_, what) = if self.api {
             ("With your API key", PROVIDERS[self.provider].0.to_string())
         } else {
-            ("On this computer", self.local_model.to_string())
+            let what = match self.cleanup_job(cx) {
+                Some(job @ Job::Running(..)) => format!("{} · {}%", job_label(&job, self.local_model), (job.fraction() * 100.) as u32),
+                Some(Job::Failed(_)) => "Ollama didn't get set up".to_string(),
+                _ => self.local_model.to_string(),
+            };
+            ("On this computer", what)
         };
         let keys = match self.platform {
             Platform::Mac => ("Option Shift Space", "Hold or tap"),
@@ -1325,7 +1345,10 @@ impl Onboarding {
         } else if step == Step::Done {
             None
         } else {
+            let cleanup = if step == Step::Cleanup { None } else { self.cleanup_job(cx) };
             match self.speech_job(cx) {
+                Some(Job::Done) | None if matches!(cleanup, Some(Job::Running(..))) => cleanup.map(|job| job_progress(&job, self.local_model, p)),
+                None if matches!(cleanup, Some(Job::Failed(_))) => Some(div().text_color(p.record).child("Ollama didn't get set up: go back to Cleanup to try again")),
                 Some(job @ Job::Running(..)) => Some(
                     div()
                         .flex()
