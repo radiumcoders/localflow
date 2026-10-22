@@ -59,6 +59,48 @@ jobs:
         if: runner.os != 'Linux'
         shell: bash
         run: cargo xtask installed build/localflow-"$VERSION"-*.$([[ $RUNNER_OS == Windows ]] && echo msi || echo dmg)
+      # The pill, as it shows on this OS: a screenshot to look at (Windows
+      # used to draw a window frame around it).
+      - name: The pill, on screen (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Start-Process target/release/localflow.exe -ArgumentList '_message', 'Transcribing', '8000'
+          Start-Sleep 3
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD/build/pill-${{ matrix.name }}.png")
+      - name: The pill, on screen (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          target/release/localflow _message Transcribing 8000 &
+          sleep 3
+          screencapture -x build/pill-${{ matrix.name }}.png || true
+      - name: The pill, on screen (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" bash -c \
+            'target/release/localflow _message Transcribing 8000 & sleep 3; import -window root build/pill-${{ matrix.name }}.png'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pill-${{ matrix.name }}
+          path: build/pill-*.png
+          if-no-files-found: ignore
+      # Cleanup on this computer: localflow installs Ollama itself (it isn't
+      # on the runners), starts it, pulls a model, and cleans up through it.
+      - name: Ollama, installed by localflow
+        shell: bash
+        env:
+          LOCALFLOW_MODEL: smollm2:135m
+        run: |
+          bin=target/release/localflow$([[ $RUNNER_OS == Windows ]] && echo .exe || true)
+          command -v ollama && echo "(Ollama was already here)" || true
+          "$bin" ollama smollm2:135m
+          "$bin" --check
+          echo "the meeting is at three uh no four" | "$bin" -
       - name: Log
         if: always()
         shell: bash
