@@ -8,8 +8,14 @@ pub fn overlay_window(window: &mut Window) {
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE,
+            DWMWCP_DONOTROUND, DwmSetWindowAttribute,
+        };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+            GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            SetWindowLongPtrW, SetWindowPos, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
+            WS_THICKFRAME,
         };
         if let Ok(handle) = window.window_handle()
             && let RawWindowHandle::Win32(h) = handle.as_raw()
@@ -19,6 +25,20 @@ pub fn overlay_window(window: &mut Window) {
                 let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
                 let extra = (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST) as isize;
                 SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | extra);
+                // GPUI's pop-up is an overlapped window, which Windows gives a
+                // caption: Windows 11 then draws a frame around the whole
+                // (transparent) window, a rounded box with a border and a
+                // shadow around the pill. A plain pop-up, with DWM told to
+                // leave it alone, is just the pill.
+                let style = GetWindowLongPtrW(hwnd, GWL_STYLE) & !((WS_CAPTION | WS_THICKFRAME | WS_SYSMENU) as isize);
+                SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_POPUP as isize);
+                let set = |attribute: i32, value: u32| {
+                    DwmSetWindowAttribute(hwnd, attribute as u32, &value as *const u32 as *const _, size_of::<u32>() as u32);
+                };
+                set(DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED as u32);
+                set(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND as u32);
+                set(DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE);
+                SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             }
         }
     }
