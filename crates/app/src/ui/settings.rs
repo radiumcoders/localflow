@@ -501,6 +501,12 @@ fn field(input: impl IntoElement, p: &Palette) -> Div {
     div().h(px(36.)).flex().items_center().px(px(16.)).rounded_full().bg(p.muted).text_size(px(14.)).child(input)
 }
 
+/// A select that is the pill itself: wrapped in `field`, its own box sat at
+/// the top of the pill instead of in the middle.
+fn select(state: &Choice, p: &Palette) -> Select<SearchableVec<&'static str>> {
+    Select::new(state).appearance(false).small().w_full().h(px(36.)).pl(px(16.)).pr(px(14.)).rounded_full().bg(p.muted).text_size(px(14.))
+}
+
 fn progress_bar(fraction: f32, p: &Palette) -> Div {
     div()
         .relative()
@@ -618,7 +624,7 @@ impl SettingsView {
                     .px(px(24.))
                     .py(px(14.))
                     .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.fg).child("Language"))
-                    .child(field(Select::new(&self.language).appearance(false).small(), p).w(px(160.)))
+                    .child(div().w(px(160.)).child(select(&self.language, p)))
                     .into_any_element(),
                 div()
                     .flex()
@@ -780,7 +786,7 @@ impl SettingsView {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(labelled("Provider", field(Select::new(&self.provider).appearance(false).small(), p), p))
+            .child(labelled("Provider", select(&self.provider, p), p))
             .when(id.is_empty(), |d| d.child(labelled("Base URL", field(Input::new(&self.api_url).appearance(false), p), p)))
             .child(if id == "anthropic" {
                 labelled("Model", div().text_size(px(13.)).text_color(p.fg).child("Claude Haiku 5.5, always on Anthropic"), p)
