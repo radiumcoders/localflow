@@ -1,4 +1,4 @@
-//! Commands for a terminal: speech models, recording and transcribing by
+//! Commands for a terminal: speech and cleanup models, recording and transcribing by
 //! hand, the cleanup as a filter, and its checks.
 
 use std::io::{Read, Write};
@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use localflow_core::local::MODEL;
 use localflow_core::{Config, Localflow, Msg, NO_FILES, eval};
 use localflow_desktop::history;
 use localflow_desktop::paths::utc;
@@ -22,8 +23,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow history [N]            # the last N dictations (default 10): what was heard, what went out
     localflow history --last         # just the last text that went out
     localflow history --clear
-    localflow models [download ID]   # speech models: list, or download one
-    localflow ollama [MODEL]         # install Ollama if it isn't here, start it, pull the model
+    localflow models [download ID]   # speech and cleanup models: list, or download one
     localflow listen [SECONDS]       # record (default 5 s), transcribe, clean up, print
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
     localflow record SECONDS FILE.wav
@@ -44,7 +44,7 @@ pub fn run(args: &[String]) -> ExitCode {
     match arg(0).unwrap_or_default() {
         "--check" => {
             let model = &lf.cfg.model;
-            match lf.chat(model, &[Msg::user("Reply with just: ok")], 32, None) {
+            match lf.chat(model, &[Msg::user("Reply with just: ok")], 32) {
                 Ok(_) => println!("ok: {model} via {}", lf.cfg.backend()),
                 Err(e) => return fail(format!("{model} via {}: {e}", lf.cfg.backend())),
             }
@@ -57,22 +57,6 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         }
         "models" => return models_command(&lf.cfg, &args[1..]),
-        "ollama" => {
-            let model = arg(1).unwrap_or(&lf.cfg.model).to_string();
-            let mut last = ("", u64::MAX);
-            let mut report = |step: &'static str, done: u64, total: u64| {
-                let pct = (done * 100).checked_div(total).unwrap_or(0);
-                if (step, pct) != last {
-                    last = (step, pct);
-                    eprint!("\r  {step}{}   ", if total > 0 { format!(" {pct}%") } else { String::new() });
-                }
-            };
-            if let Err(e) = crate::ollama::get_ready(&lf, &model, &mut report) {
-                eprintln!();
-                return fail(e);
-            }
-            eprintln!("\r  Ollama is running, with {model}          ");
-        }
         "history" => return history_command(&lf.cfg, &args[1..]),
         "listen" => {
             let seconds = arg(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
@@ -101,7 +85,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 return fail("stdin isn't text");
             }
             let out = lf.clean(&text, NO_FILES).unwrap_or_else(|e| {
-                // Ollama/API down: pass the text through
+                // No model or API: pass the text through
                 eprintln!("localflow: {e}; passing text through unchanged");
                 text.trim().to_string()
             });
@@ -137,12 +121,30 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
                 let chosen = if m.id == current { "  (in use)" } else { "" };
                 println!("{mark} {:<24} {:>5} MB  {}{chosen}\n    {}", m.id, m.size_mb(), m.name, m.note);
             }
+            let mark = if cfg.local_model_installed() { "✓" } else { " " };
+            let chosen = if cfg.local() { "  (in use)" } else { "" };
+            println!("\ncleanup:\n{mark} {:<24} {:>5} MB  {}{chosen}", MODEL.id, MODEL.size_mb(), MODEL.name);
             println!("\nin {}", models::models_dir().display());
+        }
+        Some("download") if args.get(1).map(String::as_str) == Some(MODEL.id) => {
+            let mut last = u64::MAX;
+            let mut progress = |done: u64, total: u64| {
+                let pct = (done * 100).checked_div(total).unwrap_or(0);
+                if pct != last {
+                    last = pct;
+                    eprint!("\r  {}: {pct}% of {} MB", MODEL.id, total / 1_000_000);
+                }
+            };
+            let cfg = Config { model: MODEL.id.into(), ..cfg.clone() };
+            match crate::cleanup_model::get_ready(&cfg, &mut progress, &AtomicBool::new(false)) {
+                Ok(()) => eprintln!("\n  {}", cfg.model_file().display()),
+                Err(e) => return fail(e),
+            }
         }
         Some("download") => {
             let Some(id) = args.get(1) else { return usage() };
             let Some(model) = models::MODELS.iter().find(|m| m.id == id) else {
-                return fail(format!("no speech model {id} (see `localflow models`)"));
+                return fail(format!("no model {id} (see `localflow models`)"));
             };
             let mut last = u64::MAX;
             let mut progress = |done: u64, total: u64| {

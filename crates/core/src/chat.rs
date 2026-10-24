@@ -1,5 +1,5 @@
-//! One chat request to the model: Ollama's native API, the Anthropic Messages
-//! API, or any OpenAI-compatible chat API.
+//! One chat request to the model: localflow's own model on this computer, the
+//! Anthropic Messages API, or any OpenAI-compatible chat API.
 
 use std::sync::atomic::Ordering;
 
@@ -48,16 +48,16 @@ impl From<PostError> for Error {
 }
 
 impl Localflow {
-    pub fn chat(&self, model: &str, messages: &[Msg], num_predict: usize, format: Option<&Value>) -> Result<String> {
+    pub fn chat(&self, model: &str, messages: &[Msg], num_predict: usize) -> Result<String> {
         if model.is_empty() {
             return err("no model: set LOCALFLOW_MODEL to the provider's model name");
         }
         if self.cfg.anthropic {
             self.anthropic_chat(messages, num_predict)
-        } else if !self.cfg.api_url.is_empty() {
+        } else if !self.cfg.local() {
             self.api_chat(model, messages, num_predict)
         } else {
-            self.ollama_chat(model, messages, num_predict, format)
+            self.local_chat(messages, num_predict)
         }
     }
 
@@ -140,53 +140,9 @@ impl Localflow {
         Ok(blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect())
     }
 
-    /// Load-time options (use_mmap) must match between warm-up and real
-    /// requests, or Ollama reloads the model and the warm-up is wasted.
-    pub(crate) fn ollama_options(&self, num_predict: usize) -> Value {
-        json!({"temperature": 0, "num_predict": num_predict, "use_mmap": self.cfg.use_mmap})
-    }
-
-    fn ollama_chat(&self, model: &str, messages: &[Msg], num_predict: usize, format: Option<&Value>) -> Result<String> {
-        let mut body = json!({
-            "model": model,
-            "messages": messages_json(messages),
-            "stream": false,
-            "think": false,
-            "keep_alive": self.cfg.keep_alive,
-            "options": self.ollama_options(num_predict),
-        });
-        if let Some(format) = format {
-            body["format"] = format.clone();
-        }
-        let answer = self.post(&format!("{}/api/chat", self.cfg.ollama), &[], &body)?;
-        if answer["done_reason"] == "length" {
-            // Hit num_predict: the text is cut off, so don't use it.
-            return err("model output was cut off");
-        }
-        Ok(answer["message"]["content"].as_str().unwrap_or_default().to_string())
-    }
-
-    /// Load the model and read the rules and examples so they're ready when the
-    /// dictation arrives (nothing to load on a hosted API).
-    ///
-    /// qwen3.5 has recurrent layers, so Ollama can't reuse a cached prompt
-    /// prefix by trimming it; it can only resume from a checkpoint saved at the
-    /// end of an earlier prompt. Every dictation shares the same ~2,800-token
-    /// start (rules + examples), so sending exactly that start saves a
-    /// checkpoint the dictation then resumes from: ~1.1 s less per dictation on an M4.
-    pub fn warm(&self, model: &str) -> Result<()> {
-        if !self.cfg.api_url.is_empty() {
-            return Ok(());
-        }
-        let body = json!({
-            "model": model,
-            "messages": messages_json(&crate::prefix_messages(&self.rules(), self.cfg.asides)),
-            "stream": false,
-            "think": false,
-            "keep_alive": self.cfg.keep_alive,
-            "options": self.ollama_options(1),
-        });
-        self.post(&format!("{}/api/chat", self.cfg.ollama), &[], &body)?;
-        Ok(())
+    /// Load the model while the speaker is still talking, so it's ready when
+    /// the dictation arrives (nothing to load on a hosted API).
+    pub fn warm(&self, _model: &str) -> Result<()> {
+        if self.cfg.local() { self.load_local() } else { Ok(()) }
     }
 }

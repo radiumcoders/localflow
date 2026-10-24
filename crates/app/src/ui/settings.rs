@@ -1,5 +1,5 @@
 //! The settings window: the speech model (downloaded here), where cleanup
-//! runs (Ollama on this computer, or a hosted model with your key), asides
+//! runs (localflow's own model on this computer, or a hosted model with your key), asides
 //! and learning, and the keys to dictate with. Saves to the env file the
 //! rest of localflow reads (`localflow_core::Config`).
 
@@ -13,6 +13,7 @@ use gpui_kit::component::theme::Theme;
 use gpui_kit::component::{IndexPath, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use localflow_core::local::MODEL;
 use localflow_core::{Config, Localflow, Msg, prompts::HAIKU, save_api_key, save_settings};
 use localflow_speech::models;
 
@@ -46,8 +47,6 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("Japanese", "ja"),
     ("Chinese", "zh"),
 ];
-/// Local cleanup models offered first (any Ollama model works).
-pub(super) const LOCAL_MODELS: &[&str] = &["qwen3.5:4b", "qwen3.5:2b"];
 
 type Choice = Entity<SelectState<SearchableVec<&'static str>>>;
 
@@ -57,13 +56,6 @@ enum Job {
     Running(Option<(u64, u64)>),
     Done(String),
     Failed(String),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum Ollama {
-    Checking,
-    Down(String),
-    Up(Vec<String>),
 }
 
 struct State {
@@ -144,9 +136,10 @@ pub struct SettingsView {
     api_url: Entity<InputState>,
     api_key: Entity<InputState>,
     has_key: bool,
-    local_model: Entity<InputState>,
-    ollama: Ollama,
-    pull: Job,
+    /// localflow-clean, or the .gguf file the env file names.
+    local_model: String,
+    /// The cleanup model's download.
+    fetch: Job,
     check: Job,
     asides: bool,
     learn: &'static str,
@@ -206,7 +199,7 @@ impl SettingsView {
         let submit = cfg.submit.value().unwrap_or("said");
         let has_key = cfg.api_key.is_some() || cfg.key_file().exists();
         let api_model = if cfg.anthropic || cfg.api_url.is_empty() { String::new() } else { cfg.model.clone() };
-        let local_model = if cfg.api_url.is_empty() { cfg.model.clone() } else { LOCAL_MODELS[0].to_string() };
+        let local_model = if cfg.local() { cfg.model.clone() } else { MODEL.id.to_string() };
 
         let view = SettingsView {
             speech_model: models::resolve(cfg.speech_model.as_deref()).id,
@@ -225,9 +218,8 @@ impl SettingsView {
                 InputState::new(window, cx).placeholder(hint).masked(true)
             }),
             has_key,
-            local_model: cx.new(|cx| InputState::new(window, cx).default_value(local_model)),
-            ollama: Ollama::Checking,
-            pull: Job::Idle,
+            local_model,
+            fetch: Job::Idle,
             check: Job::Idle,
             asides: cfg.asides,
             learn: pick(LEARN, &learn),
@@ -246,7 +238,6 @@ impl SettingsView {
         for entity in [&view.provider, &view.language] {
             cx.observe(entity, |_, _, cx| cx.notify()).detach();
         }
-        view.check_ollama(cx);
         view
     }
 
@@ -265,8 +256,7 @@ impl SettingsView {
             changes.push(("LOCALFLOW_MODEL", Some(model).filter(|m| !m.is_empty())));
         } else {
             changes.push(("LOCALFLOW_API_URL", None));
-            let model = self.local_model.read(cx).value().trim().to_string();
-            changes.push(("LOCALFLOW_MODEL", Some(model).filter(|m| !m.is_empty())));
+            changes.push(("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())));
         }
         changes.push(("LOCALFLOW_SPEECH_MODEL", Some(self.speech_model.to_string())));
         changes.push(("LOCALFLOW_SPEECH_GPU", (!self.gpu).then(|| "off".into())));
@@ -296,20 +286,9 @@ impl SettingsView {
         Localflow::new(Config::from_vars(&get, dir))
     }
 
-    fn check_ollama(&self, cx: &mut Context<Self>) {
-        let lf = Localflow::new(self.cfg.clone());
-        let task = cx.background_executor().spawn(async move { lf.ollama_models() });
-        cx.spawn(async move |this, cx| {
-            let found = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.ollama = match found {
-                    Ok(models) => Ollama::Up(models),
-                    Err(e) => Ollama::Down(e.0),
-                };
-                cx.notify();
-            });
-        })
-        .detach();
+    /// The local model is here (downloaded, or your .gguf file exists).
+    fn local_ready(&self) -> bool {
+        Config { model: self.local_model.clone(), ..self.cfg.clone() }.local_model_installed()
     }
 
     /// Run `work` on its own thread; it reports progress (done, total) and
@@ -346,13 +325,8 @@ impl SettingsView {
                     Update::Finished(Ok(r)) => Job::Done(done(r)),
                     Update::Finished(Err(e)) => Job::Failed(e),
                 };
-                let finished = !matches!(job, Job::Running(_));
                 if this.update(cx, |this, cx| {
                     set(this, job);
-                    // Ollama may have come up, or got a model.
-                    if finished {
-                        this.check_ollama(cx);
-                    }
                     cx.notify();
                 })
                 .is_err()
@@ -381,29 +355,14 @@ impl SettingsView {
         );
     }
 
-    fn pull(&mut self, cx: &mut Context<Self>) {
-        let model = self.local_model.read(cx).value().trim().to_string();
-        let lf = Localflow::new(self.cfg.clone());
-        let cancel = AtomicBool::new(false);
+    /// Download the cleanup model.
+    fn fetch(&mut self, cx: &mut Context<Self>) {
+        let cfg = Config { model: self.local_model.clone(), ..self.cfg.clone() };
         self.job(
             cx,
-            move |progress| lf.ollama_pull(&model, progress, &cancel).map_err(|e| e.0),
-            |this, job| this.pull = job,
+            move |progress| crate::cleanup_model::get_ready(&cfg, progress, &AtomicBool::new(false)),
+            |this, job| this.fetch = job,
             |_| "Downloaded".into(),
-        );
-        self.check_ollama(cx);
-    }
-
-    /// Install Ollama, start it, and pull the model, whatever's missing.
-    fn get_ollama(&mut self, cx: &mut Context<Self>) {
-        let typed = self.local_model.read(cx).value().trim().to_string();
-        let model = if typed.is_empty() { LOCAL_MODELS[0].to_string() } else { typed };
-        let lf = Localflow::new(self.cfg.clone());
-        self.job(
-            cx,
-            move |progress| crate::ollama::get_ready(&lf, &model, &mut |_, done, total| progress(done, total)),
-            |this, job| this.pull = job,
-            |_| "Ollama is ready".into(),
         );
     }
 
@@ -413,9 +372,12 @@ impl SettingsView {
             cx,
             move |_| {
                 let model = lf.cfg.model.clone();
-                lf.chat(&model, &[Msg::user("Reply with just: ok")], 32, None)
-                    .map(|_| format!("Works: {model} via {}", lf.cfg.backend()))
-                    .map_err(|e| e.0)
+                let answer = if lf.cfg.local() {
+                    lf.clean("um testing one two three", localflow_core::NO_FILES).map(drop)
+                } else {
+                    lf.chat(&model, &[Msg::user("Reply with just: ok")], 32).map(drop)
+                };
+                answer.map(|_| format!("Works: {model} via {}", lf.cfg.backend())).map_err(|e| e.0)
             },
             |this, job| this.check = job,
             |ok| ok,
@@ -671,10 +633,10 @@ impl SettingsView {
         div().flex().flex_col().gap(px(20.)).pt(px(20.)).child(rows(items, p)).child(options)
     }
 
-    fn cleanup(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
+    fn cleanup(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
         let hover = p.hover;
         let choices = [
-            (false, "On this computer", "Private: nothing leaves your machine. Runs with Ollama."),
+            (false, "On this computer", "Private: nothing leaves your machine. localflow runs its own small model."),
             (true, "With your API key", "Nothing to download. Each dictation goes to the provider you pick."),
         ];
         let cells = choices
@@ -711,7 +673,7 @@ impl SettingsView {
                     .into_any_element()
             })
             .collect();
-        let detail = if self.api { self.api_settings(p, cx) } else { self.local_settings(p, window, cx) };
+        let detail = if self.api { self.api_settings(p, cx) } else { self.local_settings(p, cx) };
         let test = div()
             .flex()
             .items_center()
@@ -729,17 +691,16 @@ impl SettingsView {
             .child(div().flex().flex_col().gap(px(14.)).px(px(24.)).pt(px(18.)).child(detail).child(test))
     }
 
-    fn local_settings(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
-        let installed: &[String] = match &self.ollama {
-            Ollama::Up(models) => models,
-            _ => &[],
+    fn local_settings(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let ready = self.local_ready();
+        let ours = self.local_model == MODEL.id;
+        let (dot, text) = match (ready, ours) {
+            (true, true) => (p.primary, format!("{} is downloaded", MODEL.name)),
+            (true, false) => (p.primary, format!("Using {}", self.local_model)),
+            (false, true) => (p.faint, format!("{} isn't downloaded yet", MODEL.name)),
+            (false, false) => (p.record, format!("{} doesn't exist", self.local_model)),
         };
-        let (dot, text): (Hsla, String) = match &self.ollama {
-            Ollama::Checking => (p.faint, "Looking for Ollama…".into()),
-            Ollama::Up(models) => (p.primary, format!("Ollama is running, with {} model{}", models.len(), if models.len() == 1 { "" } else { "s" })),
-            Ollama::Down(_) if !crate::ollama::is_installed() => (p.faint, "Ollama isn't installed".into()),
-            Ollama::Down(_) => (p.record, "Ollama isn't running".into()),
-        };
+        let busy = matches!(self.fetch, Job::Running(_));
         let status_line = div()
             .flex()
             .items_center()
@@ -748,64 +709,23 @@ impl SettingsView {
             .text_color(p.fg)
             .child(div().size(px(8.)).rounded_full().bg(dot))
             .child(text)
-            .when(matches!(self.ollama, Ollama::Down(_)), |d| {
-                let (label, busy) = match (&self.pull, crate::ollama::is_installed()) {
-                    (Job::Running(_), _) => ("Setting up…", true),
-                    (_, true) => ("Start Ollama", false),
-                    (_, false) => ("Install Ollama", false),
-                };
-                d.child(div().flex_1())
-                    .child(look::secondary_button("get-ollama", label, !busy, p).on_click(cx.listener(move |this, _, _, cx| {
-                        if !busy {
-                            this.get_ollama(cx);
-                        }
-                    })))
-                    .child(look::ghost_button("recheck", "Check again", p).h(px(32.)).text_size(px(13.)).on_click(cx.listener(|this, _, _, cx| {
-                        this.ollama = Ollama::Checking;
-                        this.check_ollama(cx);
-                        cx.notify();
-                    })))
+            .when(!ready && ours, |d| {
+                d.child(div().flex_1()).child(
+                    look::secondary_button("get-model", if busy { "Downloading…" } else { "Download" }, !busy, p)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !busy {
+                                this.fetch(cx);
+                            }
+                        })),
+                )
             });
-        let typed = self.local_model.read(cx).value().trim().to_string();
-        let have = installed.iter().any(|m| *m == typed || m.strip_suffix(":latest") == Some(typed.as_str()));
-        let mut picks: Vec<SharedString> = LOCAL_MODELS.iter().map(|m| SharedString::from(*m)).collect();
-        for m in installed.iter().take(4) {
-            if !picks.iter().any(|x| x == m) {
-                picks.push(m.clone().into());
-            }
-        }
-        let current = picks.iter().position(|m| m.as_ref() == typed);
-        let input = self.local_model.clone();
-        let names = picks.clone();
-        let chips = look::chips(
-            "local-picks",
-            &picks.iter().enumerate().map(|(i, m)| (i, m.clone())).collect::<Vec<_>>(),
-            current.unwrap_or(usize::MAX),
-            move |i, window, cx| {
-                let name = names[i].clone();
-                input.update(cx, |state, cx| state.set_value(name, window, cx));
-            },
-            p,
-            window,
-        );
-        let pull = (!have && matches!(self.ollama, Ollama::Up(_))).then(|| {
-            look::secondary_button("pull", "Download", !matches!(self.pull, Job::Running(_)), p)
-                .on_click(cx.listener(|this, _, _, cx| this.pull(cx)))
-        });
         div()
             .flex()
             .flex_col()
             .gap(px(12.))
             .child(status_line)
-            .child(
-                labelled(
-                    "Model",
-                    div().flex().items_center().gap(px(8.)).child(field(Input::new(&self.local_model).appearance(false), p).flex_1()).children(pull),
-                    p,
-                ),
-            )
-            .child(labelled("", chips, p))
-            .children(status(&self.pull, p))
+            .when(ours, |d| d.child(mono(format!("{} MB, runs inside localflow, on the GPU when there is one", MODEL.size_mb()), p)))
+            .children(status(&self.fetch, p))
     }
 
     fn api_settings(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
@@ -1011,7 +931,7 @@ impl Render for SettingsView {
         );
         let content = match self.tab {
             Section::Speech => self.speech(&p, cx),
-            Section::Cleanup => self.cleanup(&p, window, cx),
+            Section::Cleanup => self.cleanup(&p, cx),
             Section::Dictation => self.dictation(&p, window, cx),
             Section::Keys => self.keys(&p, cx),
         };

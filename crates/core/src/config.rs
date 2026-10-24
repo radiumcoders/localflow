@@ -3,15 +3,15 @@
 //! line). A variable set in the environment wins.
 //!
 //! ```text
-//! LOCALFLOW_MODEL         model name (default: qwen3.5:4b; ignored with
+//! LOCALFLOW_MODEL         the cleanup model: on this computer, localflow-clean (the default) or
+//!                         a .gguf file; with an API, the provider's model name (ignored with
 //!                         LOCALFLOW_API_URL=anthropic, which always uses claude-haiku-5-5)
-//! LOCALFLOW_API_URL       use this API instead of Ollama: openai, openrouter, groq, gemini,
-//!                         anthropic, mistral, deepseek, or any OpenAI-compatible base URL
+//! LOCALFLOW_API_URL       use this API instead of this computer: openai, openrouter, groq,
+//!                         gemini, anthropic, mistral, deepseek, or any OpenAI-compatible base URL
 //! LOCALFLOW_API_KEY       API key (default: read from the api_key file next to env)
-//! LOCALFLOW_REVIEW_MODEL  model for the repair pass (default: same; "off" to skip)
-//! LOCALFLOW_OLLAMA        Ollama base URL (default: http://127.0.0.1:11434)
-//! LOCALFLOW_KEEP_ALIVE    how long the model stays loaded after use (default: 1h, 2m on macOS)
-//! LOCALFLOW_USE_MMAP      1 to also keep the model file mapped in RAM (default: off, on on macOS)
+//! LOCALFLOW_REVIEW_MODEL  an API's model for the repair pass (default: same; "off" to skip;
+//!                         always off on this computer)
+//! LOCALFLOW_CLEANUP_GPU   off to clean up on the CPU (default: the GPU when there is one)
 //! LOCALFLOW_SPEECH_MODEL  speech model id (see `localflow models`; default: the recommended one)
 //! LOCALFLOW_SPEECH_GPU    off to transcribe on the CPU (default: the GPU when there is one)
 //! LOCALFLOW_LANGUAGE      what you speak, e.g. en or de (default: detected, English for .en models)
@@ -27,24 +27,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::agent::Submit;
+use crate::local::{MODEL, models_dir};
 use crate::prompts::{HAIKU, PROVIDERS};
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// A hosted API's base URL, or empty for Ollama.
+    /// A hosted API's base URL, or empty for cleanup on this computer.
     pub api_url: String,
     pub anthropic: bool,
-    /// Empty when a hosted API is set without a model (chat() says so).
+    /// On this computer: localflow-clean or a .gguf file. Empty when a hosted
+    /// API is set without a model (chat() says so).
     pub model: String,
     /// The repair pass's model, or "off".
     pub review_model: String,
-    pub ollama: String,
-    pub keep_alive: String,
-    /// Load the model into GPU/CPU buffers instead of also keeping the file
-    /// mapped in RAM: halves RAM use (2.1 -> 1.1 GB on GPU) at the same speed.
-    /// Apple Silicon is the opposite: CPU and GPU share memory, so the GPU
-    /// reads the mapped file directly (1.3 instead of 4.8 GB for qwen3.5:4b).
-    pub use_mmap: bool,
+    /// Run the cleanup model on the GPU when there is one.
+    pub cleanup_gpu: bool,
     pub api_key: Option<String>,
     /// The speech model's id, or None for the recommended one.
     pub speech_model: Option<String>,
@@ -111,25 +108,25 @@ impl Config {
             .trim_end_matches('/')
             .to_string();
         let anthropic = api_url.starts_with("https://api.anthropic.com");
+        let model = var("LOCALFLOW_MODEL").map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
         let model = if anthropic {
             HAIKU.to_string()
+        } else if api_url.is_empty() {
+            // An Ollama model name from before localflow ran its own model means ours.
+            model.filter(|m| m.ends_with(".gguf")).unwrap_or_else(|| MODEL.id.into())
         } else {
-            var("LOCALFLOW_MODEL")
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| if api_url.is_empty() { "qwen3.5:4b".into() } else { String::new() })
+            model.unwrap_or_default()
         };
         let mut review_model = var("LOCALFLOW_REVIEW_MODEL").unwrap_or_else(|| model.clone());
         if anthropic && review_model != "off" {
             review_model = HAIKU.to_string();
         }
-        let mac = cfg!(target_os = "macos");
+        if api_url.is_empty() {
+            // localflow-clean was trained for cleanup only: there's no repair pass for it to do.
+            review_model = "off".into();
+        }
         Config {
-            ollama: var("LOCALFLOW_OLLAMA")
-                .unwrap_or_else(|| "http://127.0.0.1:11434".into())
-                .trim_end_matches('/')
-                .to_string(),
-            keep_alive: var("LOCALFLOW_KEEP_ALIVE").unwrap_or_else(|| (if mac { "2m" } else { "1h" }).into()),
-            use_mmap: var("LOCALFLOW_USE_MMAP").unwrap_or_else(|| (if mac { "1" } else { "0" }).into()) == "1",
+            cleanup_gpu: !off(var("LOCALFLOW_CLEANUP_GPU")),
             api_key: var("LOCALFLOW_API_KEY").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
             speech_model: var("LOCALFLOW_SPEECH_MODEL").filter(|m| !m.is_empty()),
             speech_gpu: !off(var("LOCALFLOW_SPEECH_GPU")),
@@ -155,9 +152,19 @@ impl Config {
         self.config_dir.join("words.txt")
     }
 
-    /// Where cleanup runs, for messages: the API's URL or Ollama's.
+    /// Cleanup on this computer, not with an API.
+    pub fn local(&self) -> bool {
+        self.api_url.is_empty()
+    }
+
+    /// The local model's file: ours in the models folder, or the .gguf named.
+    pub fn model_file(&self) -> PathBuf {
+        if self.model == MODEL.id { models_dir().join(MODEL.file) } else { PathBuf::from(&self.model) }
+    }
+
+    /// Where cleanup runs, for messages: the API's URL, or this computer.
     pub fn backend(&self) -> &str {
-        if self.api_url.is_empty() { &self.ollama } else { &self.api_url }
+        if self.local() { "this computer" } else { &self.api_url }
     }
 }
 

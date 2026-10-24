@@ -1,5 +1,5 @@
-//! Work that outlives a window: the speech model's download, and getting
-//! Ollama and its model, started from the onboarding. Each runs on a thread of its own and
+//! Work that outlives a window: the speech and cleanup models' downloads,
+//! started from the onboarding. Each runs on a thread of its own and
 //! reports its progress here, and closing the window doesn't stop it: the
 //! app quits once the last one finishes.
 

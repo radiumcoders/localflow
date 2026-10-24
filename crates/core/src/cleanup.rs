@@ -1,4 +1,5 @@
-//! The two checkpoints: a few-shot draft, then automatic checks whose
+//! The two checkpoints: a draft (few-shot with a hosted model; localflow's own
+//! model needs neither rules nor examples), then automatic checks whose
 //! problems (if any) a fresh call repairs. Plus the sanity check that falls
 //! back to the raw transcript, and Markdown headings small models miss.
 
@@ -8,7 +9,7 @@ use std::sync::LazyLock;
 use std::time::Instant;
 
 use regex::Regex;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::prompts::{ASIDE, ASIDE_EXAMPLES, EXAMPLES, QUALIFIERS, REVIEW_SYSTEM};
 use crate::vocab::Hint;
@@ -184,14 +185,18 @@ pub fn markdown_headings(out: &str) -> String {
 }
 
 impl Localflow {
-    /// Checkpoint 1: few-shot cleanup and formatting.
+    /// Checkpoint 1: cleanup and formatting.
     fn draft(&self, text: &str, model: &str, system: &str, files: &[impl AsRef<str>]) -> Result<String> {
-        let mut messages = prefix_messages(system, self.cfg.asides);
-        messages.push(Msg::user(user_turn(text, files)));
         let budget = (text.chars().count() as f64 * 1.5) as usize
             + 64
             + files.iter().map(|f| f.as_ref().chars().count()).sum::<usize>();
-        let out = self.chat(model, &messages, budget, None)?;
+        let out = if self.cfg.local() {
+            self.local_complete(&crate::local::cleanup_prompt(&self.vocabulary(), text, files), budget)?
+        } else {
+            let mut messages = prefix_messages(system, self.cfg.asides);
+            messages.push(Msg::user(user_turn(text, files)));
+            self.chat(model, &messages, budget)?
+        };
         Ok(DICTATION_TAG.replace_all(&out, "").trim().to_string())
     }
 
@@ -209,10 +214,8 @@ impl Localflow {
         }
         let listed: Vec<String> = problems.iter().map(|p| format!("- {p}")).collect();
         let prompt = format!("RULES:\n{system}\n\nRAW:\n{text}\n\nDRAFT:\n{first}\n\nPROBLEMS:\n{}", listed.join("\n"));
-        let format = json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]});
-        let out = self.chat(model, &[Msg::system(REVIEW_SYSTEM), Msg::user(prompt)],
-                            text.chars().count() * 2 + 128, Some(&format))?;
-        // Ollama enforces the JSON format; hosted models may wrap it in a code block.
+        let out = self.chat(model, &[Msg::system(REVIEW_SYSTEM), Msg::user(prompt)], text.chars().count() * 2 + 128)?;
+        // Hosted models may wrap the JSON in a code block.
         let found = JSON_OBJECT.find(&out).map_or(out.as_str(), |m| m.as_str());
         let fixed = match serde_json::from_str::<Value>(found) {
             Ok(Value::Object(answer)) => match answer.get("text") {
@@ -252,7 +255,8 @@ impl Localflow {
         let start = Instant::now();
         let first = self.draft(text, model, &system, files)?;
         result.ms_draft = start.elapsed().as_millis();
-        if self.cfg.asides && first == ASIDE {
+        // localflow-clean always leaves asides out (it was trained with rule 12).
+        if (self.cfg.asides || self.cfg.local()) && first == ASIDE {
             // Nothing meant for the text.
             (result.draft, result.text, result.verdict) = (String::new(), String::new(), "aside".into());
             return Ok(result);

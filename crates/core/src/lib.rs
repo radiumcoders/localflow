@@ -2,10 +2,11 @@
 //!
 //! A raw speech-to-text transcript goes in; what the speaker meant to write
 //! comes out: self-corrections applied, filler dropped, punctuation, lists and
-//! headings, names spelled the way the speaker's vocabulary says. Two
-//! checkpoints: a few-shot draft, then automatic checks whose problems (if any)
-//! a fresh call repairs. Runs on a local Ollama model or a hosted API with your
-//! own key (Anthropic always uses Claude Haiku 5.5).
+//! headings, names spelled the way the speaker's vocabulary says. Runs
+//! localflow's own model on this computer (in this process, see local.rs), or
+//! a hosted API with your own key (Anthropic always uses Claude Haiku 5.5),
+//! where a few-shot draft is followed by automatic checks whose problems (if
+//! any) a fresh call repairs.
 //!
 //! ```no_run
 //! let lf = localflow_core::Localflow::new(localflow_core::Config::from_env());
@@ -17,13 +18,14 @@ pub mod agent;
 mod chat;
 mod cleanup;
 mod config;
-mod ollama;
 pub mod difflib;
 pub mod eval;
+pub mod local;
 pub mod prompts;
 mod vocab;
 
 use std::fmt;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -52,9 +54,12 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(Error(msg.into()))
 }
 
-/// The cleanup engine: settings, plus the HTTP client for the model.
+/// The cleanup engine: settings, plus the local model or the HTTP client for
+/// a hosted one.
 pub struct Localflow {
     pub cfg: Config,
+    /// The local model, once loaded; freed with this Localflow.
+    engine: Mutex<Option<localflow_llm::Model>>,
     agent: ureq::Agent,
     /// Reasoning models (OpenAI's o-series, gpt-5) reject temperature and
     /// max_tokens; after the first such refusal, send only model and messages.
@@ -63,9 +68,8 @@ pub struct Localflow {
 
 impl Localflow {
     pub fn new(cfg: Config) -> Localflow {
-        // CPU-only machines take ~20 s on a long dictation. Some providers'
-        // firewalls block clients without a User-Agent.
+        // Some providers' firewalls block clients without a User-Agent.
         let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(120)).user_agent("localflow").build();
-        Localflow { cfg, agent, api_minimal: AtomicBool::new(false) }
+        Localflow { cfg, engine: Mutex::new(None), agent, api_minimal: AtomicBool::new(false) }
     }
 }

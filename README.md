@@ -38,11 +38,10 @@ Download `localflow-<version>-x64.msi` from
 installs localflow to Program Files, adds it to the Start menu and starts it
 when you sign in. Open localflow from the Start menu: the first time, the
 onboarding opens. Pick a speech model (it downloads while you go on) and where
-cleanup runs (on this computer with Ollama, or with your API key), then try a
-dictation in the window. If Ollama isn't installed, localflow installs it
-(Ollama's own build, checked against its release's checksums) and downloads the
-model, also while you go on. Open it from the Start menu again to change the
-settings. Uninstall it from Settings > Apps.
+cleanup runs (on this computer, or with your API key), then try a dictation in
+the window. On this computer, localflow downloads its own cleanup model (351 MB)
+while you go on and runs it itself: there's nothing else to install. Open it
+from the Start menu again to change the settings. Uninstall it from Settings > Apps.
 
 The installer isn't signed yet, so SmartScreen warns about an unknown
 publisher: click **More info**, then **Run anyway**.
@@ -83,14 +82,15 @@ launcher; then it shows the key bindings to add, with a Copy button, and lets
 you try a dictation. `localflow onboarding` opens it again. It needs glibc 2.39+
 (Ubuntu 24.04, Fedora 40, Debian 13, Arch), PipeWire or ALSA for recording,
 and for pasting `wl-clipboard` + `wtype` on Wayland or `xclip` + `xdotool` on
-X11 (Omarchy ships all of these). Transcription runs on the GPU through Vulkan
-when there is one.
+X11 (Omarchy ships all of these). Transcription and cleanup run on the GPU
+through Vulkan when there is one.
 
 ### From source
 
 ```sh
-cargo build --release          # needs Rust and cmake (whisper.cpp); on Linux the
-                               # ALSA, Wayland, X11, xkbcommon and fontconfig headers
+git submodule update --init --depth 1   # llama.cpp, for the cleanup model
+cargo build --release          # needs Rust and cmake (whisper.cpp, llama.cpp); on Linux
+                               # the ALSA, Wayland, X11, xkbcommon and fontconfig headers
 target/release/localflow       # the settings window (Linux) or the background app
 cargo xtask package --version 0.2.0 [--features vulkan]   # the installer, in build/
 ```
@@ -206,23 +206,29 @@ speech model, Small (English):
 Small heard the same words as Handy's Parakeet on real recordings, at about
 half the memory. On a machine without a GPU, Base (82 MB) is faster still.
 
-The cleanup model is the bigger cost when it runs locally: `qwen3.5:4b` in
-Ollama takes 3.3 GB of disk and ~3.8 GB of GPU memory (or RAM) while loaded;
-Ollama unloads it after `LOCALFLOW_KEEP_ALIVE` (1 hour, 2 minutes on macOS).
-With your API key, none of that runs on your machine.
+Cleanup on this computer runs localflow's own model, `localflow-clean`: Qwen3.5
+0.8B fine-tuned on the cleanup rules alone, with an English-only vocabulary, in
+a 351 MB file. localflow runs it in its own process with llama.cpp (Vulkan,
+Metal, or the CPU), loads it while you speak (~0.1 s) and frees it after the
+dictation, so it uses no memory between dictations. While dictating, speech and
+cleanup together peak at ~460 MB. With your API key, none of that runs on your
+machine.
 
-| Cleanup | Short sentence | Long ramble (~1 min of speech) |
-| --- | --- | --- |
-| qwen3.5:4b, GPU (RX 9070 XT) | ~0.4 s | ~1.5 s |
-| qwen3.5:4b, CPU only | ~0.9 s | ~20 s |
-| qwen3.5:4b, Apple M4 | ~0.5 s | ~5–7 s |
-| Claude Haiku (API) | ~1.0–1.3 s | ~2 s |
+| Cleanup | Under 30 words | 100+ words | cases.txt | Memory |
+| --- | --- | --- | --- | --- |
+| localflow-clean, GPU (RX 9070 XT) | ~0.06 s | ~0.34 s | 32/41 | ~530 MB GPU, freed after |
+| localflow-clean, CPU only | ~0.25 s | ~1.8 s | 32/41 | ~510 MB, freed after |
+| (before: qwen3.5:4b in Ollama, GPU) | ~0.33 s | ~1.8 s | 35/41 | ~4.3 GB GPU, kept loaded |
+| Claude Haiku (API) | ~1.0–1.3 s | ~2 s | 41/41 | – |
+
+On 142 held-out examples written to the rules, localflow-clean matched the
+expected text exactly in 51% (qwen3.5:4b: 27%).
 
 ## Use your own API key (optional)
 
 The cleanup can run on a small hosted model with your own key: **Claude
-Haiku**, or any model behind an OpenAI-compatible API. No Ollama and no local
-cleanup model. The trade-off: **every dictation is sent to that provider**,
+Haiku**, or any model behind an OpenAI-compatible API. No local cleanup
+model. The trade-off: **every dictation is sent to that provider**,
 and it costs a fraction of a cent (Haiku 5.5: $0.10 / $0.50 per million input
 / output tokens; each dictation sends ~3,900 tokens of rules and examples,
 cached between dictations, so under $0.0005 each).
@@ -351,14 +357,14 @@ speech model and puts the app in place.
 | `LOCALFLOW_SPEECH_MODEL` | `tiny.en`, `base.en`, `small.en` (default), `large-v3-turbo`, `base`, `small` (see `localflow models`) |
 | `LOCALFLOW_SPEECH_GPU` | `off` to transcribe on the CPU |
 | `LOCALFLOW_LANGUAGE` | what you speak (`en`, `de`, …; default: detected) |
-| `LOCALFLOW_API_URL` | a provider or base URL (default: Ollama) |
-| `LOCALFLOW_MODEL` | the cleanup model (default `qwen3.5:4b`; always Claude Haiku on Anthropic) |
-| `LOCALFLOW_REVIEW_MODEL` | the repair pass's model, or `off` |
+| `LOCALFLOW_API_URL` | a provider or base URL (default: cleanup on this computer) |
+| `LOCALFLOW_MODEL` | the cleanup model: `localflow-clean` (default) or a `.gguf` file on this computer; the provider's model with an API (always Claude Haiku on Anthropic) |
+| `LOCALFLOW_REVIEW_MODEL` | an API's model for the repair pass, or `off` (always off on this computer) |
+| `LOCALFLOW_CLEANUP_GPU` | `off` to clean up on the CPU |
 | `LOCALFLOW_ASIDES` | `keep` to paste asides as said |
 | `LOCALFLOW_LEARN` | `auto`, `key` or `off` |
 | `LOCALFLOW_SUBMIT` | in a coding agent, press Enter after pasting: `said` (when you end with "send it", default), `always`, `never` |
 | `LOCALFLOW_HISTORY` | `off` to keep no history of your dictations |
-| `LOCALFLOW_OLLAMA`, `LOCALFLOW_KEEP_ALIVE`, `LOCALFLOW_USE_MMAP` | Ollama's address, how long it keeps the model loaded, memory mapping |
 
 Logs (never your words; those are in the [history](#history)) go to `~/.local/state/localflow/dictate.log`,
 `~/Library/Logs/localflow/dictate.log` or `%LOCALAPPDATA%\localflow\dictate.log`.
@@ -366,8 +372,7 @@ Logs (never your words; those are in the [history](#history)) go to `~/.local/st
 ## Tools and tuning
 
 ```sh
-localflow models [download ID]       # speech models
-localflow ollama [MODEL]             # install Ollama if it isn't here, start it, pull the model
+localflow models [download ID]       # speech models and the cleanup model (localflow-clean)
 localflow history [N]                # what you said and what went out
 localflow listen 5                   # record 5 s, transcribe, clean up, print (segments and levels on stderr)
 localflow transcribe talk.wav        # the same from a WAV file
@@ -412,7 +417,8 @@ what `localflow --selftest` checks on yours.
 
 | Path | What |
 | --- | --- |
-| `crates/core` | the cleanup: rules and examples, Ollama / Anthropic / OpenAI-compatible, review pass, learning |
+| `crates/core` | the cleanup: localflow's own model, or rules and examples for Anthropic / OpenAI-compatible APIs with a review pass; learning |
+| `crates/llm` | llama.cpp in a library of its own, embedded in the binary, that runs the cleanup model |
 | `crates/speech` | the microphone, the speech engine (whisper.cpp), its models, quiet segments |
 | `crates/desktop` | where you're dictating, paste and clipboard, hotkeys, learning from your fixes |
 | `crates/app` | `localflow`: the GPUI pill and settings window, sessions, setup, the CLI |

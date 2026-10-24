@@ -1,7 +1,7 @@
 //! Setting localflow up on this computer: the settings, the speech model,
 //! and the app itself where it has to be.
 //!
-//!     localflow setup                          # cleanup with Ollama on this computer
+//!     localflow setup                          # cleanup on this computer (downloads its model)
 //!     localflow setup --api anthropic          # with your key (LOCALFLOW_API_KEY, or asked for)
 //!     localflow setup --api openai --model gpt-5-nano
 //!     localflow setup --speech-model base.en
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::AtomicBool;
 
-use localflow_core::{Config, Localflow, Msg, config_dir, home, prompts::HAIKU, save_api_key, save_settings};
+use localflow_core::{Config, Localflow, Msg, NO_FILES, config_dir, home, prompts::HAIKU, save_api_key, save_settings};
 use localflow_speech::models;
 
 const USAGE: &str = "localflow setup [--api PROVIDER|URL] [--model MODEL] [--speech-model ID] [--no-start]";
@@ -51,7 +51,7 @@ pub fn run(args: &[String]) -> ExitCode {
     println!("== settings in {}", dir.display());
     let changes = [
         ("LOCALFLOW_API_URL", api.as_deref()),
-        ("LOCALFLOW_MODEL", model.as_deref().or(api.is_none().then_some("qwen3.5:4b"))),
+        ("LOCALFLOW_MODEL", model.as_deref().or(api.is_none().then_some(localflow_core::local::MODEL.id))),
         ("LOCALFLOW_SPEECH_MODEL", Some(info.id)),
     ];
     if let Err(e) = save_settings(&dir, &changes) {
@@ -85,9 +85,28 @@ pub fn run(args: &[String]) -> ExitCode {
 
     let lf = Localflow::new(Config::from_env());
     println!("== cleanup: {} via {}", lf.cfg.model, lf.cfg.backend());
-    match lf.chat(&lf.cfg.model.clone(), &[Msg::user("Reply with just: ok")], 32, None) {
-        Ok(_) => println!("   it answers"),
-        Err(e) if api.is_none() => println!("   not yet: {e}\n   install Ollama (ollama.com) and run: ollama pull {}", lf.cfg.model),
+    if lf.cfg.local() && !lf.cfg.local_model_installed() {
+        println!("   downloading {}", crate::cleanup_model::described());
+        let mut last = u64::MAX;
+        let mut progress = |done: u64, total: u64| {
+            let pct = (done * 100).checked_div(total).unwrap_or(0);
+            if pct / 10 != last {
+                last = pct / 10;
+                println!("   {pct}%");
+            }
+        };
+        if let Err(e) = crate::cleanup_model::get_ready(&lf.cfg, &mut progress, &AtomicBool::new(false)) {
+            eprintln!("localflow: couldn't download the cleanup model: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    let answer = if lf.cfg.local() {
+        lf.clean("um testing one two three", NO_FILES).map(drop)
+    } else {
+        lf.chat(&lf.cfg.model.clone(), &[Msg::user("Reply with just: ok")], 32).map(drop)
+    };
+    match answer {
+        Ok(()) => println!("   it answers"),
         Err(e) => {
             eprintln!("localflow: {} doesn't answer: {e}", lf.cfg.model);
             return ExitCode::FAILURE;

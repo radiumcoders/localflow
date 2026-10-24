@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::difflib::{SequenceMatcher, Tag};
 use crate::prompts::{COMMON, JUDGE_SYSTEM};
@@ -63,20 +63,20 @@ impl Localflow {
     }
 
     /// Of the changes you made to a pasted dictation, the ones that fix a
-    /// misheard word, not a change of mind. Asks the cleanup model.
+    /// misheard word, not a change of mind. Asks the cleanup model; none on
+    /// this computer, whose model only knows how to clean up (the learn key
+    /// still learns what you select).
     pub fn mishearings(&self, pasted: &str, edited: &str, pairs: &[(String, String)], model: &str)
         -> Result<Vec<(String, String)>> {
-        if pairs.is_empty() {
+        if pairs.is_empty() || self.cfg.local() {
             return Ok(vec![]);
         }
         let listed: Vec<String> =
             pairs.iter().enumerate().map(|(i, (h, m))| format!("{}. \"{h}\" -> \"{m}\"", i + 1)).collect();
-        let format = json!({"type": "object", "properties": {"learn": {"type": "array", "items": {"type": "integer"}}},
-                            "required": ["learn"]});
         let out = self.chat(model, &[
             Msg::system(JUDGE_SYSTEM),
             Msg::user(format!("PASTED:\n{pasted}\n\nEDITED:\n{edited}\n\nCHANGES:\n{}", listed.join("\n"))),
-        ], 200, Some(&format))?;
+        ], 200)?;
         let found = JSON_OBJECT.find(&out).map_or(out.as_str(), |m| m.as_str());
         let Ok(Value::Object(answer)) = serde_json::from_str::<Value>(found) else { return Ok(vec![]) };
         let mut seen = HashSet::new();
