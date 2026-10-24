@@ -14,7 +14,7 @@
 //!     localflow learn                  # learn from the dictation you just fixed
 //!
 //! Tools:
-//!     localflow models [download ID]   # speech models: list, or download one
+//!     localflow models [download ID]   # speech and cleanup models: list, or download one
 //!     localflow listen [SECONDS]       # record, transcribe, clean up, print
 //!     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
 //!     localflow record SECONDS FILE.wav
@@ -28,6 +28,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod cleanup_model;
 mod cli;
 mod dictation;
 mod platform;

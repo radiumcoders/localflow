@@ -1,22 +1,23 @@
 //! The settings window: the speech model (downloaded here), where cleanup
-//! runs (Ollama on this computer, or a hosted model with your key), asides
+//! runs (localflow's own model on this computer, or a hosted model with your key), asides
 //! and learning, and the keys to dictate with. Saves to the env file the
 //! rest of localflow reads (`localflow_core::Config`).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::progress::Progress;
 use gpui_kit::component::select::{SearchableVec, Select, SelectState};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme, Disableable, IndexPath, Sizable, StyledExt};
+use gpui_kit::component::theme::Theme;
+use gpui_kit::component::{IndexPath, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use localflow_core::local::MODEL;
 use localflow_core::{Config, Localflow, Msg, prompts::HAIKU, save_api_key, save_settings};
 use localflow_speech::models;
+
+use super::look::{self, Palette};
 
 /// Hosted providers, as shown, and their LOCALFLOW_API_URL names. The last
 /// one takes any OpenAI-compatible base URL.
@@ -46,8 +47,6 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("Japanese", "ja"),
     ("Chinese", "zh"),
 ];
-/// Local cleanup models offered first (any Ollama model works).
-pub(super) const LOCAL_MODELS: &[&str] = &["qwen3.5:4b", "qwen3.5:2b"];
 
 type Choice = Entity<SelectState<SearchableVec<&'static str>>>;
 
@@ -57,13 +56,6 @@ enum Job {
     Running(Option<(u64, u64)>),
     Done(String),
     Failed(String),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum Ollama {
-    Checking,
-    Down(String),
-    Up(Vec<String>),
 }
 
 struct State {
@@ -108,11 +100,17 @@ pub fn open(cx: &mut App) {
         }
         return;
     }
-    let bounds = Bounds::centered(None, size(px(640.), px(780.)), cx);
+    let size = size(px(WINDOW.0), px(WINDOW.1));
     let options = WindowOptions {
-        titlebar: Some(TitlebarOptions { title: Some("localflow".into()), ..Default::default() }),
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(size(px(480.), px(420.))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Localflow".into()),
+            // macOS: the traffic lights sit in the window's own top row, by the tabs.
+            appears_transparent: cfg!(target_os = "macos"),
+            traffic_light_position: Some(point(px(16.), px(16.))),
+        }),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
+        window_min_size: Some(size),
+        is_resizable: false,
         app_id: Some("localflow".into()),
         focus: true,
         ..Default::default()
@@ -138,15 +136,36 @@ pub struct SettingsView {
     api_url: Entity<InputState>,
     api_key: Entity<InputState>,
     has_key: bool,
-    local_model: Entity<InputState>,
-    ollama: Ollama,
-    pull: Job,
+    /// localflow-clean, or the .gguf file the env file names.
+    local_model: String,
+    /// The cleanup model's download.
+    fetch: Job,
     check: Job,
     asides: bool,
-    learn: Choice,
-    submit: Choice,
+    learn: &'static str,
+    submit: &'static str,
     history: bool,
     saved: Job,
+    tab: Section,
+    copied: bool,
+}
+
+/// The window's tabs, in the header.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Section {
+    Speech,
+    Cleanup,
+    Dictation,
+    Keys,
+}
+
+const WINDOW: (f32, f32) = (760., 620.);
+/// The column between the dashed rails.
+const COLUMN: f32 = 600.;
+
+/// The value for `value` among `items`, or the first.
+fn pick(items: &[(&'static str, &'static str)], value: &str) -> &'static str {
+    items.iter().find(|(_, v)| *v == value).map_or(items[0].1, |(_, v)| *v)
 }
 
 fn index_of<T: PartialEq>(items: &[(&'static str, T)], value: &T) -> usize {
@@ -180,7 +199,7 @@ impl SettingsView {
         let submit = cfg.submit.value().unwrap_or("said");
         let has_key = cfg.api_key.is_some() || cfg.key_file().exists();
         let api_model = if cfg.anthropic || cfg.api_url.is_empty() { String::new() } else { cfg.model.clone() };
-        let local_model = if cfg.api_url.is_empty() { cfg.model.clone() } else { LOCAL_MODELS[0].to_string() };
+        let local_model = if cfg.local() { cfg.model.clone() } else { MODEL.id.to_string() };
 
         let view = SettingsView {
             speech_model: models::resolve(cfg.speech_model.as_deref()).id,
@@ -199,21 +218,26 @@ impl SettingsView {
                 InputState::new(window, cx).placeholder(hint).masked(true)
             }),
             has_key,
-            local_model: cx.new(|cx| InputState::new(window, cx).default_value(local_model)),
-            ollama: Ollama::Checking,
-            pull: Job::Idle,
+            local_model,
+            fetch: Job::Idle,
             check: Job::Idle,
             asides: cfg.asides,
-            learn: choice(LEARN, index_of(LEARN, &learn.as_str()), window, cx),
-            submit: choice(SUBMIT, index_of(SUBMIT, &submit), window, cx),
+            learn: pick(LEARN, &learn),
+            submit: pick(SUBMIT, submit),
             history: cfg.history,
             saved: Job::Idle,
+            tab: Section::Speech,
+            copied: false,
             cfg,
         };
-        for entity in [&view.provider, &view.language, &view.learn, &view.submit] {
+        cx.observe_window_appearance(window, |_, window, cx| {
+            Theme::sync_system_appearance(Some(window), cx);
+            look::apply_theme(cx);
+        })
+        .detach();
+        for entity in [&view.provider, &view.language] {
             cx.observe(entity, |_, _, cx| cx.notify()).detach();
         }
-        view.check_ollama(cx);
         view
     }
 
@@ -232,18 +256,15 @@ impl SettingsView {
             changes.push(("LOCALFLOW_MODEL", Some(model).filter(|m| !m.is_empty())));
         } else {
             changes.push(("LOCALFLOW_API_URL", None));
-            let model = self.local_model.read(cx).value().trim().to_string();
-            changes.push(("LOCALFLOW_MODEL", Some(model).filter(|m| !m.is_empty())));
+            changes.push(("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())));
         }
         changes.push(("LOCALFLOW_SPEECH_MODEL", Some(self.speech_model.to_string())));
         changes.push(("LOCALFLOW_SPEECH_GPU", (!self.gpu).then(|| "off".into())));
         let language = chosen(&self.language, LANGUAGES, cx);
         changes.push(("LOCALFLOW_LANGUAGE", (!language.is_empty()).then(|| language.into())));
         changes.push(("LOCALFLOW_ASIDES", (!self.asides).then(|| "keep".into())));
-        let learn = chosen(&self.learn, LEARN, cx);
-        changes.push(("LOCALFLOW_LEARN", (learn != "auto").then(|| learn.into())));
-        let submit = chosen(&self.submit, SUBMIT, cx);
-        changes.push(("LOCALFLOW_SUBMIT", (submit != "said").then(|| submit.into())));
+        changes.push(("LOCALFLOW_LEARN", (self.learn != "auto").then(|| self.learn.into())));
+        changes.push(("LOCALFLOW_SUBMIT", (self.submit != "said").then(|| self.submit.into())));
         changes.push(("LOCALFLOW_HISTORY", (!self.history).then(|| "off".into())));
         changes
     }
@@ -265,20 +286,9 @@ impl SettingsView {
         Localflow::new(Config::from_vars(&get, dir))
     }
 
-    fn check_ollama(&self, cx: &mut Context<Self>) {
-        let lf = Localflow::new(self.cfg.clone());
-        let task = cx.background_executor().spawn(async move { lf.ollama_models() });
-        cx.spawn(async move |this, cx| {
-            let found = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.ollama = match found {
-                    Ok(models) => Ollama::Up(models),
-                    Err(e) => Ollama::Down(e.0),
-                };
-                cx.notify();
-            });
-        })
-        .detach();
+    /// The local model is here (downloaded, or your .gguf file exists).
+    fn local_ready(&self) -> bool {
+        Config { model: self.local_model.clone(), ..self.cfg.clone() }.local_model_installed()
     }
 
     /// Run `work` on its own thread; it reports progress (done, total) and
@@ -345,17 +355,15 @@ impl SettingsView {
         );
     }
 
-    fn pull(&mut self, cx: &mut Context<Self>) {
-        let model = self.local_model.read(cx).value().trim().to_string();
-        let lf = Localflow::new(self.cfg.clone());
-        let cancel = AtomicBool::new(false);
+    /// Download the cleanup model.
+    fn fetch(&mut self, cx: &mut Context<Self>) {
+        let cfg = Config { model: self.local_model.clone(), ..self.cfg.clone() };
         self.job(
             cx,
-            move |progress| lf.ollama_pull(&model, progress, &cancel).map_err(|e| e.0),
-            |this, job| this.pull = job,
+            move |progress| crate::cleanup_model::get_ready(&cfg, progress, &AtomicBool::new(false)),
+            |this, job| this.fetch = job,
             |_| "Downloaded".into(),
         );
-        self.check_ollama(cx);
     }
 
     fn test(&mut self, cx: &mut Context<Self>) {
@@ -364,9 +372,12 @@ impl SettingsView {
             cx,
             move |_| {
                 let model = lf.cfg.model.clone();
-                lf.chat(&model, &[Msg::user("Reply with just: ok")], 32, None)
-                    .map(|_| format!("Works: {model} via {}", lf.cfg.backend()))
-                    .map_err(|e| e.0)
+                let answer = if lf.cfg.local() {
+                    lf.clean("um testing one two three", localflow_core::NO_FILES).map(drop)
+                } else {
+                    lf.chat(&model, &[Msg::user("Reply with just: ok")], 32).map(drop)
+                };
+                answer.map(|_| format!("Works: {model} via {}", lf.cfg.backend())).map_err(|e| e.0)
             },
             |this, job| this.check = job,
             |ok| ok,
@@ -417,97 +428,161 @@ fn percent((done, total): (u64, u64)) -> f32 {
     if total == 0 { 0. } else { done as f32 * 100. / total as f32 }
 }
 
-impl SettingsView {
-    fn section(&self, title: &str, body: impl IntoElement, cx: &App) -> Div {
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(div().text_xs().font_semibold().text_color(cx.theme().muted_foreground).child(title.to_uppercase()))
-            .child(body)
-    }
+/* ------------------------------------------------------------- pieces */
 
-    fn card(cx: &App) -> Div {
-        div()
-            .flex()
-            .flex_col()
-            .rounded_lg()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-    }
+fn icon(name: &str, size: f32, color: Hsla) -> Svg {
+    svg().path(SharedString::from(format!("icons/{name}.svg"))).size(px(size)).flex_none().text_color(color)
+}
 
-    fn row(label: impl Into<SharedString>, hint: Option<SharedString>, control: impl IntoElement, cx: &App) -> Div {
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_4()
-            .px_4()
-            .py_3()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_0p5()
-                    .child(div().text_sm().child(label.into()))
-                    .children(hint.map(|h| div().text_xs().text_color(cx.theme().muted_foreground).child(h))),
-            )
-            .child(div().flex_none().child(control))
+/// Rows between dashed lines, with a dashed line between each.
+fn rows(items: Vec<AnyElement>, p: &Palette) -> Div {
+    let rail = p.rail;
+    let mut list = div().flex().flex_col().w_full().child(look::dashes(false, rail));
+    for item in items {
+        list = list.child(item).child(look::dashes(false, rail));
     }
+    list
+}
 
-    fn status(job: &Job, cx: &App) -> Option<Div> {
-        let theme = cx.theme();
-        match job {
-            Job::Idle => None,
-            Job::Running(Some(p)) if p.1 > 0 => Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().w(px(160.)).child(Progress::new("progress").value(percent(*p))))
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(format!("{} of {}", mb(p.0), mb(p.1)))),
-            ),
-            Job::Running(_) => Some(div().text_xs().text_color(theme.muted_foreground).child("Working…")),
-            Job::Done(text) => Some(div().text_xs().text_color(theme.success).child(text.clone())),
-            Job::Failed(text) => Some(div().text_xs().text_color(theme.danger).child(text.clone())),
+/// A setting: what it is (and a hint) on the left, its control on the right.
+fn setting(title: &str, hint: Option<&str>, control: impl IntoElement, p: &Palette) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .px(px(24.))
+        .py(px(14.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(3.))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.fg).child(title.to_string()))
+                .children(hint.map(|h| div().text_size(px(12.)).line_height(px(17.)).text_color(p.dim).child(h.to_string()))),
+        )
+        .child(div().flex_none().child(control))
+        .into_any_element()
+}
+
+/// A labelled field in the API settings.
+fn labelled(label: &str, control: impl IntoElement, p: &Palette) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .child(div().w(px(96.)).flex_none().text_size(px(13.)).text_color(p.dim).child(label.to_string()))
+        .child(div().flex_1().min_w_0().child(control))
+}
+
+/// A tonal, borderless field around an input.
+fn field(input: impl IntoElement, p: &Palette) -> Div {
+    div().h(px(36.)).flex().items_center().px(px(16.)).rounded_full().bg(p.muted).text_size(px(14.)).child(input)
+}
+
+/// A select that is the pill itself: wrapped in `field`, its own box sat at
+/// the top of the pill instead of in the middle.
+fn select(state: &Choice, p: &Palette) -> Select<SearchableVec<&'static str>> {
+    Select::new(state).appearance(false).small().w_full().h(px(36.)).pl(px(16.)).pr(px(14.)).rounded_full().bg(p.muted).text_size(px(14.))
+}
+
+fn progress_bar(fraction: f32, p: &Palette) -> Div {
+    div()
+        .relative()
+        .w(px(64.))
+        .h(px(3.))
+        .rounded_full()
+        .overflow_hidden()
+        .bg(p.muted)
+        .child(div().absolute().top_0().left_0().h_full().rounded_full().bg(p.primary).w(relative(fraction.clamp(0., 1.))))
+}
+
+fn mono(text: impl Into<SharedString>, p: &Palette) -> Div {
+    div().font_family(look::MONO).text_size(px(12.)).text_color(p.dim).child(text.into())
+}
+
+/// A job's state in a line: progress, done, or what went wrong.
+fn status(job: &Job, p: &Palette) -> Option<Div> {
+    match job {
+        Job::Idle => None,
+        Job::Running(Some(progress)) if progress.1 > 0 => Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(progress_bar(percent(*progress) / 100., p))
+                .child(mono(format!("{} of {}", mb(progress.0), mb(progress.1)), p)),
+        ),
+        Job::Running(_) => Some(div().text_size(px(12.)).text_color(p.dim).child("Working…")),
+        Job::Done(text) => {
+            Some(div().flex().items_center().gap(px(6.)).text_size(px(12.)).text_color(p.primary).child(icon("check", 13., p.primary)).child(text.clone()))
         }
+        Job::Failed(text) => Some(div().text_size(px(12.)).text_color(p.record).child(text.clone())),
     }
+}
 
-    fn speech(&self, cx: &mut Context<Self>) -> Div {
-        let mut list = Self::card(cx);
-        for (i, model) in models::MODELS.iter().enumerate() {
-            let id = model.id;
-            let selected = self.speech_model == id;
-            let job = self.downloads.iter().find(|(d, _, _)| *d == id).map(|(_, j, _)| j.clone());
-            let installed = models::installed(id);
-            let running = matches!(job, Some(Job::Running(_)));
-            let action = if installed {
-                div().text_xs().text_color(cx.theme().success).child("Installed").into_any_element()
-            } else if running {
-                div().into_any_element()
-            } else {
-                Button::new(SharedString::from(format!("get-{id}")))
-                    .label("Download")
-                    .small()
-                    .outline()
-                    .on_click(cx.listener(move |this, _, _, cx| this.download(id, cx)))
-                    .into_any_element()
-            };
-            let theme = cx.theme();
-            list = list.child(
+/* ------------------------------------------------------------ sections */
+
+impl SettingsView {
+    fn speech(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let hover = p.hover;
+        let items = models::MODELS
+            .iter()
+            .enumerate()
+            .map(|(i, model)| {
+                let id = model.id;
+                let selected = self.speech_model == id;
+                let job = self.downloads.iter().find(|(d, _, _)| *d == id).map(|(_, j, _)| j.clone());
+                let action: AnyElement = if models::installed(id) {
+                    mono("Downloaded", p).into_any_element()
+                } else if let Some(job @ Job::Running(_)) = &job {
+                    status(job, p).map_or_else(|| div().into_any_element(), |d| d.into_any_element())
+                } else {
+                    look::secondary_button(SharedString::from(format!("get-{id}")), "Download", true, p)
+                        .on_click(cx.listener(move |this, _, _, cx| this.download(id, cx)))
+                        .into_any_element()
+                };
                 div()
                     .id(SharedString::from(format!("model-{id}")))
+                    .relative()
                     .flex()
                     .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_3()
-                    .when(i > 0, |d| d.border_t_1().border_color(theme.border))
-                    .when(selected, |d| d.bg(theme.accent))
+                    .gap(px(16.))
+                    .px(px(24.))
+                    .py(px(10.))
                     .cursor_pointer()
+                    .when(selected, |d| d.bg(p.tint))
+                    .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                    .child(look::chosen_line(("speech-chosen", i), selected, p))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_baseline()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(if selected { p.fg } else { p.fg.opacity(0.75) })
+                                            .child(model.name),
+                                    )
+                                    .child(mono(format!("{} MB", model.size_mb()), p))
+                                    .when(model.id == models::default_model().id, |d| {
+                                        d.child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.primary).child("Recommended"))
+                                    }),
+                            )
+                            .child(div().text_size(px(12.)).text_color(p.dim).child(model.note))
+                            .children(if let Some(Job::Failed(e)) = &job { Some(div().text_size(px(12.)).text_color(p.record).child(e.clone())) } else { None }),
+                    )
+                    .child(action)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.speech_model = id;
                         if !models::installed(id) && !this.downloads.iter().any(|(d, j, _)| *d == id && matches!(j, Job::Running(_))) {
@@ -515,309 +590,415 @@ impl SettingsView {
                         }
                         cx.notify();
                     }))
+                    .into_any_element()
+            })
+            .collect();
+        let options = look::band(
+            vec![
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .w_full()
+                    .px(px(24.))
+                    .py(px(14.))
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.fg).child("Language"))
+                    .child(div().w(px(160.)).child(select(&self.language, p)))
+                    .into_any_element(),
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .w_full()
+                    .px(px(24.))
+                    .py(px(14.))
                     .child(
                         div()
-                            .size(px(14.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(if selected { theme.primary } else { theme.border })
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .when(selected, |d| d.child(div().size(px(8.)).rounded_full().bg(theme.primary))),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
                             .flex()
                             .flex_col()
-                            .gap_0p5()
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_2()
-                                    .items_baseline()
-                                    .child(div().text_sm().font_medium().child(model.name))
-                                    .child(div().text_xs().text_color(theme.muted_foreground).child(format!("{} MB", model.size_mb())))
-                                    .when(model.id == models::default_model().id, |d| {
-                                        d.child(div().text_xs().font_semibold().text_color(theme.success).child("Recommended"))
-                                    }),
-                            )
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(model.note))
-                            .children(job.as_ref().and_then(|j| Self::status(j, cx))),
+                            .gap(px(2.))
+                            .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.fg).child("Use the GPU"))
+                            .child(div().text_size(px(12.)).text_color(p.dim).child("Off uses only the CPU")),
                     )
-                    .child(action),
-            );
-        }
-        let options = Self::card(cx)
-            .child(Self::row("Language", Some("What you speak".into()), Select::new(&self.language).w(px(180.)).small(), cx))
-            .child(div().border_t_1().border_color(cx.theme().border).child(Self::row(
-                "Use the GPU",
-                Some("Faster when there is one; off uses only the CPU".into()),
-                Switch::new("gpu").checked(self.gpu).on_click(cx.listener(|this, checked, _, cx| {
-                    this.gpu = *checked;
-                    cx.notify();
-                })),
-                cx,
-            )));
-        div().flex().flex_col().gap_3().child(list).child(options)
+                    .child(Switch::new("gpu").checked(self.gpu).on_click(cx.listener(|this, checked, _, cx| {
+                        this.gpu = *checked;
+                        cx.notify();
+                    })))
+                    .into_any_element(),
+            ],
+            p,
+        );
+        div().flex().flex_col().gap(px(20.)).pt(px(20.)).child(rows(items, p)).child(options)
     }
 
-    fn cleanup(&self, cx: &mut Context<Self>) -> Div {
-        let tabs = TabBar::new("cleanup-mode")
-            .segmented()
-            .selected_index(self.api as usize)
-            .children([Tab::new().label("On this computer"), Tab::new().label("With your API key")])
-            .on_click(cx.listener(|this, index: &usize, _, cx| {
-                this.api = *index == 1;
-                this.check = Job::Idle;
-                cx.notify();
-            }));
-        let body = if self.api { self.api_settings(cx) } else { self.local_settings(cx) };
+    fn cleanup(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let hover = p.hover;
+        let choices = [
+            (false, "On this computer", "Private: nothing leaves your machine. localflow runs its own small model."),
+            (true, "With your API key", "Nothing to download. Each dictation goes to the provider you pick."),
+        ];
+        let cells = choices
+            .iter()
+            .enumerate()
+            .map(|(i, (api, title, body))| {
+                let (api, checked) = (*api, self.api == *api);
+                div()
+                    .id(("cleanup-mode", i))
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .gap(px(6.))
+                    .px(px(24.))
+                    .py(px(16.))
+                    .cursor_pointer()
+                    .when(checked, |d| d.bg(p.tint))
+                    .when(!checked, |d| d.hover(move |s| s.bg(hover)))
+                    .child(look::chosen_line(("cleanup-chosen", i), checked, p))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if checked { p.fg } else { p.fg.opacity(0.75) })
+                            .child(*title),
+                    )
+                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.dim).child(*body))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.api = api;
+                        this.check = Job::Idle;
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let detail = if self.api { self.api_settings(p, cx) } else { self.local_settings(p, cx) };
         let test = div()
             .flex()
             .items_center()
-            .gap_3()
-            .px_4()
-            .py_3()
-            .border_t_1()
-            .border_color(cx.theme().border)
+            .gap(px(12.))
             .child(
-                Button::new("test")
-                    .label("Test")
-                    .small()
-                    .outline()
-                    .loading(matches!(self.check, Job::Running(_)))
+                look::secondary_button("test", if matches!(self.check, Job::Running(_)) { "Testing…" } else { "Test" }, !matches!(self.check, Job::Running(_)), p)
                     .on_click(cx.listener(|this, _, _, cx| this.test(cx))),
             )
-            .children(Self::status(&self.check, cx));
-        div().flex().flex_col().gap_3().child(tabs).child(Self::card(cx).child(body).child(test))
-    }
-
-    fn local_settings(&self, cx: &mut Context<Self>) -> Div {
-        let theme = cx.theme();
-        let installed: &[String] = match &self.ollama {
-            Ollama::Up(models) => models,
-            _ => &[],
-        };
-        let status = match &self.ollama {
-            Ollama::Checking => div().text_xs().text_color(theme.muted_foreground).child("Looking for Ollama…"),
-            Ollama::Up(models) => div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(format!("Ollama is running, with {} model{}", models.len(), if models.len() == 1 { "" } else { "s" })),
-            Ollama::Down(_) => div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(div().text_xs().text_color(theme.danger).child("Ollama isn't running."))
-                .child(Button::new("get-ollama").label("Get Ollama").small().link().on_click(|_, _, cx| cx.open_url("https://ollama.com/download")))
-                .child(Button::new("recheck").label("Check again").small().ghost().on_click(cx.listener(|this, _, _, cx| {
-                    this.ollama = Ollama::Checking;
-                    this.check_ollama(cx);
-                    cx.notify();
-                }))),
-        };
-        let typed = self.local_model.read(cx).value().trim().to_string();
-        let have = installed.iter().any(|m| *m == typed || m.strip_suffix(":latest") == Some(typed.as_str()));
-        let mut picks: Vec<String> = LOCAL_MODELS.iter().map(|m| m.to_string()).collect();
-        for m in installed {
-            if !picks.contains(m) {
-                picks.push(m.clone());
-            }
-        }
-        let chips = div().flex().flex_wrap().gap_1().children(picks.into_iter().enumerate().map(|(i, m)| {
-            let input = self.local_model.clone();
-            Button::new(("pick", i)).label(m.clone()).xsmall().ghost().on_click(move |_, window, cx| {
-                input.update(cx, |state, cx| state.set_value(m.clone(), window, cx));
-            })
-        }));
-        let pull = (!have && matches!(self.ollama, Ollama::Up(_))).then(|| {
-            Button::new("pull")
-                .label("Download")
-                .small()
-                .outline()
-                .disabled(matches!(self.pull, Job::Running(_)))
-                .on_click(cx.listener(|this, _, _, cx| this.pull(cx)))
-        });
+            .children(status(&self.check, p));
         div()
             .flex()
             .flex_col()
-            .gap_2()
-            .px_4()
-            .py_3()
-            .child(div().text_sm().child("Cleanup model (Ollama)"))
-            .child(div().flex().gap_2().child(Input::new(&self.local_model).small().flex_1()).children(pull))
-            .child(chips)
-            .children(Self::status(&self.pull, cx))
-            .child(status)
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
-                "Nothing leaves your computer. qwen3.5:4b needs ~3.3 GB of disk and a GPU for fast long dictation; 2b is faster.",
-            ))
+            .pt(px(20.))
+            .child(look::band(cells, p))
+            .child(div().flex().flex_col().gap(px(14.)).px(px(24.)).pt(px(18.)).child(detail).child(test))
     }
 
-    fn api_settings(&self, cx: &mut Context<Self>) -> Div {
-        let id = self.provider_id(cx);
-        let theme = cx.theme();
-        let field = |label: &str, input: AnyElement| {
-            div().flex().flex_col().gap_1().child(div().text_sm().child(label.to_string())).child(input)
+    fn local_settings(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let ready = self.local_ready();
+        let ours = self.local_model == MODEL.id;
+        let (dot, text) = match (ready, ours) {
+            (true, true) => (p.primary, format!("{} is downloaded", MODEL.name)),
+            (true, false) => (p.primary, format!("Using {}", self.local_model)),
+            (false, true) => (p.faint, format!("{} isn't downloaded yet", MODEL.name)),
+            (false, false) => (p.record, format!("{} doesn't exist", self.local_model)),
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .px_4()
-            .py_3()
-            .child(field("Provider", Select::new(&self.provider).small().into_any_element()))
-            .when(id.is_empty(), |d| d.child(field("Base URL", Input::new(&self.api_url).small().into_any_element())))
-            .child(if id == "anthropic" {
-                field(
-                    "Model",
-                    div().text_sm().text_color(theme.muted_foreground).child("Claude Haiku 5.5 (always, on Anthropic)").into_any_element(),
-                )
-            } else {
-                field("Model", Input::new(&self.api_model).small().into_any_element())
-            })
-            .child(field("API key", Input::new(&self.api_key).small().mask_toggle().into_any_element()))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(
-                "Every dictation is sent to this provider. The key is saved where only you can read it.",
-            ))
-    }
-
-    fn dictation(&self, cx: &mut Context<Self>) -> Div {
-        Self::card(cx)
-            .child(Self::row(
-                "Leave out asides",
-                Some("What you say to yourself or to someone else, and what you mutter, isn't pasted".into()),
-                Switch::new("asides").checked(self.asides).on_click(cx.listener(|this, checked, _, cx| {
-                    this.asides = *checked;
-                    cx.notify();
-                })),
-                cx,
-            ))
-            .child(div().border_t_1().border_color(cx.theme().border).child(Self::row(
-                "Learn from your fixes",
-                Some("When you correct a misheard word, it's spelled right from then on".into()),
-                Select::new(&self.learn).w(px(200.)).small(),
-                cx,
-            )))
-            .child(div().border_t_1().border_color(cx.theme().border).child(Self::row(
-                "Send prompts to coding agents",
-                Some("Press Enter after pasting into Claude Code, Codex...".into()),
-                Select::new(&self.submit).w(px(200.)).small(),
-                cx,
-            )))
-            .child(div().border_t_1().border_color(cx.theme().border).child(Self::row(
-                "Keep a history",
-                Some("What you said and what went out, on this computer only".into()),
-                Switch::new("history").checked(self.history).on_click(cx.listener(|this, checked, _, cx| {
-                    this.history = *checked;
-                    cx.notify();
-                })),
-                cx,
-            )))
-    }
-
-    fn keys(&self, cx: &mut Context<Self>) -> Div {
-        let theme = cx.theme();
-        let text = |t: &str| div().text_sm().child(t.to_string());
-        let body = if cfg!(target_os = "macos") {
-            div().flex().flex_col().gap_1().px_4().py_3()
-                .child(text("Hold Option+Shift+Space and talk, or tap it, talk, and tap again. Esc cancels."))
-                .child(text("Option+Shift+L learns from the sentence you fixed (select it first)."))
-        } else if cfg!(windows) {
-            div().flex().flex_col().gap_1().px_4().py_3()
-                .child(text("Hold Ctrl+Shift+Space and talk, or tap it, talk, and tap again. Esc cancels."))
-                .child(text("Ctrl+Alt+Space learns from the sentence you fixed (select it first)."))
-        } else {
-            let bindings = crate::session::linux_bindings();
-            let copy = bindings.clone();
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .px_4()
-                .py_3()
-                .child(text("Bind keys to localflow's commands. On Hyprland, add these to ~/.config/hypr/bindings.lua:"))
-                .child(
-                    div()
-                        .p_3()
-                        .rounded_md()
-                        .bg(theme.muted)
-                        .font_family("monospace")
-                        .text_xs()
-                        .children(bindings.lines().map(|l| div().child(l.to_string()))),
-                )
-                .child(div().flex().child(Button::new("copy-bindings").label("Copy").small().outline().on_click(
-                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())),
-                )))
-        };
-        Self::card(cx).child(body)
-    }
-}
-
-impl Render for SettingsView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let ready = models::installed(self.speech_model);
-        let header = div()
+        let busy = matches!(self.fetch, Job::Running(_));
+        let status_line = div()
             .flex()
             .items_center()
-            .justify_between()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_2xl().font_bold().child("localflow"))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child("Talk, and get clean text where you type.")),
-            )
+            .gap(px(8.))
+            .text_size(px(13.))
+            .text_color(p.fg)
+            .child(div().size(px(8.)).rounded_full().bg(dot))
+            .child(text)
+            .when(!ready && ours, |d| {
+                d.child(div().flex_1()).child(
+                    look::secondary_button("get-model", if busy { "Downloading…" } else { "Download" }, !busy, p)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !busy {
+                                this.fetch(cx);
+                            }
+                        })),
+                )
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(status_line)
+            .when(ours, |d| d.child(mono(format!("{} MB, runs inside localflow, on the GPU when there is one", MODEL.size_mb()), p)))
+            .children(status(&self.fetch, p))
+    }
+
+    fn api_settings(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let id = self.provider_id(cx);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(labelled("Provider", select(&self.provider, p), p))
+            .when(id.is_empty(), |d| d.child(labelled("Base URL", field(Input::new(&self.api_url).appearance(false), p), p)))
+            .child(if id == "anthropic" {
+                labelled("Model", div().text_size(px(13.)).text_color(p.fg).child("Claude Haiku 5.5, always on Anthropic"), p)
+            } else {
+                labelled("Model", field(Input::new(&self.api_model).appearance(false), p), p)
+            })
+            .child(labelled("API key", field(Input::new(&self.api_key).appearance(false).mask_toggle(), p), p))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .text_xs()
-                    .child(div().size(px(8.)).rounded_full().bg(if ready { theme.success } else { theme.warning }))
-                    .child(if ready { "Speech model ready" } else { "Download a speech model" }),
-            );
-        let footer = div()
-            .flex()
-            .items_center()
-            .justify_end()
-            .gap_3()
-            .px_6()
-            .py_3()
-            .border_t_1()
-            .border_color(theme.border)
-            .bg(theme.background)
-            .children(Self::status(&self.saved, cx))
-            .child(Button::new("save").label("Save").primary().on_click(cx.listener(|this, _, _, cx| this.save(cx))));
+                    .gap(px(6.))
+                    .pl(px(112.))
+                    .text_size(px(12.))
+                    .text_color(p.dim)
+                    .child(icon("lock", 12., p.dim))
+                    .child("Every dictation goes to this provider. Only you can read the key."),
+            )
+    }
+
+    fn dictation(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
+        let this = cx.entity();
+        let learn_options: Vec<(&'static str, SharedString)> = LEARN.iter().map(|(label, v)| (*v, SharedString::from(*label))).collect();
+        let learn = look::chips(
+            "learn",
+            &learn_options,
+            self.learn,
+            {
+                let this = this.clone();
+                move |v, _, cx| {
+                    this.update(cx, |this, cx| {
+                        this.learn = v;
+                        cx.notify();
+                    })
+                }
+            },
+            p,
+            window,
+        );
+        let submit_options: Vec<(&'static str, SharedString)> =
+            SUBMIT.iter().map(|(label, v)| (*v, SharedString::from(if *v == "said" { "When you say “send it”" } else { label }))).collect();
+        let submit = look::chips(
+            "submit",
+            &submit_options,
+            self.submit,
+            move |v, _, cx| {
+                this.update(cx, |this, cx| {
+                    this.submit = v;
+                    cx.notify();
+                })
+            },
+            p,
+            window,
+        );
+        let stacked = |title: &str, hint: &str, control: AnyElement| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .px(px(24.))
+                .py(px(14.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.fg).child(title.to_string()))
+                        .child(div().text_size(px(12.)).text_color(p.dim).child(hint.to_string())),
+                )
+                .child(control)
+                .into_any_element()
+        };
+        div().pt(px(20.)).child(rows(
+            vec![
+                setting(
+                    "Leave out asides",
+                    Some("What you say to yourself or to someone else, and what you mutter, isn't pasted"),
+                    Switch::new("asides").checked(self.asides).on_click(cx.listener(|this, checked, _, cx| {
+                        this.asides = *checked;
+                        cx.notify();
+                    })),
+                    p,
+                ),
+                stacked("Learn from your fixes", "When you correct a misheard word, it's spelled right from then on", learn),
+                stacked("Send prompts to coding agents", "Press Enter after pasting into Claude Code, Codex and the like", submit),
+                setting(
+                    "Keep a history",
+                    Some("What you said and what went out, on this computer only"),
+                    Switch::new("history").checked(self.history).on_click(cx.listener(|this, checked, _, cx| {
+                        this.history = *checked;
+                        cx.notify();
+                    })),
+                    p,
+                ),
+            ],
+            p,
+        ))
+    }
+
+    fn keys(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        if cfg!(target_os = "linux") {
+            let bindings = super::onboarding::bindings(true);
+            let copy = bindings.clone();
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(16.))
+                .px(px(24.))
+                .pt(px(24.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(16.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(13.))
+                                .line_height(px(20.))
+                                .text_color(p.dim)
+                                .child("Your compositor owns the keys, so nothing runs between dictations. On Hyprland, add these to ~/.config/hypr/bindings.lua:"),
+                        )
+                        .child(look::secondary_button("copy-bindings", if self.copied { "Copied" } else { "Copy" }, true, p).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                                this.copied = true;
+                                cx.notify();
+                            },
+                        ))),
+                )
+                .child(
+                    div()
+                        .rounded(px(10.))
+                        .bg(p.muted)
+                        .px(px(16.))
+                        .py(px(14.))
+                        .font_family(look::MONO)
+                        .text_size(px(11.))
+                        .line_height(px(19.))
+                        .text_color(p.fg.opacity(0.8))
+                        .overflow_hidden()
+                        .children(bindings.lines().map(|l| div().whitespace_nowrap().child(l.to_string()))),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(18.))
+                        .text_color(p.dim)
+                        .child("F10 dictates raw (the words as heard), F8 learns from a fix. On other desktops, bind keys to “localflow toggle”, or “localflow start” on press and “localflow stop” on release."),
+                );
+        }
+        let mac = cfg!(target_os = "macos");
+        let caps = |keys: &[(&'static str, &'static str, bool)]| {
+            div().flex().gap(px(6.)).children(keys.iter().map(|(glyph, label, wide)| look::keycap(glyph, label, *wide, false, p))).into_any_element()
+        };
+        let (dictate, learn): (look::Keys, look::Keys) = if mac {
+            (&[("option", "option", false), ("arrow-big-up", "shift", false), ("", "space", true)], &[("option", "option", false), ("arrow-big-up", "shift", false), ("", "L", false)])
+        } else {
+            (&[("", "Ctrl", false), ("", "Shift", false), ("", "Space", true)], &[("", "Ctrl", false), ("", "Alt", false), ("", "Space", true)])
+        };
+        div().pt(px(20.)).child(rows(
+            vec![
+                setting("Dictate", Some("Hold the keys and talk, or tap them, talk, and tap again"), caps(dictate), p),
+                setting("Learn from a fix", Some("Select the sentence you fixed, then press these"), caps(learn), p),
+                setting("Cancel", Some("While you dictate: nothing is pasted"), caps(&[("", "esc", false)]), p),
+            ],
+            p,
+        ))
+    }
+}
+
+impl Render for SettingsView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = Palette::of(window);
+        let this = cx.entity();
+        let tabs = look::chips(
+            "tabs",
+            &[
+                (Section::Speech, "Speech".into()),
+                (Section::Cleanup, "Cleanup".into()),
+                (Section::Dictation, "Dictation".into()),
+                (Section::Keys, "Keys".into()),
+            ],
+            self.tab,
+            move |tab, _, cx| {
+                this.update(cx, |this, cx| {
+                    this.tab = tab;
+                    cx.notify();
+                })
+            },
+            &p,
+            window,
+        );
+        let content = match self.tab {
+            Section::Speech => self.speech(&p, cx),
+            Section::Cleanup => self.cleanup(&p, cx),
+            Section::Dictation => self.dictation(&p, window, cx),
+            Section::Keys => self.keys(&p, cx),
+        };
+        let ready = models::installed(self.speech_model);
+        let footer_status = Self::footer_status(&self.saved, ready, &p);
+        let rail = p.rail;
+        let tab_index = self.tab as usize;
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.secondary)
-            .text_color(theme.foreground)
+            .bg(p.bg)
+            .text_color(p.fg)
+            .font_family(look::SANS)
+            .text_size(px(14.))
+            .child(div().flex_none().h(px(48.)).flex().items_center().justify_center().child(tabs))
+            .child(look::dashes(false, rail))
+            .child(
+                div().flex_1().min_h_0().flex().justify_center().overflow_hidden().child(
+                    div()
+                        .relative()
+                        .w(px(COLUMN))
+                        .h_full()
+                        .child(div().absolute().top_0().bottom_0().left_0().child(look::dashes(true, rail)))
+                        .child(div().absolute().top_0().bottom_0().right_0().child(look::dashes(true, rail)))
+                        .child(
+                            div()
+                                .id("settings-scroll")
+                                .relative()
+                                .size_full()
+                                .overflow_y_scroll()
+                                .child(content)
+                                .with_animation(
+                                    ("settings-tab", tab_index),
+                                    Animation::new(std::time::Duration::from_millis(320)).with_easing(ease_out_quint()),
+                                    |el, t| el.opacity(t).top(px((1. - t) * 6.)),
+                                ),
+                        ),
+                ),
+            )
+            .child(look::dashes(false, rail))
             .child(
                 div()
-                    .id("settings")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_6()
-                            .px_6()
-                            .py_5()
-                            .child(header)
-                            .child(self.section("Speech to text", self.speech(cx), cx))
-                            .child(self.section("Cleanup", self.cleanup(cx), cx))
-                            .child(self.section("While you dictate", self.dictation(cx), cx))
-                            .child(self.section("Keys", self.keys(cx), cx)),
-                    ),
+                    .flex_none()
+                    .h(px(64.))
+                    .px(px(24.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(footer_status))
+                    .child(look::primary_button("save", "Save", true, &p).on_click(cx.listener(|this, _, _, cx| this.save(cx)))),
             )
-            .child(footer)
+    }
+}
+
+impl SettingsView {
+    fn footer_status(saved: &Job, ready: bool, p: &Palette) -> Div {
+        if let Some(line) = status(saved, p) {
+            return line;
+        }
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(12.))
+            .text_color(p.dim)
+            .child(div().size(px(7.)).rounded_full().bg(if ready { p.primary } else { p.record }))
+            .child(if ready { "Speech model ready" } else { "Download a speech model" })
     }
 }

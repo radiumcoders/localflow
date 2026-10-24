@@ -100,7 +100,7 @@ impl Dictation {
         if !raw {
             let warm = lf.clone();
             std::thread::spawn(move || {
-                // With Ollama, load the model while you speak (nothing to do on an API).
+                // Load the local model while you speak (nothing to do on an API).
                 if let Err(e) = warm.warm(&warm.cfg.model) {
                     info(format_args!("warm failed: {e}"));
                 }
@@ -224,7 +224,8 @@ impl Dictation {
             let keys = if cfg!(target_os = "macos") { "Cmd+V" } else { "Ctrl+V" };
             return message(&format!("Copied: paste with {keys}"), 2500);
         }
-        0
+        // A moment of "it went in", once the text is there.
+        message(if sent { "Sent" } else { "Pasted" }, 900)
     }
 }
 

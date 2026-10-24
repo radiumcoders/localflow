@@ -31,6 +31,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true   # llama.cpp, for the cleanup model
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v2-portable-ggml
@@ -42,12 +44,12 @@ jobs:
       - name: WiX (the .msi)
         if: runner.os == 'Windows'
         run: dotnet tool install --global wix --version 5.0.2
-      - name: Linux packages (headers to build, Vulkan shaders; Xvfb, paste tools, speech to test)
+      - name: Linux packages (headers to build, Vulkan shaders and SPIR-V headers; Xvfb, paste tools, speech to test)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
-            libfontconfig-dev libfreetype-dev libvulkan-dev glslc \
+            libfontconfig-dev libfreetype-dev libvulkan-dev glslc spirv-headers \
             xvfb xclip xdotool espeak-ng ffmpeg mesa-vulkan-drivers libvulkan1 libfuse2t64
       - name: Build
         shell: bash
@@ -59,6 +61,58 @@ jobs:
         if: runner.os != 'Linux'
         shell: bash
         run: cargo xtask installed build/localflow-"$VERSION"-*.$([[ $RUNNER_OS == Windows ]] && echo msi || echo dmg)
+      # The pill, as it shows on this OS: a screenshot to look at (Windows
+      # used to draw a window frame around it).
+      - name: The pill, on screen (Windows)
+        continue-on-error: true
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Start-Process target/release/localflow.exe -ArgumentList '_message', 'Transcribing', '8000'
+          Start-Sleep 3
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD/build/pill-${{ matrix.name }}.png")
+      - name: The pill, on screen (macOS)
+        continue-on-error: true
+        if: runner.os == 'macOS'
+        run: |
+          target/release/localflow _message Transcribing 8000 &
+          sleep 3
+          screencapture -x build/pill-${{ matrix.name }}.png || true
+      - name: The pill, on screen (Linux)
+        continue-on-error: true
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" bash -c \
+            'target/release/localflow _message Transcribing 8000 & sleep 3; ffmpeg -loglevel error -f x11grab -video_size 1280x800 -i "$DISPLAY" -frames:v 1 build/pill-${{ matrix.name }}.png'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pill-${{ matrix.name }}
+          path: build/pill-*.png
+          if-no-files-found: ignore
+      # Cleanup on this computer: localflow downloads its own model and runs
+      # it in-process (llama.cpp inside the binary, nothing else installed).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/localflow/models/localflow-clean-*.gguf
+            ~/Library/Application Support/localflow/models/localflow-clean-*.gguf
+            ~/AppData/Local/localflow/models/localflow-clean-*.gguf
+          key: localflow-clean-${{ hashFiles('crates/core/src/local.rs') }}
+      - name: The cleanup model, in localflow
+        shell: bash
+        env:
+          LOCALFLOW_API_URL: ""
+          LOCALFLOW_MODEL: ""
+        run: |
+          bin=target/release/localflow$([[ $RUNNER_OS == Windows ]] && echo .exe || true)
+          "$bin" models download localflow-clean
+          "$bin" --check
+          echo "the meeting is at three uh no four" | "$bin" -
       - name: Log
         if: always()
         shell: bash
@@ -88,7 +142,7 @@ jobs:
           ls -l installers
           gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" \
             --title "localflow ${GITHUB_REF_NAME#v}" --notes-file - <<'EOF'
-          localflow, a native app written in Rust, with its own speech engine. The first time you open it, a short onboarding walks you through it: a speech model (it downloads while you go on), where cleanup runs (on this computer with Ollama, or with your API key), what macOS asks to allow, your keys on Linux, and a dictation you try right in the window.
+          localflow, a native app written in Rust, with its own speech engine. The first time you open it, a short onboarding walks you through it: a speech model (it downloads while you go on), where cleanup runs (on this computer with localflow's own small model, which it downloads while you go on, or with your API key), what macOS asks to allow, your keys on Linux, and a dictation you try right in the window.
 
           **Windows:** `localflow-…-x64.msi`. Open it, then open localflow from the Start menu: the first time, the onboarding opens. The installer isn't signed yet: in the SmartScreen warning, click **More info**, then **Run anyway**.
 

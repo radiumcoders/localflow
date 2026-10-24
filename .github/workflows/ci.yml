@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true   # llama.cpp, for the cleanup model
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v2-portable-ggml

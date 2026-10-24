@@ -1,0 +1,4 @@
+[submodule "crates/llm/llama.cpp"]
+	path = crates/llm/llama.cpp
+	url = https://github.com/ggml-org/llama.cpp
+	shallow = true

@@ -109,8 +109,22 @@ fn anthropic(url: &str, extra: &[(&str, &str)], name: &str) -> Localflow {
 #[test]
 fn local_default() {
     let cfg = config(&[], temp_dir("local"));
-    assert_eq!(cfg.model, "qwen3.5:4b");
-    assert!(cfg.api_url.is_empty());
+    assert_eq!((cfg.model.as_str(), cfg.review_model.as_str()), ("localflow-clean", "off"));
+    assert!(cfg.local() && cfg.cleanup_gpu);
+    assert!(cfg.model_file().ends_with("localflow/models/localflow-clean-q4_k_m.gguf"));
+    // An Ollama model saved before localflow ran its own means ours; a .gguf file is used as it is.
+    let cfg = config(&[("LOCALFLOW_MODEL", "qwen3.5:4b"), ("LOCALFLOW_REVIEW_MODEL", "qwen3.5:4b")], temp_dir("local-old"));
+    assert_eq!((cfg.model.as_str(), cfg.review_model.as_str()), ("localflow-clean", "off"));
+    let cfg = config(&[("LOCALFLOW_MODEL", "/m/mine.gguf"), ("LOCALFLOW_CLEANUP_GPU", "off")], temp_dir("local-file"));
+    assert_eq!((cfg.model_file(), cfg.cleanup_gpu), (PathBuf::from("/m/mine.gguf"), false));
+}
+
+#[test]
+fn local_model_not_downloaded_says_so() {
+    let lf = Localflow::new(config(&[("LOCALFLOW_MODEL", "/nowhere/missing.gguf")], temp_dir("local-missing")));
+    assert!(!lf.cfg.local_model_installed());
+    let e = lf.clean("um hi", NO_FILES).unwrap_err();
+    assert!(e.0.contains("isn't downloaded"), "{e}");
 }
 
 #[test]
@@ -121,7 +135,7 @@ fn anthropic_is_always_haiku() {
     assert!(lf.cfg.anthropic);
     assert_eq!((lf.cfg.model.as_str(), lf.cfg.review_model.as_str()), ("claude-haiku-5-5", "claude-haiku-5-5"));
     assert_eq!(lf.clean("meet at 3 wait at 2", NO_FILES).unwrap(), "Meet at 3 wait at 2.");
-    lf.chat("claude-opus-5-5", &[Msg::user("hi")], 8, None).unwrap();
+    lf.chat("claude-opus-5-5", &[Msg::user("hi")], 8).unwrap();
     assert!(seen.lock().unwrap().iter().all(|(_, _, b)| b["model"] == "claude-haiku-5-5"));
 }
 
@@ -163,7 +177,7 @@ fn openai_compatible() {
 #[test]
 fn provider_without_model_says_so() {
     let lf = Localflow::new(config(&[("LOCALFLOW_API_URL", "groq")], temp_dir("nomodel")));
-    let e = lf.chat(&lf.cfg.model, &[Msg::user("hi")], 8, None).unwrap_err();
+    let e = lf.chat(&lf.cfg.model, &[Msg::user("hi")], 8).unwrap_err();
     assert!(e.0.contains("LOCALFLOW_MODEL"), "{e}");
 }
 
@@ -255,8 +269,8 @@ fn reasoning_models_get_a_minimal_request() {
     });
     let lf = Localflow::new(config(&[("LOCALFLOW_API_URL", &url), ("LOCALFLOW_MODEL", "gpt-5"),
                                      ("LOCALFLOW_API_KEY", "k")], temp_dir("minimal")));
-    assert_eq!(lf.chat("gpt-5", &[Msg::user("hi")], 8, None).unwrap(), "Ok.");
-    assert_eq!(lf.chat("gpt-5", &[Msg::user("hi")], 8, None).unwrap(), "Ok.");
+    assert_eq!(lf.chat("gpt-5", &[Msg::user("hi")], 8).unwrap(), "Ok.");
+    assert_eq!(lf.chat("gpt-5", &[Msg::user("hi")], 8).unwrap(), "Ok.");
     let bodies = bodies.lock().unwrap();
     assert_eq!(bodies.len(), 3, "one refusal, then minimal requests only");
     assert!(bodies[1].get("max_tokens").is_none() && bodies[2].get("max_tokens").is_none());
@@ -296,15 +310,15 @@ fn asides_can_be_kept() {
 #[test]
 fn settings_are_saved_to_the_env_file() {
     let dir = temp_dir("save");
-    std::fs::write(dir.join("env"), "# mine\nLOCALFLOW_MODEL=qwen3.5:2b\nLOCALFLOW_KEEP_ALIVE=5m\n").unwrap();
+    std::fs::write(dir.join("env"), "# mine\nLOCALFLOW_MODEL=qwen3.5:2b\nLOCALFLOW_CLEANUP_GPU=off\n").unwrap();
     save_settings(&dir, &[("LOCALFLOW_MODEL", None), ("LOCALFLOW_API_URL", Some("anthropic")),
                           ("LOCALFLOW_ASIDES", Some("keep"))]).unwrap();
     let text = std::fs::read_to_string(dir.join("env")).unwrap();
-    assert_eq!(text, "# mine\nLOCALFLOW_KEEP_ALIVE=5m\nLOCALFLOW_API_URL=anthropic\nLOCALFLOW_ASIDES=keep\n");
+    assert_eq!(text, "# mine\nLOCALFLOW_CLEANUP_GPU=off\nLOCALFLOW_API_URL=anthropic\nLOCALFLOW_ASIDES=keep\n");
     save_api_key(&dir, " sk-test \n").unwrap();
     let cfg = config(&[], dir.clone());
     assert!(cfg.anthropic && !cfg.asides);
-    assert_eq!(cfg.keep_alive, "5m");
+    assert!(!cfg.cleanup_gpu);
     assert_eq!(std::fs::read_to_string(cfg.key_file()).unwrap(), "sk-test\n");
     #[cfg(unix)]
     {

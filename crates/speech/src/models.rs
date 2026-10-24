@@ -1,7 +1,7 @@
 //! Speech models: whisper.cpp's ggml files from Hugging Face, kept in a
 //! per-user folder, downloaded (checked by size and SHA-256) when you pick one.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -183,24 +183,41 @@ pub fn download(id: &str, progress: &mut dyn FnMut(u64, u64), cancel: &AtomicBoo
         download(VAD.id, &mut |_, _| {}, cancel)?;
     }
     let dest = model.path();
-    if model.installed() {
-        progress(model.size, model.size);
-        return Ok(dest);
-    }
-    let dir = models_dir();
-    fs::create_dir_all(&dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let part = dir.join(format!("{}.part", model.file));
-    fetch(model, &model.url(), &part, progress, cancel)?;
-    fs::rename(&part, &dest).map_err(|e| Error(format!("{}: {e}", dest.display())))?;
+    download_file(model.name, &model.url(), model.size, model.sha256, &dest, progress, cancel)?;
     Ok(dest)
 }
 
-fn fetch(model: &Model, url: &str, part: &Path, progress: &mut dyn FnMut(u64, u64), cancel: &AtomicBool) -> Result<()> {
+/// Download `url` to `dest`, checked by size and SHA-256 (any file, the
+/// cleanup model too). Bytes come in to `dest`.part first, and a partial one
+/// resumes where it stopped. `name` is for messages.
+pub fn download_file(name: &str, url: &str, size: u64, sha256: &str, dest: &Path,
+                     progress: &mut dyn FnMut(u64, u64), cancel: &AtomicBool) -> Result<()> {
+    if fs::metadata(dest).is_ok_and(|m| m.len() == size) {
+        progress(size, size);
+        return Ok(());
+    }
+    let dir = dest.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    let mut part = dest.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    fetch(&File { name, size, sha256 }, url, &part, progress, cancel)?;
+    fs::rename(&part, dest).map_err(|e| Error(format!("{}: {e}", dest.display())))
+}
+
+/// What fetch checks a download against.
+struct File<'a> {
+    name: &'a str,
+    size: u64,
+    sha256: &'a str,
+}
+
+fn fetch(model: &File, url: &str, part: &Path, progress: &mut dyn FnMut(u64, u64), cancel: &AtomicBool) -> Result<()> {
     let io = |e: std::io::Error| Error(format!("{}: {e}", part.display()));
     // What an earlier, interrupted download got: hash it, then ask for the rest.
     let mut hasher = Sha256::new();
     let mut have = 0u64;
-    if let Ok(mut f) = File::open(part) {
+    if let Ok(mut f) = fs::File::open(part) {
         let mut buf = vec![0u8; 1 << 16];
         loop {
             let n = f.read(&mut buf).map_err(io)?;
@@ -231,7 +248,7 @@ fn fetch(model: &Model, url: &str, part: &Path, progress: &mut dyn FnMut(u64, u6
         // The server sent the whole file: start over.
         hasher = Sha256::new();
         have = 0;
-        File::create(part).map_err(io)?
+        fs::File::create(part).map_err(io)?
     };
     let mut body = resp.into_reader();
     let mut buf = vec![0u8; 1 << 16];
