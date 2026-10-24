@@ -8,8 +8,6 @@ publish = false
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "ico"] }
-regex = "1.11"
-serde_json = "1.0"
 ureq = "2.12"
 
 [target.'cfg(windows)'.dependencies]

@@ -35,6 +35,3 @@ windows-sys = { version = "0.60", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
-
-[dev-dependencies]
-regex = "1.11"

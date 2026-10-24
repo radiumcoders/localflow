@@ -5,7 +5,6 @@
 //!     cargo xtask installed build/localflow-…                   # install it, check it, remove it
 
 mod check;
-mod fake_api;
 mod icon;
 mod keys;
 mod package;

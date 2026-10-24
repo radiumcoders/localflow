@@ -1,6 +1,6 @@
 [package]
 name = "localflow-core"
-description = "localflow's dictation cleanup: its own model on this computer, or rules, few-shot examples, provider clients and a review pass; learned words"
+description = "localflow's dictation cleanup with its own model, localflow-clean, on this computer; learned words"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -12,5 +12,6 @@ vulkan = ["localflow-llm/vulkan"]
 [dependencies]
 localflow-llm = { path = "../llm" }
 regex = "1.11"
+
+[dev-dependencies]
 serde_json = "1.0"
-ureq = { version = "2.12", features = ["json"] }

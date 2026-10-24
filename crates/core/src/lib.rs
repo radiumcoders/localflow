@@ -3,10 +3,8 @@
 //! A raw speech-to-text transcript goes in; what the speaker meant to write
 //! comes out: self-corrections applied, filler dropped, punctuation, lists and
 //! headings, names spelled the way the speaker's vocabulary says. Runs
-//! localflow's own model on this computer (in this process, see local.rs), or
-//! a hosted API with your own key (Anthropic always uses Claude Haiku 5.5),
-//! where a few-shot draft is followed by automatic checks whose problems (if
-//! any) a fresh call repairs.
+//! localflow's own model, localflow-clean, on this computer (in this process,
+//! see local.rs): nothing is sent anywhere.
 //!
 //! ```no_run
 //! let lf = localflow_core::Localflow::new(localflow_core::Config::from_env());
@@ -15,23 +13,18 @@
 //! ```
 
 pub mod agent;
-mod chat;
 mod cleanup;
 mod config;
 pub mod difflib;
 pub mod eval;
 pub mod local;
-pub mod prompts;
 mod vocab;
 
 use std::fmt;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
-use std::time::Duration;
 
-pub use chat::Msg;
-pub use cleanup::{Cleaned, Part, file_refs, find_problems, markdown_headings, plausible, prefix_messages, user_turn};
-pub use config::{Config, config_dir, home, save_api_key, save_settings};
+pub use cleanup::{Cleaned, Part, file_refs, markdown_headings, plausible, user_turn};
+pub use config::{Config, config_dir, home, save_settings};
 pub use vocab::{Hint, corrections, edited_region};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,22 +47,15 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(Error(msg.into()))
 }
 
-/// The cleanup engine: settings, plus the local model or the HTTP client for
-/// a hosted one.
+/// The cleanup engine: settings, plus the model once it's loaded.
 pub struct Localflow {
     pub cfg: Config,
     /// The local model, once loaded; freed with this Localflow.
     engine: Mutex<Option<localflow_llm::Model>>,
-    agent: ureq::Agent,
-    /// Reasoning models (OpenAI's o-series, gpt-5) reject temperature and
-    /// max_tokens; after the first such refusal, send only model and messages.
-    api_minimal: AtomicBool,
 }
 
 impl Localflow {
     pub fn new(cfg: Config) -> Localflow {
-        // Some providers' firewalls block clients without a User-Agent.
-        let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(120)).user_agent("localflow").build();
-        Localflow { cfg, engine: Mutex::new(None), agent, api_minimal: AtomicBool::new(false) }
+        Localflow { cfg, engine: Mutex::new(None) }
     }
 }

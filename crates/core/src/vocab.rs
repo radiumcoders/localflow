@@ -5,20 +5,21 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde_json::Value;
 
 use crate::difflib::{SequenceMatcher, Tag};
-use crate::prompts::{COMMON, JUDGE_SYSTEM};
-use crate::{Localflow, Msg, Result};
+use crate::Localflow;
 
 /// Names and terms that ship with localflow, before your own.
 const WORDS: &str = include_str!("../../../words.txt");
+
+/// Everyday words: swapping one for another ("there" -> "their") is grammar,
+/// not a name or term to remember.
+pub const COMMON: &str = "a about all also am an and any are as at be been being big but by can could day did do does done down eight even few first five for four from get go going good got great had has have he her here hers him his how i if in into is it its just know last left less like made make many may me might mine more most much must my need new next nine no not now of old on one only or our ours out over really right said say see seven shall she should six small so some take ten than that the their theirs them then there these they think this those three time to too two up us very want was way we well were what when where which who whom whose why will with would year yes you your yours";
 
 /// A term and the ways speech recognition mishears it.
 pub type Hint = (String, Vec<String>);
 
 static QUOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"]+)""#).unwrap());
-static JSON_OBJECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\{.*\}").unwrap());
 
 const PUNCT: &[char] = &['.', ',', ';', ':', '!', '?', '"', '\'', '(', ')', '[', ']'];
 
@@ -46,46 +47,6 @@ impl Localflow {
                 Some((term.trim().to_string(), QUOTED.captures_iter(heard).map(|c| c[1].to_string()).collect()))
             })
             .collect()
-    }
-
-    pub fn rules(&self) -> String {
-        let mut system = crate::prompts::SYSTEM.to_string();
-        if self.cfg.asides {
-            system += "\n";
-            system += crate::prompts::ASIDES_RULE;
-        }
-        let words = self.vocabulary();
-        if !words.is_empty() {
-            system += "\n\nSpeaker's vocabulary (use these exact spellings):\n";
-            system += &words.iter().map(|w| format!("- {w}")).collect::<Vec<_>>().join("\n");
-        }
-        system
-    }
-
-    /// Of the changes you made to a pasted dictation, the ones that fix a
-    /// misheard word, not a change of mind. Asks the cleanup model; none on
-    /// this computer, whose model only knows how to clean up (the learn key
-    /// still learns what you select).
-    pub fn mishearings(&self, pasted: &str, edited: &str, pairs: &[(String, String)], model: &str)
-        -> Result<Vec<(String, String)>> {
-        if pairs.is_empty() || self.cfg.local() {
-            return Ok(vec![]);
-        }
-        let listed: Vec<String> =
-            pairs.iter().enumerate().map(|(i, (h, m))| format!("{}. \"{h}\" -> \"{m}\"", i + 1)).collect();
-        let out = self.chat(model, &[
-            Msg::system(JUDGE_SYSTEM),
-            Msg::user(format!("PASTED:\n{pasted}\n\nEDITED:\n{edited}\n\nCHANGES:\n{}", listed.join("\n"))),
-        ], 200)?;
-        let found = JSON_OBJECT.find(&out).map_or(out.as_str(), |m| m.as_str());
-        let Ok(Value::Object(answer)) = serde_json::from_str::<Value>(found) else { return Ok(vec![]) };
-        let mut seen = HashSet::new();
-        Ok(answer.get("learn").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
-            .iter()
-            .filter_map(Value::as_i64)
-            .filter(|&i| i >= 1 && i as usize <= pairs.len() && seen.insert(i))
-            .map(|i| pairs[i as usize - 1].clone())
-            .collect())
     }
 
     /// Add corrections to your vocabulary as 'Claude: often heard as "Claw"'

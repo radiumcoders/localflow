@@ -1,23 +1,14 @@
 //! The cleanup against parity.json: what the original Python version of
-//! localflow returned for about a thousand cases (prompts, checks, headings,
-//! file references, learning's diffs), kept as the reference now that
-//! localflow is Rust only. When you change the prompts or examples on
-//! purpose, write the new ones into it with
-//!
-//!     UPDATE_PARITY=1 cargo test -p localflow-core --test parity
+//! localflow returned for about a thousand cases (the dictation turn,
+//! headings, file references, learning's diffs), kept as the reference now
+//! that localflow is Rust only.
 
 use localflow_core::difflib::{SequenceMatcher, Tag};
-use localflow_core::{Config, Localflow, Part, eval};
+use localflow_core::{Part, eval};
 use serde_json::{Value, json};
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("parity.json")).unwrap()
-}
-
-/// No learned words: only the vocabulary that ships with localflow.
-fn engine() -> Localflow {
-    let dir = std::env::temp_dir().join(format!("localflow-parity-{}", std::process::id()));
-    Localflow::new(Config::from_vars(&|_| None, dir))
 }
 
 fn strs(v: &Value) -> Vec<String> {
@@ -29,19 +20,7 @@ fn s(v: &Value) -> &str {
 }
 
 #[test]
-fn prompts_and_examples() {
-    let lf = engine();
-    let messages: Vec<Value> = localflow_core::prefix_messages(&lf.rules(), lf.cfg.asides)
-        .iter()
-        .map(|m| json!({"role": m.role, "content": m.content}))
-        .collect();
-    if std::env::var_os("UPDATE_PARITY").is_some() {
-        let mut all = fixture();
-        all["prefix"] = Value::Array(messages.clone());
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/parity.json");
-        std::fs::write(path, serde_json::to_string_pretty(&all).unwrap() + "\n").unwrap();
-    }
-    assert_eq!(Value::Array(messages), fixture()["prefix"]);
+fn user_turn() {
     for c in fixture()["user_turn"].as_array().unwrap() {
         assert_eq!(localflow_core::user_turn(s(&c[0]), &strs(&c[1])), s(&c[2]));
     }
@@ -51,14 +30,6 @@ fn prompts_and_examples() {
 fn markdown_headings() {
     for c in fixture()["headings"].as_array().unwrap() {
         assert_eq!(localflow_core::markdown_headings(s(&c[0])), s(&c[1]), "input: {:?}", c[0]);
-    }
-}
-
-#[test]
-fn find_problems() {
-    let hints = engine().misheard_hints();
-    for c in fixture()["problems"].as_array().unwrap() {
-        assert_eq!(localflow_core::find_problems(s(&c[0]), s(&c[1]), &hints), strs(&c[2]), "case: {c}");
     }
 }
 

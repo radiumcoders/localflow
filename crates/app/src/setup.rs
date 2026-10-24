@@ -1,10 +1,9 @@
 //! Setting localflow up on this computer: the settings, the speech model,
 //! and the app itself where it has to be.
 //!
-//!     localflow setup                          # cleanup on this computer (downloads its model)
-//!     localflow setup --api anthropic          # with your key (LOCALFLOW_API_KEY, or asked for)
-//!     localflow setup --api openai --model gpt-5-nano
+//!     localflow setup                          # downloads the speech and cleanup models
 //!     localflow setup --speech-model base.en
+//!     localflow setup --model ~/models/mine.gguf   # a cleanup model of your own
 //!
 //! The settings window does the same when you press Save. Per OS:
 //! Linux: run from the AppImage, it copies itself to ~/.local/share/localflow/app
@@ -16,17 +15,16 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::AtomicBool;
 
-use localflow_core::{Config, Localflow, Msg, NO_FILES, config_dir, home, prompts::HAIKU, save_api_key, save_settings};
+use localflow_core::{Config, Localflow, NO_FILES, config_dir, home, save_settings};
 use localflow_speech::models;
 
-const USAGE: &str = "localflow setup [--api PROVIDER|URL] [--model MODEL] [--speech-model ID] [--no-start]";
+const USAGE: &str = "localflow setup [--model FILE.gguf] [--speech-model ID] [--no-start]";
 
 pub fn run(args: &[String]) -> ExitCode {
-    let (mut api, mut model, mut speech, mut start) = (None, None, None, true);
+    let (mut model, mut speech, mut start) = (None, None, true);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--api" => api = it.next().cloned(),
             "--model" => model = it.next().cloned(),
             "--speech-model" => speech = it.next().cloned(),
             "--no-start" => start = false,
@@ -37,12 +35,6 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     }
     let dir = config_dir();
-    let anthropic = api.as_deref().is_some_and(|a| a.eq_ignore_ascii_case("anthropic"));
-    let model = if anthropic { Some(HAIKU.to_string()) } else { model };
-    if api.is_some() && model.is_none() {
-        eprintln!("localflow: name the provider's model with --model (any but Anthropic, which is always Claude Haiku)");
-        return ExitCode::from(2);
-    }
     let speech = speech.unwrap_or_else(|| models::default_model().id.to_string());
     let Some(info) = models::MODELS.iter().find(|m| m.id == speech) else {
         eprintln!("localflow: no speech model {speech} (see `localflow models`)");
@@ -50,19 +42,14 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     println!("== settings in {}", dir.display());
     let changes = [
-        ("LOCALFLOW_API_URL", api.as_deref()),
-        ("LOCALFLOW_MODEL", model.as_deref().or(api.is_none().then_some(localflow_core::local::MODEL.id))),
+        ("LOCALFLOW_MODEL", Some(model.as_deref().unwrap_or(localflow_core::local::MODEL.id))),
         ("LOCALFLOW_SPEECH_MODEL", Some(info.id)),
+        // From before localflow ran only its own model.
+        ("LOCALFLOW_API_URL", None),
+        ("LOCALFLOW_API_KEY", None),
     ];
     if let Err(e) = save_settings(&dir, &changes) {
         eprintln!("localflow: couldn't save the settings: {e}");
-        return ExitCode::FAILURE;
-    }
-    if api.is_some()
-        && let Ok(key) = std::env::var("LOCALFLOW_API_KEY")
-        && let Err(e) = save_api_key(&dir, &key)
-    {
-        eprintln!("localflow: couldn't save the key: {e}");
         return ExitCode::FAILURE;
     }
 
@@ -84,8 +71,8 @@ pub fn run(args: &[String]) -> ExitCode {
     println!("   in {}", models::models_dir().display());
 
     let lf = Localflow::new(Config::from_env());
-    println!("== cleanup: {} via {}", lf.cfg.model, lf.cfg.backend());
-    if lf.cfg.local() && !lf.cfg.local_model_installed() {
+    println!("== cleanup: {}", lf.cfg.model);
+    if !lf.cfg.local_model_installed() {
         println!("   downloading {}", crate::cleanup_model::described());
         let mut last = u64::MAX;
         let mut progress = |done: u64, total: u64| {
@@ -100,12 +87,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    let answer = if lf.cfg.local() {
-        lf.clean("um testing one two three", NO_FILES).map(drop)
-    } else {
-        lf.chat(&lf.cfg.model.clone(), &[Msg::user("Reply with just: ok")], 32).map(drop)
-    };
-    match answer {
+    match lf.clean("um testing one two three", NO_FILES).map(drop) {
         Ok(()) => println!("   it answers"),
         Err(e) => {
             eprintln!("localflow: {} doesn't answer: {e}", lf.cfg.model);

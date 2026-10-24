@@ -20,10 +20,10 @@ use std::time::{Duration, Instant};
 
 use localflow_core::{Config, Localflow, config_dir};
 use localflow_desktop::hotkey::{self, HotkeyController, HotkeyEvent};
-use localflow_desktop::learn::{last_dictation, learn_correction, watch};
+use localflow_desktop::learn::learn_correction;
 use localflow_desktop::paths::{self, error, info, make_run_dir, run_dir};
 
-use crate::dictation::{Dictation, learns_on_its_own};
+use crate::dictation::Dictation;
 use crate::ui::{self, Start, UiMsg};
 
 const PORT: u16 = 11437;
@@ -326,32 +326,6 @@ pub fn learn() -> ExitCode {
             });
         }),
     });
-    ExitCode::SUCCESS
-}
-
-/// Watch for your fixes to what was just pasted, from a short-lived process
-/// of its own (the session exits right after pasting). ~25 MB while it does.
-pub fn watch_for_fixes(pid: Option<u32>, stamp: f64) {
-    if !learns_on_its_own() {
-        return;
-    }
-    if let Err(e) = spawn(&["_watch", &pid.unwrap_or(0).to_string(), &stamp.to_string()]) {
-        info(format_args!("couldn't watch for fixes: {e}"));
-    }
-}
-
-/// `_watch PID STAMP`: the Linux watcher, for the dictation with that stamp.
-pub fn run_watch(args: &[String]) -> ExitCode {
-    let pid = args.first().and_then(|p| p.parse::<u32>().ok()).filter(|&p| p != 0);
-    let stamp: Option<f64> = args.get(1).and_then(|s| s.parse().ok());
-    if let (Some((text, latest)), Some(stamp)) = (last_dictation(), stamp)
-        && latest == stamp
-    {
-        let lf = Localflow::new(Config::from_env());
-        // What it learned: a notification on Linux (any desktop has them), the pill elsewhere.
-        let tell = |m: String| if cfg!(target_os = "linux") { localflow_desktop::notify(&m, 4000) } else { show(&m, 3000) };
-        watch(&lf, &text, pid, stamp, &tell);
-    }
     ExitCode::SUCCESS
 }
 

@@ -36,6 +36,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v2-portable-ggml
+      # localflow's own cleanup model, which setup downloads (and runs
+      # in-process) in the installed-app checks below.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/localflow/models/localflow-clean-*.gguf
+            ~/Library/Application Support/localflow/models/localflow-clean-*.gguf
+            ~/AppData/Local/localflow/models/localflow-clean-*.gguf
+          key: localflow-clean-${{ hashFiles('crates/core/src/local.rs') }}
       - name: Version
         shell: bash
         run: |
@@ -94,19 +103,9 @@ jobs:
           name: pill-${{ matrix.name }}
           path: build/pill-*.png
           if-no-files-found: ignore
-      # Cleanup on this computer: localflow downloads its own model and runs
-      # it in-process (llama.cpp inside the binary, nothing else installed).
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.local/share/localflow/models/localflow-clean-*.gguf
-            ~/Library/Application Support/localflow/models/localflow-clean-*.gguf
-            ~/AppData/Local/localflow/models/localflow-clean-*.gguf
-          key: localflow-clean-${{ hashFiles('crates/core/src/local.rs') }}
       - name: The cleanup model, in localflow
         shell: bash
         env:
-          LOCALFLOW_API_URL: ""
           LOCALFLOW_MODEL: ""
         run: |
           bin=target/release/localflow$([[ $RUNNER_OS == Windows ]] && echo .exe || true)
@@ -142,7 +141,7 @@ jobs:
           ls -l installers
           gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" \
             --title "localflow ${GITHUB_REF_NAME#v}" --notes-file - <<'EOF'
-          localflow, a native app written in Rust, with its own speech engine. The first time you open it, a short onboarding walks you through it: a speech model (it downloads while you go on), where cleanup runs (on this computer with localflow's own small model, which it downloads while you go on, or with your API key), what macOS asks to allow, your keys on Linux, and a dictation you try right in the window.
+          localflow, a native app written in Rust, with its own speech engine. The first time you open it, a short onboarding walks you through it: a speech model (it downloads while you go on), localflow's own cleanup model, localflow-clean (it downloads too, and runs on your computer: nothing leaves it), what macOS asks to allow, your keys on Linux, and a dictation you try right in the window.
 
           **Windows:** `localflow-…-x64.msi`. Open it, then open localflow from the Start menu: the first time, the onboarding opens. The installer isn't signed yet: in the SmartScreen warning, click **More info**, then **Run anyway**.
 
