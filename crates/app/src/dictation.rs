@@ -17,7 +17,7 @@ use localflow_speech::{RATE, Recorder, Transcript, level, read_wav};
 
 use crate::ui::{Ui, UiMsg};
 
-/// Speech to text with the model and language from the settings, nudged
+/// Speech to text with the model from the settings, nudged
 /// towards the spellings in your vocabulary.
 pub fn transcribe(lf: &Localflow, samples: &[i16]) -> Result<Transcript, String> {
     let words: Vec<String> = lf
@@ -33,7 +33,6 @@ fn speech_config(cfg: &Config, vocabulary: Vec<String>) -> localflow_speech::Spe
     localflow_speech::SpeechConfig {
         model: cfg.speech_model.clone(),
         use_gpu: cfg.speech_gpu,
-        language: cfg.language.clone(),
         vocabulary,
         ..Default::default()
     }

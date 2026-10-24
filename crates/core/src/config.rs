@@ -14,7 +14,6 @@
 //! LOCALFLOW_CLEANUP_GPU   off to clean up on the CPU (default: the GPU when there is one)
 //! LOCALFLOW_SPEECH_MODEL  speech model id (see `localflow models`; default: the recommended one)
 //! LOCALFLOW_SPEECH_GPU    off to transcribe on the CPU (default: the GPU when there is one)
-//! LOCALFLOW_LANGUAGE      what you speak, e.g. en or de (default: detected, English for .en models)
 //! LOCALFLOW_ASIDES        keep to paste what you say to yourself or others while dictating
 //!                         (default: drop it, see prompts::ASIDES_RULE)
 //! LOCALFLOW_SUBMIT        in a coding agent, press Enter after pasting: said (when you end
@@ -47,8 +46,6 @@ pub struct Config {
     pub speech_model: Option<String>,
     /// Transcribe on the GPU when there is one.
     pub speech_gpu: bool,
-    /// The language you speak (a code like "en"), or None to detect it.
-    pub language: Option<String>,
     /// Leave out asides: what you say to yourself or to someone else, and
     /// what you mutter (rule 12).
     pub asides: bool,
@@ -130,7 +127,6 @@ impl Config {
             api_key: var("LOCALFLOW_API_KEY").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
             speech_model: var("LOCALFLOW_SPEECH_MODEL").filter(|m| !m.is_empty()),
             speech_gpu: !off(var("LOCALFLOW_SPEECH_GPU")),
-            language: var("LOCALFLOW_LANGUAGE").map(|l| l.trim().to_lowercase()).filter(|l| !l.is_empty() && l != "auto"),
             asides: !matches!(var("LOCALFLOW_ASIDES").map(|v| v.trim().to_lowercase()).as_deref(), Some("keep" | "off" | "0" | "no")),
             submit: Submit::parse(var("LOCALFLOW_SUBMIT").as_deref()),
             history: !off(var("LOCALFLOW_HISTORY")),

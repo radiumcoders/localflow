@@ -134,15 +134,10 @@ struct Pick {
     body: &'static str,
 }
 
-const ENGLISH: [Pick; 3] = [
+const PICKS: [Pick; 3] = [
     Pick { id: "base.en", name: "Base", body: "The quickest to load. Good for short notes." },
     Pick { id: "small.en", name: "Small", body: "Fast on any recent computer. Spells names right." },
     Pick { id: "large-v3-turbo", name: "Large", body: "The most accurate. Best with a GPU." },
-];
-const ANY_LANGUAGE: [Pick; 3] = [
-    Pick { id: "base", name: "Base", body: "The quickest to load. Good for short notes." },
-    Pick { id: "small", name: "Small", body: "A good balance of speed and accuracy." },
-    Pick { id: "large-v3-turbo", name: "Large", body: "The most accurate in every language. Best with a GPU." },
 ];
 const RECOMMENDED: usize = 1;
 
@@ -213,7 +208,6 @@ pub struct Onboarding {
     index: usize,
     /// 1 going forward, -1 going back: where the next step slides in from.
     direction: f32,
-    english: bool,
     speech: &'static str,
     api: bool,
     /// localflow-clean, or the .gguf file the env file names.
@@ -239,7 +233,6 @@ impl Onboarding {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Onboarding {
         let cfg = Config::from_env();
         let speech = models::resolve(cfg.speech_model.as_deref()).id;
-        let english = !matches!(speech, "base" | "small");
         let has_key = cfg.api_key.is_some() || cfg.key_file().exists();
         // Opened again: start from what's saved.
         let saved_url = std::env::var("LOCALFLOW_API_URL").ok().or_else(|| env_file_value(&cfg, "LOCALFLOW_API_URL")).unwrap_or_default();
@@ -280,7 +273,6 @@ impl Onboarding {
             platform: Platform::current(),
             index: 0,
             direction: 1.,
-            english,
             speech,
             api,
             local_model,
@@ -316,12 +308,8 @@ impl Onboarding {
         self.platform.steps()[self.index]
     }
 
-    fn picks(&self) -> &'static [Pick; 3] {
-        if self.english { &ENGLISH } else { &ANY_LANGUAGE }
-    }
-
     fn pick(&self) -> &'static Pick {
-        self.picks().iter().find(|p| p.id == self.speech).unwrap_or(&self.picks()[RECOMMENDED])
+        PICKS.iter().find(|p| p.id == self.speech).unwrap_or(&PICKS[RECOMMENDED])
     }
 
     fn speech_job(&self, cx: &App) -> Option<Job> {
@@ -712,27 +700,9 @@ impl Onboarding {
             )
     }
 
-    fn speech(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
-        let this = cx.entity();
-        let language = chips(
-            "language",
-            &[(true, "English".into()), (false, "Other languages".into())],
-            self.english,
-            move |english, _, cx| {
-                this.update(cx, |this, cx| {
-                    if this.english != english {
-                        this.english = english;
-                        this.speech = this.picks()[RECOMMENDED].id;
-                        cx.notify();
-                    }
-                })
-            },
-            p,
-            window,
-        );
+    fn speech(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
         let chosen = self.pick().id;
-        let cells = self
-            .picks()
+        let cells = PICKS
             .iter()
             .enumerate()
             .map(|(i, pick)| {
@@ -775,21 +745,12 @@ impl Onboarding {
         div()
             .flex()
             .flex_col()
-            .child(head("How it hears you", "A speech model turns your voice into words, right here on this computer. Pick one; it downloads while you finish setting up.", p))
+            .child(head("How it hears you", "A speech model turns your English into words, right here on this computer. Pick one; it downloads while you finish setting up.", p))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(20.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(12.))
-                            .child(div().text_size(px(14.)).text_color(p.dim).child("You speak"))
-                            .child(language),
-                    )
                     .child(band(cells, p))
                     .child(note("cpu", "Runs on your GPU when there is one, and loads only while it transcribes.", p)),
             )
@@ -1161,7 +1122,7 @@ impl Onboarding {
             Platform::Linux => ("F9", "Super Ctrl X toggles"),
         };
         let cells = [
-            ("Speech", format!("{}{}", pick.name, if self.english { " (English)" } else { "" }), speech_note),
+            ("Speech", pick.name.to_string(), speech_note),
             ("Cleanup", where_.to_string(), what),
             ("Keys", keys.0.to_string(), keys.1.to_string()),
         ]
@@ -1329,7 +1290,7 @@ impl Render for Onboarding {
         };
         let content = match step {
             Step::Welcome => self.welcome(&p, cx),
-            Step::Speech => self.speech(&p, window, cx),
+            Step::Speech => self.speech(&p, cx),
             Step::Cleanup => self.cleanup(&p, window, cx),
             Step::Permissions => self.permissions(&p, cx),
             Step::Keys => self.keys(&p, cx),

@@ -33,20 +33,6 @@ pub(super) const PROVIDERS: &[(&str, &str)] = &[
 ];
 const LEARN: &[(&str, &str)] = &[("On its own", "auto"), ("Only with the learn key", "key"), ("Off", "off")];
 const SUBMIT: &[(&str, &str)] = &[("When you say \"send it\"", "said"), ("Always", "always"), ("Never", "never")];
-const LANGUAGES: &[(&str, &str)] = &[
-    ("Detect it", ""),
-    ("English", "en"),
-    ("German", "de"),
-    ("French", "fr"),
-    ("Spanish", "es"),
-    ("Italian", "it"),
-    ("Portuguese", "pt"),
-    ("Dutch", "nl"),
-    ("Polish", "pl"),
-    ("Hindi", "hi"),
-    ("Japanese", "ja"),
-    ("Chinese", "zh"),
-];
 
 type Choice = Entity<SelectState<SearchableVec<&'static str>>>;
 
@@ -128,7 +114,6 @@ pub struct SettingsView {
     cfg: Config,
     speech_model: &'static str,
     downloads: Vec<(&'static str, Job, Arc<AtomicBool>)>,
-    language: Choice,
     gpu: bool,
     api: bool,
     provider: Choice,
@@ -194,7 +179,6 @@ impl SettingsView {
         let provider_name = file("LOCALFLOW_API_URL").unwrap_or_default().trim().to_lowercase();
         let custom = !provider_name.is_empty() && !PROVIDERS.iter().any(|(_, id)| *id == provider_name);
         let provider_ix = if custom { PROVIDERS.len() - 1 } else { index_of(PROVIDERS, &provider_name.as_str()) };
-        let language = cfg.language.clone().unwrap_or_default();
         let learn = file("LOCALFLOW_LEARN").unwrap_or_else(|| "auto".into()).trim().to_lowercase();
         let submit = cfg.submit.value().unwrap_or("said");
         let has_key = cfg.api_key.is_some() || cfg.key_file().exists();
@@ -204,7 +188,6 @@ impl SettingsView {
         let view = SettingsView {
             speech_model: models::resolve(cfg.speech_model.as_deref()).id,
             downloads: vec![],
-            language: choice(LANGUAGES, index_of(LANGUAGES, &language.as_str()), window, cx),
             gpu: cfg.speech_gpu,
             api: !cfg.api_url.is_empty(),
             provider: choice(PROVIDERS, provider_ix, window, cx),
@@ -235,9 +218,7 @@ impl SettingsView {
             look::apply_theme(cx);
         })
         .detach();
-        for entity in [&view.provider, &view.language] {
-            cx.observe(entity, |_, _, cx| cx.notify()).detach();
-        }
+        cx.observe(&view.provider, |_, _, cx| cx.notify()).detach();
         view
     }
 
@@ -260,8 +241,8 @@ impl SettingsView {
         }
         changes.push(("LOCALFLOW_SPEECH_MODEL", Some(self.speech_model.to_string())));
         changes.push(("LOCALFLOW_SPEECH_GPU", (!self.gpu).then(|| "off".into())));
-        let language = chosen(&self.language, LANGUAGES, cx);
-        changes.push(("LOCALFLOW_LANGUAGE", (!language.is_empty()).then(|| language.into())));
+        // localflow is English only now: drop a language saved before.
+        changes.push(("LOCALFLOW_LANGUAGE", None));
         changes.push(("LOCALFLOW_ASIDES", (!self.asides).then(|| "keep".into())));
         changes.push(("LOCALFLOW_LEARN", (self.learn != "auto").then(|| self.learn.into())));
         changes.push(("LOCALFLOW_SUBMIT", (self.submit != "said").then(|| self.submit.into())));
@@ -595,17 +576,6 @@ impl SettingsView {
             .collect();
         let options = look::band(
             vec![
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.))
-                    .w_full()
-                    .px(px(24.))
-                    .py(px(14.))
-                    .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.fg).child("Language"))
-                    .child(div().w(px(160.)).child(select(&self.language, p)))
-                    .into_any_element(),
                 div()
                     .flex()
                     .items_center()
