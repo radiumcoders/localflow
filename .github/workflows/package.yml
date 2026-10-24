@@ -44,12 +44,12 @@ jobs:
       - name: WiX (the .msi)
         if: runner.os == 'Windows'
         run: dotnet tool install --global wix --version 5.0.2
-      - name: Linux packages (headers to build, Vulkan shaders; Xvfb, paste tools, speech to test)
+      - name: Linux packages (headers to build, Vulkan shaders and SPIR-V headers; Xvfb, paste tools, speech to test)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
-            libfontconfig-dev libfreetype-dev libvulkan-dev glslc \
+            libfontconfig-dev libfreetype-dev libvulkan-dev glslc spirv-headers \
             xvfb xclip xdotool espeak-ng ffmpeg mesa-vulkan-drivers libvulkan1 libfuse2t64
       - name: Build
         shell: bash
