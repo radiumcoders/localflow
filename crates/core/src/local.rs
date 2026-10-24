@@ -32,7 +32,7 @@ pub const MODEL: ModelFile = ModelFile {
     id: "localflow-clean",
     name: "localflow's cleanup model",
     file: "localflow-clean-q4_k_m.gguf",
-    url: "https://huggingface.co/radiumcoders/localflow-clean/resolve/main/localflow-clean-q4_k_m.gguf",
+    url: "https://huggingface.co/Radiumcoders/localflow-clean/resolve/main/localflow-clean-q4_k_m.gguf",
     size: 350_373_280,
     sha256: "0fa7ba4e4a38b50067a2dbd6eb01ce2e0aa6db755afc4a216cffd27566eb3206",
 };
