@@ -10,13 +10,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use localflow_core::Part;
-use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, SysFreeString, WPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, GlobalFree, HWND, LPARAM, LRESULT, SysFreeString, WPARAM};
 use windows_sys::Win32::System::Com::{CLSIDFromString, CoCreateInstance, CoInitializeEx};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock};
+use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW};
 use windows_sys::Win32::System::Variant::{VARIANT, VariantClear};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, keybd_event};

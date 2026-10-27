@@ -231,7 +231,9 @@ fn dictate(exe: &Path, testbox: &Path, wav: &Path, seconds: f32, dir: &Path) -> 
             std::thread::sleep(held); // held: hold to talk
             crate::keys::hotkey(false);
         }
-        let text = wait_for(90, |t| {
+        // GitHub's macOS runners have no GPU: Metal there transcribes 2 s of
+        // speech in ~20 s and cleans up in ~60 s (89.5 s in all, once).
+        let text = wait_for(180, |t| {
             let new = &t[start.min(t.len())..];
             new.contains("done in") || new.contains("failed") || new.contains("nothing heard")
         });
