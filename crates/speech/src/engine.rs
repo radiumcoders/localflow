@@ -45,9 +45,13 @@ pub struct SpeechConfig {
     pub threads: usize,
 }
 
+/// The GPU when the setting doesn't say: yes, except on an Intel Mac, where
+/// Metal on the integrated GPUs is slower than the CPU, or crashes.
+pub const GPU_DEFAULT: bool = !cfg!(all(target_os = "macos", target_arch = "x86_64"));
+
 impl Default for SpeechConfig {
     fn default() -> Self {
-        SpeechConfig { model: None, use_gpu: true, vocabulary: Vec::new(), threads: 0 }
+        SpeechConfig { model: None, use_gpu: GPU_DEFAULT, vocabulary: Vec::new(), threads: 0 }
     }
 }
 
@@ -58,7 +62,11 @@ impl SpeechConfig {
         let var = |k: &str| get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         SpeechConfig {
             model: var("LOCALFLOW_SPEECH_MODEL"),
-            use_gpu: !matches!(var("LOCALFLOW_SPEECH_GPU").as_deref(), Some("0" | "off" | "false" | "no" | "cpu")),
+            use_gpu: match var("LOCALFLOW_SPEECH_GPU").as_deref().map(str::to_lowercase).as_deref() {
+                Some("0" | "off" | "false" | "no" | "cpu") => false,
+                Some(_) => true,
+                None => GPU_DEFAULT,
+            },
             vocabulary: Vec::new(),
             threads: 0,
         }

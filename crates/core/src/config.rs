@@ -1,6 +1,6 @@
-//! Settings: LOCALFLOW_* variables, also read from the env file install.py
-//! writes (~/.config/localflow/env, %APPDATA%\localflow\env, one VAR=value per
-//! line). A variable set in the environment wins.
+//! Settings: LOCALFLOW_* variables, also read from the env file the settings
+//! window writes (~/.config/localflow/env, %APPDATA%\localflow\env, one
+//! VAR=value per line). A variable set in the environment wins.
 //!
 //! ```text
 //! LOCALFLOW_MODEL         the cleanup model: localflow-clean (the default) or a .gguf file
@@ -58,6 +58,19 @@ fn off(value: Option<String>) -> bool {
     matches!(value.map(|v| v.trim().to_lowercase()).as_deref(), Some("off" | "0" | "no" | "false"))
 }
 
+/// Whether the GPU is used when the setting doesn't say: yes, except on an
+/// Intel Mac, where Metal is slower than the CPU (or crashes) on the
+/// integrated GPUs those have.
+pub const GPU_DEFAULT: bool = !cfg!(all(target_os = "macos", target_arch = "x86_64"));
+
+/// A GPU setting: on/off as said, else the default.
+fn gpu(value: Option<String>) -> bool {
+    match value {
+        Some(v) if !v.trim().is_empty() => !off(Some(v)),
+        _ => GPU_DEFAULT,
+    }
+}
+
 fn read_env_file(path: &Path) -> HashMap<String, String> {
     let Ok(text) = std::fs::read_to_string(path) else { return HashMap::new() };
     text.lines()
@@ -80,9 +93,9 @@ impl Config {
         // An Ollama model name from before localflow ran its own model means ours.
         let model = var("LOCALFLOW_MODEL").map(|m| m.trim().to_string()).filter(|m| m.ends_with(".gguf"));
         Config {
-            cleanup_gpu: !off(var("LOCALFLOW_CLEANUP_GPU")),
+            cleanup_gpu: gpu(var("LOCALFLOW_CLEANUP_GPU")),
             speech_model: var("LOCALFLOW_SPEECH_MODEL").filter(|m| !m.is_empty()),
-            speech_gpu: !off(var("LOCALFLOW_SPEECH_GPU")),
+            speech_gpu: gpu(var("LOCALFLOW_SPEECH_GPU")),
             submit: Submit::parse(var("LOCALFLOW_SUBMIT").as_deref()),
             history: !off(var("LOCALFLOW_HISTORY")),
             model: model.unwrap_or_else(|| MODEL.id.into()),

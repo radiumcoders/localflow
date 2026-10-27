@@ -52,7 +52,9 @@ jobs:
           echo "VERSION=$v" >> "$GITHUB_ENV"
       - name: WiX (the .msi)
         if: runner.os == 'Windows'
-        run: dotnet tool install --global wix --version 5.0.2
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
       - name: Linux packages (headers to build, Vulkan shaders and SPIR-V headers; Xvfb, paste tools, speech to test)
         if: runner.os == 'Linux'
         run: |

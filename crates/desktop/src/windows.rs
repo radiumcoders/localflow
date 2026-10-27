@@ -16,7 +16,7 @@ use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW};
 use windows_sys::Win32::System::Variant::{VARIANT, VariantClear};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, keybd_event};
@@ -145,6 +145,7 @@ fn set_data(format: u32, data: &[u8]) -> bool {
         std::ptr::copy_nonoverlapping(data.as_ptr(), p, data.len());
         GlobalUnlock(mem);
         if !open_clipboard() {
+            GlobalFree(mem);
             return false;
         }
         EmptyClipboard();
@@ -201,6 +202,18 @@ fn held(vk: u16) -> bool {
     unsafe { GetAsyncKeyState(i32::from(vk)) as u16 & 0x8000 != 0 }
 }
 
+/// Wait (up to 2 s) for Ctrl, Shift and Alt to be let go: a tap to stop
+/// finishes a short dictation while the hotkey's keys are still down, and
+/// Ctrl+V with Shift held is another shortcut in many programs.
+fn wait_for_modifiers() {
+    for _ in 0..100 {
+        if ![VK_CONTROL, VK_SHIFT, VK_MENU].iter().any(|&vk| held(vk)) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn restore_later(old: Option<String>) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(1));
@@ -212,11 +225,16 @@ fn restore_later(old: Option<String>) {
 
 pub fn paste(parts: &[Part]) -> bool {
     let old = clipboard_get();
+    wait_for_modifiers();
     for (i, part) in parts.iter().enumerate() {
-        match part {
+        let set = match part {
             Part::File(path) => set_files(&[Path::new(path)]),
             Part::Text(text) => clipboard_set(text),
         };
+        if !set {
+            // Another program holds the clipboard: Ctrl+V would paste whatever was there.
+            return false;
+        }
         std::thread::sleep(Duration::from_millis(50));
         press(b'V', true);
         if i + 1 < parts.len() {

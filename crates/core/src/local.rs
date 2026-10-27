@@ -100,7 +100,15 @@ impl Localflow {
             if !self.cfg.local_model_installed() {
                 return err(format!("{} isn't downloaded yet", MODEL.name));
             }
-            *engine = Some(localflow_llm::Model::load(&self.cfg.model_file(), self.cfg.cleanup_gpu, CONTEXT).map_err(Error)?);
+            let path = self.cfg.model_file();
+            let model = match localflow_llm::Model::load(&path, self.cfg.cleanup_gpu, CONTEXT) {
+                // A GPU that can't run it (a broken driver, too little memory): the CPU can.
+                Err(e) if self.cfg.cleanup_gpu => {
+                    localflow_llm::Model::load(&path, false, CONTEXT).map_err(|cpu| Error(format!("{e}; on the CPU: {cpu}")))?
+                }
+                loaded => loaded.map_err(Error)?,
+            };
+            *engine = Some(model);
         }
         Ok(())
     }

@@ -70,14 +70,21 @@ fn unpack() -> Result<PathBuf, String> {
     let io = |e: std::io::Error| format!("{}: {e}", dir.display());
     std::fs::create_dir_all(&dir).map_err(io)?;
     for old in std::fs::read_dir(&dir).map_err(io)?.flatten() {
-        if old.file_name().to_string_lossy().starts_with(prefix) {
+        let name = old.file_name().to_string_lossy().into_owned();
+        // Not another process's copy still being written (.tmp).
+        if name.starts_with(prefix) && !name.ends_with(".tmp") {
             let _ = std::fs::remove_file(old.path());
         }
     }
     let bytes = zstd::decode_all(PACKED).map_err(|e| format!("the cleanup engine is damaged: {e}"))?;
     let tmp = dir.join(format!("{prefix}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, bytes).map_err(io)?;
-    std::fs::rename(&tmp, &path).map_err(io)?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        if !path.exists() {
+            return Err(io(e)); // (another process wrote it first: use theirs)
+        }
+    }
     Ok(path)
 }
 

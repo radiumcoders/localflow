@@ -317,7 +317,7 @@ fn windows(steps: &mut Steps, msi: &Path, dir: &Path) {
     let exe = program_files.join("localflow").join("localflow.exe"); // backslashes, as the Run entry has it
     let shortcut = env_dir("ProgramData", || "C:\\ProgramData".into()).join("Microsoft/Windows/Start Menu/Programs/localflow.lnk");
     let run_entry = || {
-        Command::new("reg").args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "localflow"]).output()
+        Command::new("reg").args(["query", r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "localflow"]).output()
             .ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).to_string())
     };
     let msiexec = |args: &[&str]| -> Result<(), String> {
@@ -340,6 +340,14 @@ fn windows(steps: &mut Steps, msi: &Path, dir: &Path) {
         Ok(format!("{}, Start menu shortcut, starts at sign-in", exe.display()))
     });
     if ok {
+        steps.step("started by the installer", || {
+            let up = (0..20).any(|_| {
+                std::thread::sleep(Duration::from_millis(500));
+                running()
+            });
+            stop_background();
+            if up { Ok("the background app came up after the install".into()) } else { Err("not running after the install".into()) }
+        });
         if steps.step("setup in the app", || setup(&exe, true)) {
             steps.step("background app", || background(&stop_background));
         }

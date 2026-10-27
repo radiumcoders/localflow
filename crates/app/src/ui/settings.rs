@@ -165,6 +165,7 @@ impl SettingsView {
             ("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())),
             ("LOCALFLOW_SPEECH_MODEL", Some(self.speech_model.to_string())),
             ("LOCALFLOW_SPEECH_GPU", (!self.gpu).then(|| "off".into())),
+            ("LOCALFLOW_CLEANUP_GPU", (!self.gpu).then(|| "off".into())),
             ("LOCALFLOW_SUBMIT", (self.submit != "said").then(|| self.submit.into())),
             ("LOCALFLOW_HISTORY", (!self.history).then(|| "off".into())),
             // Settings localflow no longer has: drop them from an older env file.
@@ -301,7 +302,10 @@ impl SettingsView {
 pub(super) fn after_save() -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| e.to_string())?.display().to_string();
     let linux = cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some();
-    let mac = cfg!(target_os = "macos") && me.contains(".app/Contents/MacOS/") && !me.starts_with("/Volumes/");
+    // Not from the disk image or Gatekeeper's temporary copy of a downloaded
+    // app (/private/var/.../AppTranslocation/...): neither is there after a restart.
+    let mac = cfg!(target_os = "macos") && me.contains(".app/Contents/MacOS/") && !me.starts_with("/Volumes/")
+        && !me.contains("/AppTranslocation/");
     if linux || mac {
         crate::setup::install_app(false)?;
     }
@@ -557,7 +561,7 @@ impl SettingsView {
             .flex_col()
             .gap(px(12.))
             .child(status_line)
-            .when(ours, |d| d.child(mono(format!("{} MB, runs inside localflow, on the GPU when there is one", MODEL.size_mb()), p)))
+            .when(ours, |d| d.child(mono(format!("{} MB, runs inside localflow{}", MODEL.size_mb(), if cfg!(any(target_os = "macos", feature = "vulkan")) { ", on the GPU when there is one" } else { ", on the CPU for now" }), p)))
             .children(status(&self.fetch, p))
     }
 

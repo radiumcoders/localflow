@@ -75,6 +75,24 @@ pub fn background_app() {
     }
 }
 
+/// The Intel build running under Rosetta on an Apple Silicon Mac: it's built
+/// for AVX2, which Rosetta only has from macOS 15, so on older systems the
+/// first transcription dies with an illegal instruction. The arm64 build is
+/// the one for that Mac.
+pub fn intel_build_on_apple_silicon() -> bool {
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        std::process::Command::new("sysctl")
+            .args(["-n", "sysctl.proc_translated"])
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+    {
+        false
+    }
+}
+
 /// Windows: the app has no console of its own (it runs in the background),
 /// so commands run from a terminal print to that terminal.
 pub fn attach_console() {

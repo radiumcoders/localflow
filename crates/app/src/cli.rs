@@ -18,6 +18,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow                        # settings (Linux), or the background app (macOS / Windows)
     localflow settings
     localflow onboarding             # the first-run window, again
+    localflow quit                   # stop the background app (macOS / Windows)
     localflow setup [--model FILE.gguf] [--speech-model ID]
     localflow start [raw] | stop | toggle [raw] | cancel | learn
     localflow history [N]            # the last N dictations (default 10): what was heard, what went out
@@ -80,7 +81,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 return fail("stdin isn't text");
             }
             let out = lf.clean(&text, NO_FILES).unwrap_or_else(|e| {
-                // No model or API: pass the text through
+                // No model: pass the text through
                 eprintln!("localflow: {e}; passing text through unchanged");
                 text.trim().to_string()
             });

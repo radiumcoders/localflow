@@ -29,10 +29,15 @@ const COLUMN: f32 = 600.;
 /// part way), so it opens again next time.
 const MARKER: &str = "onboarding";
 
-/// Nothing set up yet, or an onboarding left part way.
+/// Nothing set up yet, an onboarding left part way, or settings from an
+/// older localflow whose speech or cleanup model this one doesn't have.
 pub fn needed() -> bool {
     let dir = config_dir();
-    !dir.join("env").exists() || dir.join(MARKER).exists()
+    if !dir.join("env").exists() || dir.join(MARKER).exists() {
+        return true;
+    }
+    let cfg = Config::from_env();
+    !models::installed(models::resolve(cfg.speech_model.as_deref()).id) || !cfg.local_model_installed()
 }
 
 pub fn open(cx: &mut App) -> anyhow::Result<AnyWindowHandle> {
@@ -156,6 +161,10 @@ fn speech_key(id: &str) -> String {
 
 /// The cleanup model's download, in Jobs.
 const MODEL_KEY: &str = "cleanup-model";
+
+/// This build runs the models on a GPU (Metal, or Vulkan when built with it;
+/// the Windows build is CPU only for now).
+const GPU_BUILD: bool = cfg!(any(target_os = "macos", feature = "vulkan"));
 
 /// The cleanup model's download: a bar, what it is, how far.
 fn job_progress(job: &Job, p: &Palette) -> Div {
@@ -614,7 +623,7 @@ impl Onboarding {
                     .flex_col()
                     .gap(px(20.))
                     .child(band(cells, p))
-                    .child(note("cpu", "Runs on your GPU when there is one, and loads only while it transcribes.", p)),
+                    .child(note("cpu", if GPU_BUILD { "Runs on your GPU when there is one, and loads only while it transcribes." } else { "Runs on the CPU for now, and loads only while it transcribes." }, p)),
             )
     }
 
@@ -674,7 +683,7 @@ impl Onboarding {
                 .text_size(px(12.))
                 .line_height(px(18.))
                 .text_color(p.dim)
-                .child("It runs inside localflow, on your GPU when there is one, and loads only while you dictate."),
+                .child(if GPU_BUILD { "It runs inside localflow, on your GPU when there is one, and loads only while you dictate." } else { "It runs inside localflow, on the CPU for now, and loads only while you dictate." }),
         )
     }
 
@@ -701,7 +710,12 @@ impl Onboarding {
                             d.child(div().text_size(px(12.)).text_color(p.record).child(e))
                         })
                 } else {
-                    div().flex().child(secondary_button("allow-access", "Allow", true, p).on_click(|_, _, _| localflow_desktop::ask_accessibility()))
+                    div().flex().child(secondary_button("allow-access", "Allow", true, p).on_click(|_, _, _| {
+                        // macOS prompts once; after a Deny (or an update, which makes
+                        // it a new app to macOS) only the pane itself can switch it on.
+                        localflow_desktop::ask_accessibility();
+                        localflow_desktop::open_accessibility_settings();
+                    }))
                 };
                 div()
                     .relative()

@@ -116,6 +116,51 @@ pub fn linux_app() -> PathBuf {
     data.join("localflow/app/localflow")
 }
 
+/// Linux: this AppImage is newer than the copy the key bindings run (set up
+/// from an older one): put this build in its place. Nothing when it isn't
+/// set up yet (the onboarding does that) or not run from an AppImage.
+pub fn refresh_linux_app() {
+    if !cfg!(target_os = "linux") || std::env::var_os("APPIMAGE").is_none() {
+        return;
+    }
+    let app = linux_app();
+    let Ok(me) = std::env::current_exe() else { return };
+    if !app.exists() || me == app {
+        return;
+    }
+    let same_version = std::fs::read_to_string(app.with_file_name("version")).is_ok_and(|v| v.trim() == crate::cli::version());
+    let same_size = std::fs::metadata(&me).and_then(|a| std::fs::metadata(&app).map(|b| a.len() == b.len())).unwrap_or(false);
+    if same_version && same_size {
+        return;
+    }
+    match install_app(false) {
+        Ok(_) => localflow_desktop::paths::info(format_args!("updated {} to {}", app.display(), crate::cli::version())),
+        Err(e) => localflow_desktop::paths::error(format_args!("couldn't update {}: {e}", app.display())),
+    }
+}
+
+/// macOS: the login item runs the app from where it was when the settings
+/// were saved. Once the app is in Applications and that's not where it
+/// points (it was first run from the disk image, or Downloads), fix it.
+pub fn refresh_macos_login_item() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let Ok(me) = std::env::current_exe() else { return };
+    let path = me.display().to_string();
+    if !path.starts_with("/Applications/") || path.contains("/AppTranslocation/") {
+        return;
+    }
+    let plist = home().join("Library/LaunchAgents/computer.localflow.dictate.plist");
+    let Ok(text) = std::fs::read_to_string(&plist) else { return };
+    if !text.contains(&format!("<string>{}</string>", xml_escape(&path))) {
+        match install_app(false) {
+            Ok(_) => localflow_desktop::paths::info(format_args!("login item now runs {path}")),
+            Err(e) => localflow_desktop::paths::error(format_args!("couldn't update the login item: {e}")),
+        }
+    }
+}
+
 /// The program key bindings and login items should run: the set-up copy on
 /// Linux, this one elsewhere.
 pub fn app_exe() -> PathBuf {
@@ -140,6 +185,8 @@ pub fn install_app(start: bool) -> Result<String, String> {
             std::fs::copy(&me, &tmp).map_err(|e| format!("couldn't copy the app to {}: {e}", app.display()))?;
             std::fs::rename(&tmp, &app).map_err(|e| e.to_string())?;
         }
+        // Which build the copy is, for a newer AppImage to compare (and you: `cat`).
+        let _ = std::fs::write(dir.join("version"), format!("{}\n", crate::cli::version()));
         let icon = dir.join("localflow.png");
         if let Some(appdir) = std::env::var_os("APPDIR") {
             let _ = std::fs::copy(PathBuf::from(appdir).join("localflow.png"), &icon);

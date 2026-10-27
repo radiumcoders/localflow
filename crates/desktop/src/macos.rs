@@ -189,6 +189,7 @@ pub fn press_key(k: crate::paste::Key) -> bool {
     if !trusted() {
         return false;
     }
+    wait_for_modifiers();
     key(match k {
         crate::paste::Key::Enter => 36,
         crate::paste::Key::Escape => 53,
@@ -198,6 +199,28 @@ pub fn press_key(k: crate::paste::Key) -> bool {
 
 fn modifiers_held() -> bool {
     unsafe { CGEventSourceFlagsState(1) & (CMD | SHIFT | ALT | CTRL) != 0 }
+}
+
+/// Wait (up to 2 s) for the hotkey's modifiers to be let go: a tap to stop
+/// finishes a short dictation while Option+Shift are still down, and the
+/// window server would merge them into the key we press (Cmd+Option+Shift+V).
+fn wait_for_modifiers() {
+    for _ in 0..100 {
+        if !modifiers_held() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// System Settings, open at Privacy & Security > Accessibility.
+pub fn open_accessibility_settings() {
+    let _ = Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 fn pb(program: &str) -> Command {
@@ -257,6 +280,7 @@ pub fn paste(parts: &[Part]) -> bool {
         pbcopy(text.as_bytes());
         return false;
     }
+    wait_for_modifiers();
     for (i, part) in parts.iter().enumerate() {
         match part {
             Part::File(path) => copy_file(Path::new(path)),
@@ -277,12 +301,7 @@ pub fn paste(parts: &[Part]) -> bool {
 
 pub fn selected_text() -> Vec<String> {
     // Wait for the learn key's modifiers to be let go, or the copy is Option+Shift+Cmd+C.
-    for _ in 0..100 {
-        if !modifiers_held() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_for_modifiers();
     let old = pbpaste();
     key(8, CMD); // c
     std::thread::sleep(Duration::from_millis(250));

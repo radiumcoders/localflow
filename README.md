@@ -40,14 +40,18 @@ when you sign in. Open localflow from the Start menu: the first time, the
 onboarding opens. Pick a speech model (it downloads while you go on), and
 localflow downloads its own cleanup model (351 MB) too and runs it itself:
 there's nothing else to install. Then try a dictation in the window. Open it
-from the Start menu again to change the settings. Uninstall it from Settings > Apps.
+from the Start menu again to change the settings. Uninstall it from Settings > Apps;
+that leaves your settings and vocabulary in `%APPDATA%\localflow` and the
+models in `%LOCALAPPDATA%\localflow`, which you can delete.
 
 The installer isn't signed yet, so SmartScreen warns about an unknown
 publisher: click **More info**, then **Run anyway**.
 
-For IT deployment: `msiexec /i localflow-<version>-x64.msi /qn`, then
-`"C:\Program Files\localflow\localflow.exe" setup` (see
-[`localflow setup`](#settings)).
+For IT deployment: `msiexec /i localflow-<version>-x64.msi /qn` installs it
+for everyone on the computer; then, as each user,
+`"C:\Program Files\localflow\localflow.exe" setup` downloads their models
+(see [`localflow setup`](#settings)). An upgrade closes the running localflow
+and starts the new one.
 
 ### macOS
 
@@ -55,9 +59,17 @@ Download `localflow-<version>-arm64.dmg` (Apple Silicon) or `-x64.dmg` (Intel)
 from [Releases](https://github.com/radiumcoders/localflow/releases), open it
 and drag localflow into Applications. Open it from Applications: the
 onboarding opens and adds localflow as a login item. It asks you to allow
-localflow under Accessibility (the hotkey and pasting) and Microphone. To
-remove it: `launchctl bootout gui/$(id -u)/computer.localflow.dictate`, then
-delete the app and `~/Library/LaunchAgents/computer.localflow.dictate.plist`.
+localflow under Accessibility (the hotkey and pasting) and Microphone. Keep
+it in Applications: the login item runs it from there.
+
+To remove it: `localflow quit` (or
+`launchctl bootout gui/$(id -u)/computer.localflow.dictate`), then delete the
+app, `~/Library/LaunchAgents/computer.localflow.dictate.plist`, and if you
+like `~/Library/Application Support/localflow` (the models),
+`~/.config/localflow` (settings, vocabulary, history) and
+`~/Library/Logs/localflow`. The app isn't signed with a Developer ID yet, so
+to macOS each update is a new app: if the hotkey stops working after one,
+switch localflow off and on again under Privacy & Security > Accessibility.
 
 It isn't signed with an Apple Developer ID yet, so the first time macOS says
 it can't check it: open **System Settings > Privacy & Security** and click
@@ -78,11 +90,15 @@ The onboarding opens. Once you've picked a speech model, it copies
 localflow to `~/.local/share/localflow/app` (your key bindings run it from
 there, so the AppImage can go anywhere, or away) and adds it to your app
 launcher; then it shows the key bindings to add, with a Copy button, and lets
-you try a dictation. `localflow onboarding` opens it again. It needs glibc 2.39+
-(Ubuntu 24.04, Fedora 40, Debian 13, Arch), PipeWire or ALSA for recording,
-and for pasting `wl-clipboard` + `wtype` on Wayland or `xclip` + `xdotool` on
-X11 (Omarchy ships all of these). Transcription and cleanup run on the GPU
-through Vulkan when there is one.
+you try a dictation. `localflow onboarding` opens it again; running a newer
+AppImage updates the copy. It needs glibc 2.39+ (Ubuntu 24.04, Fedora 40,
+Debian 13, Arch), the Vulkan loader (`libvulkan1` / `vulkan-icd-loader`, on
+every desktop with a GPU driver), PipeWire (with `pipewire-alsa`) or ALSA for
+recording, and for pasting `wl-clipboard` + `wtype` on Wayland or `xclip` +
+`xdotool` on X11 (Omarchy ships all of these). Transcription and cleanup run
+on the GPU through Vulkan when there is one (Mesa's `vulkan-radeon` /
+`vulkan-intel`, or NVIDIA's driver), else on the CPU. Without FUSE, run it
+with `APPIMAGE_EXTRACT_AND_RUN=1`.
 
 ### From source
 
@@ -301,9 +317,9 @@ and cleanup models and puts the app in place.
 | Variable | What |
 | --- | --- |
 | `LOCALFLOW_SPEECH_MODEL` | `tiny.en`, `base.en`, `small.en` (default), `large-v3-turbo` (see `localflow models`) |
-| `LOCALFLOW_SPEECH_GPU` | `off` to transcribe on the CPU |
+| `LOCALFLOW_SPEECH_GPU` | `off` to transcribe on the CPU (`on` to try the GPU on an Intel Mac, where the CPU is the default) |
 | `LOCALFLOW_MODEL` | the cleanup model: `localflow-clean` (default) or a `.gguf` file |
-| `LOCALFLOW_CLEANUP_GPU` | `off` to clean up on the CPU |
+| `LOCALFLOW_CLEANUP_GPU` | `off` to clean up on the CPU (the default on an Intel Mac) |
 | `LOCALFLOW_SUBMIT` | in a coding agent, press Enter after pasting: `said` (when you end with "send it", default), `always`, `never` |
 | `LOCALFLOW_HISTORY` | `off` to keep no history of your dictations |
 
@@ -321,6 +337,7 @@ echo "call mom tomorrow actually tonight" | localflow -
 localflow --check                    # does the cleanup model load?
 localflow --eval                     # cases.txt against the cleanup model
 localflow --selftest                 # each piece that doesn't need a person
+localflow quit                       # stop the background app (macOS, Windows)
 ```
 
 The model is trained in a repository of its own (localflow-model);
@@ -352,7 +369,16 @@ what `localflow --selftest` checks on yours.
 - Misheard words are fixed reliably only when they're in `words.txt` with a
   hint.
 - Windows transcribes on the CPU (the GPU build needs the Vulkan SDK; Small
-  takes ~1 s there).
+  takes ~1 s there). Intel Macs use the CPU too, by default: Metal on their
+  integrated GPUs is slower than the CPU, or crashes.
+- On Windows, the hotkey and the paste don't reach windows running as
+  administrator (an elevated terminal, Task Manager): nothing happens there.
+  Ctrl+Shift+Space is taken from other programs while localflow runs.
+- Only text on the clipboard is put back after a paste; a copied image or
+  file is gone.
+- On Wayland desktops other than Hyprland, localflow can't see which window
+  has focus, so terminals there get Ctrl+V (not Shift+Insert) and coding
+  agents aren't recognised.
 
 ## Layout
 

@@ -178,6 +178,7 @@ impl Dictation {
         }
         let mut input = heard.for_cleanup(true);
         let mut send = agent.is_some() && self.lf.cfg.submit == Submit::Always;
+        let mut as_heard = false;
         if agent.is_some() && self.lf.cfg.submit == Submit::Said {
             let (rest, said_send) = split_send(&input);
             (input, send) = (rest, said_send);
@@ -192,6 +193,7 @@ impl Dictation {
                 Err(e) => {
                     // Never lose a dictation: the transcript as heard.
                     warn(format_args!("cleanup failed, pasting the raw transcript: {e}"));
+                    as_heard = true;
                     input.replace("<quiet>", "").replace("</quiet>", "")
                 }
             }
@@ -221,7 +223,11 @@ impl Dictation {
             let keys = if cfg!(target_os = "macos") { "Cmd+V" } else { "Ctrl+V" };
             return message(&format!("Copied: paste with {keys}"), 2500);
         }
-        // A moment of "it went in", once the text is there.
+        // A moment of "it went in", once the text is there (and a word when
+        // the cleanup couldn't run: the transcript as heard went in).
+        if as_heard {
+            return message("Pasted as heard (no cleanup)", 1800);
+        }
         message(if sent { "Sent" } else { "Pasted" }, 900)
     }
 }
