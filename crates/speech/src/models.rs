@@ -51,6 +51,8 @@ const WHISPER: &str = "ggerganov/whisper.cpp";
 
 /// The speech models to choose from, smallest first. Quantized (q5/q8) files:
 /// about a third of the size of the originals, at nearly the same accuracy.
+/// localflow is English only: the English (".en") models, and Large, which
+/// has no English one (it's told the speech is English).
 pub const MODELS: &[Model] = &[
     Model {
         id: "tiny.en",
@@ -90,27 +92,7 @@ pub const MODELS: &[Model] = &[
         size: 574_041_195,
         sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
         english_only: false,
-        note: "Most accurate, every language; best with a GPU",
-    },
-    Model {
-        id: "base",
-        name: "Base (multilingual)",
-        file: "ggml-base-q8_0.bin",
-        repo: WHISPER,
-        size: 81_768_585,
-        sha256: "c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9",
-        english_only: false,
-        note: "Every language, fast, little memory",
-    },
-    Model {
-        id: "small",
-        name: "Small (multilingual)",
-        file: "ggml-small-q5_1.bin",
-        repo: WHISPER,
-        size: 190_085_487,
-        sha256: "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
-        english_only: false,
-        note: "Every language, accurate, quick on a CPU",
+        note: "Most accurate; best with a GPU",
     },
 ];
 
@@ -296,7 +278,7 @@ mod tests {
             assert!(m.url().starts_with("https://huggingface.co/") && m.url().ends_with(m.file));
             assert_eq!(m.english_only, m.id.ends_with(".en"));
         }
-        assert!(MODELS.windows(2).take(3).all(|w| w[0].size < w[1].size), "English ones smallest first");
+        assert!(MODELS.windows(2).all(|w| w[0].size < w[1].size), "smallest first");
         assert!(find(DEFAULT).is_some());
         assert_eq!(find("silero-vad"), Some(&VAD));
     }
@@ -310,6 +292,9 @@ mod tests {
         assert_eq!(resolve(Some("handy-computer/parakeet-unified-en-0.6b-gguf/x.gguf")).id, DEFAULT);
         assert_eq!(resolve(Some("parakeet-tdt-0.6b-v3")).id, DEFAULT);
         assert_eq!(resolve(Some("silero-vad")).id, DEFAULT, "the VAD isn't a speech model");
+        // the multilingual ones, from before localflow was English only
+        assert_eq!(resolve(Some("small")).id, DEFAULT);
+        assert_eq!(resolve(Some("base")).id, DEFAULT);
     }
 
     #[test]

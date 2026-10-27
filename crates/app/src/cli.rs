@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use localflow_core::local::MODEL;
-use localflow_core::{Config, Localflow, Msg, NO_FILES, eval};
+use localflow_core::{Config, Localflow, NO_FILES, eval};
 use localflow_desktop::history;
 use localflow_desktop::paths::utc;
 use localflow_speech::{RATE, Recorder, level, models, read_wav, wav_bytes};
@@ -18,7 +18,8 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow                        # settings (Linux), or the background app (macOS / Windows)
     localflow settings
     localflow onboarding             # the first-run window, again
-    localflow setup [--api PROVIDER|URL] [--model MODEL] [--speech-model ID]
+    localflow quit                   # stop the background app (macOS / Windows)
+    localflow setup [--model FILE.gguf] [--speech-model ID]
     localflow start [raw] | stop | toggle [raw] | cancel | learn
     localflow history [N]            # the last N dictations (default 10): what was heard, what went out
     localflow history --last         # just the last text that went out
@@ -28,8 +29,8 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
     localflow record SECONDS FILE.wav
     echo \"meet at 3 wait at 2\" | localflow -
-    localflow --check                # one tiny request: is the cleanup model reachable?
-    localflow --eval [MODEL [REVIEW_MODEL|off]]   # run cases.txt
+    localflow --check                # does the cleanup model load?
+    localflow --eval                 # run cases.txt through the cleanup model
     localflow --selftest             # check each piece that doesn't need a person
     localflow --version";
 
@@ -42,17 +43,12 @@ pub fn run(args: &[String]) -> ExitCode {
     let lf = Localflow::new(Config::from_env());
     let arg = |i: usize| args.get(i).map(String::as_str);
     match arg(0).unwrap_or_default() {
-        "--check" => {
-            let model = &lf.cfg.model;
-            match lf.chat(model, &[Msg::user("Reply with just: ok")], 32) {
-                Ok(_) => println!("ok: {model} via {}", lf.cfg.backend()),
-                Err(e) => return fail(format!("{model} via {}: {e}", lf.cfg.backend())),
-            }
-        }
+        "--check" => match lf.warm() {
+            Ok(()) => println!("ok: {}", lf.cfg.model),
+            Err(e) => return fail(format!("{}: {e}", lf.cfg.model)),
+        },
         "--eval" => {
-            let model = arg(1).unwrap_or(&lf.cfg.model).to_string();
-            let review = arg(2).unwrap_or(&lf.cfg.review_model).to_string();
-            if let Err(e) = eval::run(&lf, &model, &review) {
+            if let Err(e) = eval::run(&lf) {
                 return fail(e);
             }
         }
@@ -85,7 +81,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 return fail("stdin isn't text");
             }
             let out = lf.clean(&text, NO_FILES).unwrap_or_else(|e| {
-                // No model or API: pass the text through
+                // No model: pass the text through
                 eprintln!("localflow: {e}; passing text through unchanged");
                 text.trim().to_string()
             });
@@ -122,7 +118,7 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
                 println!("{mark} {:<24} {:>5} MB  {}{chosen}\n    {}", m.id, m.size_mb(), m.name, m.note);
             }
             let mark = if cfg.local_model_installed() { "✓" } else { " " };
-            let chosen = if cfg.local() { "  (in use)" } else { "" };
+            let chosen = if cfg.model == MODEL.id { "  (in use)" } else { "" };
             println!("\ncleanup:\n{mark} {:<24} {:>5} MB  {}{chosen}", MODEL.id, MODEL.size_mb(), MODEL.name);
             println!("\nin {}", models::models_dir().display());
         }
@@ -230,7 +226,7 @@ fn dictate(lf: &Localflow, samples: &[i16]) -> ExitCode {
         return fail("nothing heard");
     }
     let start = Instant::now();
-    let input = heard.for_cleanup(lf.cfg.asides);
+    let input = heard.for_cleanup(true);
     let out = match lf.clean_detailed(&input, NO_FILES) {
         Ok(r) => {
             eprintln!("  cleaned ({} ms, {})", start.elapsed().as_millis(), r.verdict);

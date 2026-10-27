@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use crate::cleanup::user_turn;
-use crate::{Config, Error, Localflow, Msg, Result, err};
+use crate::{Config, Error, Localflow, Result, err};
 
 /// The model file localflow downloads, like a speech model.
 pub struct ModelFile {
@@ -39,6 +39,10 @@ pub const MODEL: ModelFile = ModelFile {
 
 const SYSTEM: &str = "Clean up the dictation.";
 
+/// What the model answers when the whole dictation was an aside: something
+/// said to yourself or to someone else, nothing meant for the text.
+pub const ASIDE: &str = "<aside>";
+
 /// Room for prompt and answer, in tokens: a few minutes of speech, the
 /// vocabulary and a project's file list fit.
 const CONTEXT: u32 = 4096;
@@ -63,11 +67,9 @@ pub fn models_dir() -> PathBuf {
 }
 
 /// Qwen3.5's chat format with thinking off: everything before the answer.
-fn chat_prompt(messages: &[Msg]) -> String {
-    let mut prompt: String =
-        messages.iter().map(|m| format!("<|im_start|>{}\n{}<|im_end|>\n", m.role, m.content)).collect();
-    prompt += "<|im_start|>assistant\n<think>\n\n</think>\n\n";
-    prompt
+fn chat_prompt(system: &str, user: &str) -> String {
+    format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n\
+             <|im_start|>assistant\n<think>\n\n</think>\n\n")
 }
 
 /// The request the model was trained on: the instruction, the speaker's
@@ -78,7 +80,7 @@ pub fn cleanup_prompt(vocabulary: &[String], text: &str, files: &[impl AsRef<str
         system += "\n\nSpeaker's vocabulary (use these exact spellings):\n";
         system += &vocabulary.iter().map(|w| format!("- {w}")).collect::<Vec<_>>().join("\n");
     }
-    chat_prompt(&[Msg::system(system), Msg::user(user_turn(text, files))])
+    chat_prompt(&system, &user_turn(text, files))
 }
 
 impl Config {
@@ -98,7 +100,15 @@ impl Localflow {
             if !self.cfg.local_model_installed() {
                 return err(format!("{} isn't downloaded yet", MODEL.name));
             }
-            *engine = Some(localflow_llm::Model::load(&self.cfg.model_file(), self.cfg.cleanup_gpu, CONTEXT).map_err(Error)?);
+            let path = self.cfg.model_file();
+            let model = match localflow_llm::Model::load(&path, self.cfg.cleanup_gpu, CONTEXT) {
+                // A GPU that can't run it (a broken driver, too little memory): the CPU can.
+                Err(e) if self.cfg.cleanup_gpu => {
+                    localflow_llm::Model::load(&path, false, CONTEXT).map_err(|cpu| Error(format!("{e}; on the CPU: {cpu}")))?
+                }
+                loaded => loaded.map_err(Error)?,
+            };
+            *engine = Some(model);
         }
         Ok(())
     }
@@ -114,8 +124,10 @@ impl Localflow {
         Ok(text)
     }
 
-    pub(crate) fn local_chat(&self, messages: &[Msg], num_predict: usize) -> Result<String> {
-        self.local_complete(&chat_prompt(messages), num_predict)
+    /// Load the model while the speaker is still talking, so it's ready when
+    /// the dictation arrives. Also how the settings check the model works.
+    pub fn warm(&self) -> Result<()> {
+        self.load_local()
     }
 }
 

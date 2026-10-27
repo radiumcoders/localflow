@@ -36,7 +36,7 @@ pub fn run(seconds: f32) -> ExitCode {
     check("audio and WAV", &audio);
     check("cleanup settings", &|| {
         let cfg = Config::from_env();
-        pass(format!("{} via {}", if cfg.model.is_empty() { "no model" } else { &cfg.model }, cfg.backend()))
+        pass(format!("{}{}", cfg.model, if cfg.local_model_installed() { "" } else { " (not downloaded)" }))
     });
     check("speech model", &speech_model);
     check("focused app and project", &|| {

@@ -30,6 +30,14 @@ fn main() {
     if os == "macos" {
         cfg.define("GGML_METAL", "ON").define("GGML_METAL_EMBED_LIBRARY", "ON");
     }
+    if os == "windows" {
+        // The library loads on a Windows without the Visual C++ redistributable:
+        // the C++ runtime inside it, and ggml's own thread pool instead of OpenMP
+        // (vcomp140.dll). It only ever frees what it allocated itself.
+        cfg.define("GGML_OPENMP", "OFF")
+            .define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW")
+            .define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreaded");
+    }
     let out = cfg.build();
 
     let file = match os.as_str() {

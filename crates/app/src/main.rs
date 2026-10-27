@@ -4,7 +4,8 @@
 //!                                      # (macOS / Windows: the hotkey; settings the first time)
 //!     localflow settings               # the settings window
 //!     localflow onboarding             # the first-run window, again
-//!     localflow setup [--api P] [--model M] [--speech-model ID]   # the same without the window
+//!     localflow quit                   # stop the background app (macOS / Windows)
+//!     localflow setup [--model FILE.gguf] [--speech-model ID]   # the same without the window
 //!
 //! Dictation (Linux: bind keys to these; nothing runs between dictations):
 //!     localflow start [raw]            # start recording (raw: paste the transcript as is)
@@ -45,10 +46,17 @@ fn main() -> ExitCode {
     if !args.is_empty() {
         platform::attach_console();
     }
+    if platform::intel_build_on_apple_silicon() {
+        let msg = "This is the Intel build of localflow. On this Mac, download localflow-…-arm64.dmg instead.";
+        eprintln!("localflow: {msg}");
+        localflow_desktop::notify(msg, 8000);
+        return ExitCode::FAILURE;
+    }
     match args.first().map(String::as_str) {
         None => session::app(),
         Some("settings") => session::settings(),
         Some("onboarding") => session::onboarding(),
+        Some("quit") => session::quit(),
         Some("setup") => setup::run(&args[1..]),
         Some("--background") => session::background(),
         Some("start") => session::start(raw),
@@ -57,7 +65,6 @@ fn main() -> ExitCode {
         Some("toggle") => session::toggle(raw),
         Some("learn") => session::learn(),
         Some("_session") => session::run_session(raw),
-        Some("_watch") => session::run_watch(&args[1..]),
         Some("_message") => session::run_message(&args[1..]),
         Some("--selftest") => selftest::run(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(3.0)),
         Some(_) => cli::run(&args),

@@ -177,7 +177,21 @@ mod linux {
     }
 
     pub fn paste(parts: &[Part]) -> bool {
-        if wayland() { paste_wayland(parts) } else if std::env::var_os("DISPLAY").is_some() { paste_x11(parts) } else { false }
+        if wayland() {
+            return paste_wayland(parts);
+        }
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            // Without wl-clipboard, X11's keys (xdotool) only reach XWayland
+            // programs, so the text would seem pasted and be lost. Leave it on
+            // the clipboard (what the pill then says).
+            crate::paths::warn("wl-copy isn't installed (wl-clipboard, with wtype): the text is on the clipboard");
+            let text: String = parts.iter().map(|p| match p { Part::Text(t) | Part::File(t) => t.as_str() }).collect();
+            if std::env::var_os("DISPLAY").is_some() && which("xclip").is_some() {
+                feed(command("xclip").args(["-selection", "clipboard"]), text.as_bytes());
+            }
+            return false;
+        }
+        if std::env::var_os("DISPLAY").is_some() { paste_x11(parts) } else { false }
     }
 
     fn paste_wayland(parts: &[Part]) -> bool {

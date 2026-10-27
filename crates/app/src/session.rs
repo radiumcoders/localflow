@@ -18,12 +18,12 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use localflow_core::{Config, Localflow, config_dir};
+use localflow_core::{Config, Localflow};
 use localflow_desktop::hotkey::{self, HotkeyController, HotkeyEvent};
-use localflow_desktop::learn::{last_dictation, learn_correction, watch};
+use localflow_desktop::learn::learn_correction;
 use localflow_desktop::paths::{self, error, info, make_run_dir, run_dir};
 
-use crate::dictation::{Dictation, learns_on_its_own};
+use crate::dictation::Dictation;
 use crate::ui::{self, Start, UiMsg};
 
 const PORT: u16 = 11437;
@@ -32,14 +32,10 @@ fn me() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| "localflow".into())
 }
 
-/// Set up once: the settings window (or `localflow setup`) wrote the env file.
-pub fn configured() -> bool {
-    config_dir().join("env").exists()
-}
-
 /// `localflow` with no arguments.
 pub fn app() -> ExitCode {
     if cfg!(target_os = "linux") {
+        crate::setup::refresh_linux_app(); // a newer AppImage: the installed copy follows
         return settings(); // your key bindings run the dictation; this is where you change things
     }
     if ask_running("settings") {
@@ -56,6 +52,13 @@ pub fn settings() -> ExitCode {
 /// `localflow onboarding`: the first-run window again.
 pub fn onboarding() -> ExitCode {
     window(true)
+}
+
+/// `localflow quit`: the background app, if one runs, stops (an installer
+/// updating the program, or you). Nothing runs on Linux.
+pub fn quit() -> ExitCode {
+    ask_running("quit");
+    ExitCode::SUCCESS
 }
 
 fn window(onboarding: bool) -> ExitCode {
@@ -81,7 +84,12 @@ pub fn background() -> ExitCode {
         info("already running");
         return ExitCode::SUCCESS;
     };
-    if !configured() {
+    if cfg!(target_os = "macos") {
+        crate::setup::refresh_macos_login_item();
+    }
+    // Not set up yet, or set up by an older localflow whose models this one
+    // doesn't have: the onboarding.
+    if crate::ui::onboarding::needed() {
         open_settings();
     }
     std::thread::spawn(move || {
@@ -203,7 +211,9 @@ fn alive(pid: u32) -> bool {
     }
     #[cfg(not(windows))]
     if cfg!(target_os = "linux") {
-        PathBuf::from(format!("/proc/{pid}")).exists()
+        // And ours: a session that crashed leaves `current` behind, and the
+        // number can be some other program's by now.
+        std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| c.windows(8).any(|w| w == b"_session"))
     } else {
         Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
     }
@@ -263,8 +273,12 @@ pub fn run_session(raw: bool) -> ExitCode {
         Ok(d) => d,
         Err(e) => {
             error(format_args!("couldn't start recording: {e}"));
+            let text = e.to_string();
+            let brief = if text.len() > 48 { "Can't open the microphone (see dictate.log)".to_string() } else { text };
             localflow_desktop::notify(&format!("localflow: {e}"), 4000);
             release_current();
+            // A pill, from a process of its own: the notification may have nowhere to show.
+            let _ = spawn(&["_message", &brief, "4000"]).and_then(|mut c| c.wait());
             return ExitCode::FAILURE;
         }
     };
@@ -289,7 +303,9 @@ pub fn run_session(raw: bool) -> ExitCode {
                         let _ = std::fs::remove_file(&stop);
                         release_current(); // the next dictation can start while this one finishes
                         let ms = dictation.finish();
-                        std::thread::sleep(Duration::from_millis(ms + 100)); // let a closing message show
+                        // Let the closing message show, and the clipboard be put back
+                        // (a second after the paste) before this process goes.
+                        std::thread::sleep(Duration::from_millis(ms.max(1000) + 300));
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(30));
@@ -326,32 +342,6 @@ pub fn learn() -> ExitCode {
             });
         }),
     });
-    ExitCode::SUCCESS
-}
-
-/// Watch for your fixes to what was just pasted, from a short-lived process
-/// of its own (the session exits right after pasting). ~25 MB while it does.
-pub fn watch_for_fixes(pid: Option<u32>, stamp: f64) {
-    if !learns_on_its_own() {
-        return;
-    }
-    if let Err(e) = spawn(&["_watch", &pid.unwrap_or(0).to_string(), &stamp.to_string()]) {
-        info(format_args!("couldn't watch for fixes: {e}"));
-    }
-}
-
-/// `_watch PID STAMP`: the Linux watcher, for the dictation with that stamp.
-pub fn run_watch(args: &[String]) -> ExitCode {
-    let pid = args.first().and_then(|p| p.parse::<u32>().ok()).filter(|&p| p != 0);
-    let stamp: Option<f64> = args.get(1).and_then(|s| s.parse().ok());
-    if let (Some((text, latest)), Some(stamp)) = (last_dictation(), stamp)
-        && latest == stamp
-    {
-        let lf = Localflow::new(Config::from_env());
-        // What it learned: a notification on Linux (any desktop has them), the pill elsewhere.
-        let tell = |m: String| if cfg!(target_os = "linux") { localflow_desktop::notify(&m, 4000) } else { show(&m, 3000) };
-        watch(&lf, &text, pid, stamp, &tell);
-    }
     ExitCode::SUCCESS
 }
 

@@ -3669,7 +3669,6 @@ dependencies = [
  "localflow-llm",
  "regex",
  "serde_json",
- "ureq",
 ]
 
 [[package]]
@@ -7058,8 +7057,6 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-pki-types",
- "serde",
- "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]
@@ -8498,8 +8495,6 @@ version = "0.1.0"
 dependencies = [
  "core-graphics 0.25.0",
  "image",
- "regex",
- "serde_json",
  "ureq",
  "windows-sys 0.60.2",
 ]

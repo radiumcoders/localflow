@@ -25,9 +25,6 @@ use crate::{Error, Result};
 /// How a transcription runs.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
-    /// "en", "de", ...; None detects it (multilingual models). English-only
-    /// models always use English.
-    pub language: Option<String>,
     /// Names and terms you use ("Claude", "Pine Script"): whisper is primed
     /// with them, so it spells them that way.
     pub vocabulary: Vec<String>,
@@ -44,27 +41,32 @@ pub struct SpeechConfig {
     /// Use the GPU when this build has GPU support (Metal on macOS; Vulkan
     /// when built with the `vulkan` feature).
     pub use_gpu: bool,
-    pub language: Option<String>,
     pub vocabulary: Vec<String>,
     pub threads: usize,
 }
 
+/// The GPU when the setting doesn't say: yes, except on an Intel Mac, where
+/// Metal on the integrated GPUs is slower than the CPU, or crashes.
+pub const GPU_DEFAULT: bool = !cfg!(all(target_os = "macos", target_arch = "x86_64"));
+
 impl Default for SpeechConfig {
     fn default() -> Self {
-        SpeechConfig { model: None, use_gpu: true, language: None, vocabulary: Vec::new(), threads: 0 }
+        SpeechConfig { model: None, use_gpu: GPU_DEFAULT, vocabulary: Vec::new(), threads: 0 }
     }
 }
 
 impl SpeechConfig {
-    /// From LOCALFLOW_SPEECH_MODEL (an id or a file), LOCALFLOW_SPEECH_GPU
-    /// (on/off, default on) and LOCALFLOW_SPEECH_LANGUAGE (auto, en, de...),
-    /// read through `get` (the environment, or the env file too).
+    /// From LOCALFLOW_SPEECH_MODEL (an id or a file) and LOCALFLOW_SPEECH_GPU
+    /// (on/off, default on), read through `get` (the environment, or the env file too).
     pub fn from_vars(get: &dyn Fn(&str) -> Option<String>) -> SpeechConfig {
         let var = |k: &str| get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         SpeechConfig {
             model: var("LOCALFLOW_SPEECH_MODEL"),
-            use_gpu: !matches!(var("LOCALFLOW_SPEECH_GPU").as_deref(), Some("0" | "off" | "false" | "no" | "cpu")),
-            language: var("LOCALFLOW_SPEECH_LANGUAGE").filter(|l| l != "auto"),
+            use_gpu: match var("LOCALFLOW_SPEECH_GPU").as_deref().map(str::to_lowercase).as_deref() {
+                Some("0" | "off" | "false" | "no" | "cpu") => false,
+                Some(_) => true,
+                None => GPU_DEFAULT,
+            },
             vocabulary: Vec::new(),
             threads: 0,
         }
@@ -81,7 +83,7 @@ impl SpeechConfig {
     }
 
     pub fn options(&self) -> Options {
-        Options { language: self.language.clone(), vocabulary: self.vocabulary.clone(), threads: self.threads }
+        Options { vocabulary: self.vocabulary.clone(), threads: self.threads }
     }
 }
 
@@ -126,7 +128,6 @@ fn default_threads() -> usize {
 pub struct Engine {
     ctx: WhisperContext,
     vad: Option<WhisperVadContext>,
-    english_only: bool,
 }
 
 /// A stretch of the recording that went to whisper: where it starts in the
@@ -153,14 +154,13 @@ impl Engine {
         params.use_gpu(use_gpu).flash_attn(std::env::var_os("LOCALFLOW_NOFA").is_none());
         let ctx = WhisperContext::new_with_params(path_str, params)
             .map_err(|e| Error(format!("couldn't load the speech model {}: {e}", path.display())))?;
-        let english_only = !ctx.is_multilingual();
         let vad = models::VAD.installed().then(|| models::VAD.path()).and_then(|p| {
             let mut vp = WhisperVadContextParams::default();
             vp.set_n_threads(2);
             vp.set_use_gpu(false); // tiny; the GPU would only add setup time
             WhisperVadContext::new(p.to_str()?, vp).ok()
         });
-        Ok(Engine { ctx, vad, english_only })
+        Ok(Engine { ctx, vad })
     }
 
     pub fn has_vad(&self) -> bool {
@@ -233,12 +233,8 @@ impl Engine {
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         let threads = if opts.threads == 0 { default_threads() } else { opts.threads };
         params.set_n_threads(threads as i32);
-        let language = if self.english_only {
-            Some("en".to_string())
-        } else {
-            opts.language.as_deref().map(|l| l.replace('\0', "")).filter(|l| !l.is_empty() && l != "auto")
-        };
-        params.set_language(Some(language.as_deref().unwrap_or("auto")));
+        // localflow is English only, on every model.
+        params.set_language(Some("en"));
         params.set_translate(false);
         params.set_no_context(true);
         params.set_suppress_blank(true);
@@ -369,18 +365,15 @@ mod tests {
             move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
         };
         let c = SpeechConfig::from_vars(&vars(&[]));
-        assert!(c.model.is_none() && c.use_gpu && c.language.is_none());
+        assert!(c.model.is_none() && c.use_gpu);
         assert_eq!(c.model_file().1.unwrap().id, models::DEFAULT);
         let c = SpeechConfig::from_vars(&vars(&[
             ("LOCALFLOW_SPEECH_MODEL", "base.en"),
             ("LOCALFLOW_SPEECH_GPU", "off"),
-            ("LOCALFLOW_SPEECH_LANGUAGE", "auto"),
         ]));
         assert_eq!(c.model.as_deref(), Some("base.en"));
-        assert!(!c.use_gpu && c.language.is_none());
+        assert!(!c.use_gpu);
         assert_eq!(c.model_file().1.unwrap().id, "base.en");
-        let c = SpeechConfig::from_vars(&vars(&[("LOCALFLOW_SPEECH_LANGUAGE", "de")]));
-        assert_eq!(c.language.as_deref(), Some("de"));
     }
 
     #[test]

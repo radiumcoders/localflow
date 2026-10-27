@@ -3,7 +3,8 @@
 //!     cargo xtask e2e                      # the release build in target/
 //!     cargo xtask installed INSTALLER      # .msi / .dmg / .AppImage: install, check, remove
 //!
-//! Against a fake cleanup API, with the small.en speech model:
+//! With localflow's own cleanup model (downloaded once) and the small.en
+//! speech model:
 //! 1. setup without the window (`localflow setup`)
 //! 2. (installers) the app where it belongs: Program Files and the Start
 //!    menu, /Applications and its login item, ~/.local/share and the launcher
@@ -136,12 +137,12 @@ fn speak(dir: &Path) -> Result<(PathBuf, f32), String> {
     Ok((wav, seconds))
 }
 
-fn setup(exe: &Path, api: &str, start: bool) -> Result<String, String> {
-    let mut args = vec!["setup", "--api", api, "--model", "fake-small", "--speech-model", SPEECH_MODEL];
+fn setup(exe: &Path, start: bool) -> Result<String, String> {
+    let mut args = vec!["setup", "--speech-model", SPEECH_MODEL];
     if !start {
         args.push("--no-start");
     }
-    let out = app(exe, &args, &[("LOCALFLOW_API_KEY", "test-key".into())])?;
+    let out = app(exe, &args, &[])?;
     Ok(out.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("set up").trim().to_string())
 }
 
@@ -208,7 +209,7 @@ fn dictate(exe: &Path, testbox: &Path, wav: &Path, seconds: f32, dir: &Path) -> 
     let (out, flag) = (dir.join("typed.txt"), dir.join("pasted"));
     let _ = std::fs::remove_file(&out);
     let _ = std::fs::remove_file(&flag);
-    let env = [("LOCALFLOW_TEST_WAV", s(wav)), ("LOCALFLOW_LEARN", "off".into()), ("DICTATE_TEST_INJECTED", "1".into())];
+    let env = [("LOCALFLOW_TEST_WAV", s(wav)), ("DICTATE_TEST_INJECTED", "1".into())];
     let mut text_box = Command::new(testbox).args([s(&out), s(&flag)]).spawn().map_err(|e| format!("{}: {e}", testbox.display()))?;
     let mut background = None;
     let result = (|| {
@@ -230,7 +231,9 @@ fn dictate(exe: &Path, testbox: &Path, wav: &Path, seconds: f32, dir: &Path) -> 
             std::thread::sleep(held); // held: hold to talk
             crate::keys::hotkey(false);
         }
-        let text = wait_for(90, |t| {
+        // GitHub's macOS runners have no GPU: Metal there transcribes 2 s of
+        // speech in ~20 s and cleans up in ~60 s (89.5 s in all, once).
+        let text = wait_for(180, |t| {
             let new = &t[start.min(t.len())..];
             new.contains("done in") || new.contains("failed") || new.contains("nothing heard")
         });
@@ -286,10 +289,9 @@ fn common(steps: &mut Steps, exe: &Path, dir: &Path) {
 pub fn e2e(_: &[String]) -> Result<(), String> {
     run("cargo", &["build", "--release", "--locked", "-p", "localflow", "-p", "localflow-testbox"])?;
     let exe = built("localflow");
-    let api = crate::fake_api::start();
     let dir = temp();
     let mut steps = Steps(vec![]);
-    if steps.step("setup", || setup(&exe, &api, false)) {
+    if steps.step("setup", || setup(&exe, false)) {
         common(&mut steps, &exe, &dir);
     }
     steps.finish()
@@ -300,25 +302,24 @@ pub fn installed(args: &[String]) -> Result<(), String> {
     let installer = PathBuf::from(args.first().ok_or("cargo xtask installed INSTALLER")?);
     let installer = crate::absolute(&installer).map_err(|e| format!("{}: {e}", installer.display()))?;
     run("cargo", &["build", "--release", "--locked", "-p", "localflow-testbox"])?;
-    let api = crate::fake_api::start();
     let dir = temp();
     let mut steps = Steps(vec![]);
     if cfg!(windows) {
-        windows(&mut steps, &installer, &api, &dir);
+        windows(&mut steps, &installer, &dir);
     } else if cfg!(target_os = "macos") {
-        macos(&mut steps, &installer, &api, &dir);
+        macos(&mut steps, &installer, &dir);
     } else {
-        linux(&mut steps, &installer, &api, &dir);
+        linux(&mut steps, &installer, &dir);
     }
     steps.finish()
 }
 
-fn windows(steps: &mut Steps, msi: &Path, api: &str, dir: &Path) {
+fn windows(steps: &mut Steps, msi: &Path, dir: &Path) {
     let program_files = env_dir("ProgramFiles", || "C:\\Program Files".into());
     let exe = program_files.join("localflow").join("localflow.exe"); // backslashes, as the Run entry has it
     let shortcut = env_dir("ProgramData", || "C:\\ProgramData".into()).join("Microsoft/Windows/Start Menu/Programs/localflow.lnk");
     let run_entry = || {
-        Command::new("reg").args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "localflow"]).output()
+        Command::new("reg").args(["query", r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "localflow"]).output()
             .ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).to_string())
     };
     let msiexec = |args: &[&str]| -> Result<(), String> {
@@ -341,7 +342,15 @@ fn windows(steps: &mut Steps, msi: &Path, api: &str, dir: &Path) {
         Ok(format!("{}, Start menu shortcut, starts at sign-in", exe.display()))
     });
     if ok {
-        if steps.step("setup in the app", || setup(&exe, api, true)) {
+        steps.step("started by the installer", || {
+            let up = (0..20).any(|_| {
+                std::thread::sleep(Duration::from_millis(500));
+                running()
+            });
+            stop_background();
+            if up { Ok("the background app came up after the install".into()) } else { Err("not running after the install".into()) }
+        });
+        if steps.step("setup in the app", || setup(&exe, true)) {
             steps.step("background app", || background(&stop_background));
         }
         common(steps, &exe, dir);
@@ -362,7 +371,7 @@ fn windows(steps: &mut Steps, msi: &Path, api: &str, dir: &Path) {
     });
 }
 
-fn macos(steps: &mut Steps, dmg: &Path, api: &str, dir: &Path) {
+fn macos(steps: &mut Steps, dmg: &Path, dir: &Path) {
     let app = PathBuf::from("/Applications/localflow.app");
     let exe = app.join("Contents/MacOS/localflow");
     let agent = home().join("Library/LaunchAgents/computer.localflow.dictate.plist");
@@ -393,7 +402,7 @@ fn macos(steps: &mut Steps, dmg: &Path, api: &str, dir: &Path) {
         return;
     }
     if steps.step("setup in the app", || {
-        let done = setup(&exe, api, true)?;
+        let done = setup(&exe, true)?;
         let plist = std::fs::read_to_string(&agent).map_err(|e| format!("no login item: {e}"))?;
         if !plist.contains(&format!("<string>{}</string><string>--background</string>", exe.display())) {
             return Err(format!("login item runs something else:\n{plist}"));
@@ -411,7 +420,7 @@ fn macos(steps: &mut Steps, dmg: &Path, api: &str, dir: &Path) {
     });
 }
 
-fn linux(steps: &mut Steps, appimage: &Path, api: &str, dir: &Path) {
+fn linux(steps: &mut Steps, appimage: &Path, dir: &Path) {
     let data = env_dir("XDG_DATA_HOME", || home().join(".local/share"));
     let exe = data.join("localflow/app/localflow");
     let entry = data.join("applications/localflow.desktop");
@@ -422,8 +431,7 @@ fn linux(steps: &mut Steps, appimage: &Path, api: &str, dir: &Path) {
     }
     // CI machines have no FUSE; users' do (the AppImage mounts itself).
     let ok = steps.step("setup in the AppImage", || {
-        let out = app(appimage, &["setup", "--api", api, "--model", "fake-small", "--speech-model", SPEECH_MODEL],
-                      &[("LOCALFLOW_API_KEY", "test-key".into()), ("APPIMAGE_EXTRACT_AND_RUN", "1".into())])?;
+        let out = app(appimage, &["setup", "--speech-model", SPEECH_MODEL], &[("APPIMAGE_EXTRACT_AND_RUN", "1".into())])?;
         Ok(out.lines().filter(|l| l.starts_with("   ")).collect::<Vec<_>>().join(";"))
     });
     if !ok {

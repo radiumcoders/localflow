@@ -1,54 +1,22 @@
-//! The settings window: the speech model (downloaded here), where cleanup
-//! runs (localflow's own model on this computer, or a hosted model with your key), asides
-//! and learning, and the keys to dictate with. Saves to the env file the
-//! rest of localflow reads (`localflow_core::Config`).
+//! The settings window: the speech model (downloaded here), the cleanup model
+//! (localflow-clean, on this computer), dictation, and the keys to dictate
+//! with. Saves to the env file the rest of localflow reads
+//! (`localflow_core::Config`).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::select::{SearchableVec, Select, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::theme::Theme;
-use gpui_kit::component::{IndexPath, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use localflow_core::local::MODEL;
-use localflow_core::{Config, Localflow, Msg, prompts::HAIKU, save_api_key, save_settings};
+use localflow_core::{Config, Localflow, save_settings};
 use localflow_speech::models;
 
 use super::look::{self, Palette};
 
-/// Hosted providers, as shown, and their LOCALFLOW_API_URL names. The last
-/// one takes any OpenAI-compatible base URL.
-pub(super) const PROVIDERS: &[(&str, &str)] = &[
-    ("Anthropic (Claude Haiku)", "anthropic"),
-    ("OpenAI", "openai"),
-    ("OpenRouter", "openrouter"),
-    ("Groq", "groq"),
-    ("Google Gemini", "gemini"),
-    ("Mistral", "mistral"),
-    ("DeepSeek", "deepseek"),
-    ("Other (OpenAI-compatible URL)", ""),
-];
-const LEARN: &[(&str, &str)] = &[("On its own", "auto"), ("Only with the learn key", "key"), ("Off", "off")];
 const SUBMIT: &[(&str, &str)] = &[("When you say \"send it\"", "said"), ("Always", "always"), ("Never", "never")];
-const LANGUAGES: &[(&str, &str)] = &[
-    ("Detect it", ""),
-    ("English", "en"),
-    ("German", "de"),
-    ("French", "fr"),
-    ("Spanish", "es"),
-    ("Italian", "it"),
-    ("Portuguese", "pt"),
-    ("Dutch", "nl"),
-    ("Polish", "pl"),
-    ("Hindi", "hi"),
-    ("Japanese", "ja"),
-    ("Chinese", "zh"),
-];
-
-type Choice = Entity<SelectState<SearchableVec<&'static str>>>;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Job {
@@ -128,21 +96,12 @@ pub struct SettingsView {
     cfg: Config,
     speech_model: &'static str,
     downloads: Vec<(&'static str, Job, Arc<AtomicBool>)>,
-    language: Choice,
     gpu: bool,
-    api: bool,
-    provider: Choice,
-    api_model: Entity<InputState>,
-    api_url: Entity<InputState>,
-    api_key: Entity<InputState>,
-    has_key: bool,
     /// localflow-clean, or the .gguf file the env file names.
     local_model: String,
     /// The cleanup model's download.
     fetch: Job,
     check: Job,
-    asides: bool,
-    learn: &'static str,
     submit: &'static str,
     history: bool,
     saved: Job,
@@ -168,21 +127,6 @@ fn pick(items: &[(&'static str, &'static str)], value: &str) -> &'static str {
     items.iter().find(|(_, v)| *v == value).map_or(items[0].1, |(_, v)| *v)
 }
 
-fn index_of<T: PartialEq>(items: &[(&'static str, T)], value: &T) -> usize {
-    items.iter().position(|(_, v)| v == value).unwrap_or(0)
-}
-
-fn choice(items: &[(&'static str, &'static str)], selected: usize, window: &mut Window, cx: &mut App) -> Choice {
-    let labels: Vec<&'static str> = items.iter().map(|(label, _)| *label).collect();
-    cx.new(|cx| SelectState::new(SearchableVec::new(labels), Some(IndexPath::new(selected)), window, cx))
-}
-
-/// The value behind a select's label.
-fn chosen(state: &Choice, items: &[(&'static str, &'static str)], cx: &App) -> &'static str {
-    let label = state.read(cx).selected_value().copied();
-    items.iter().find(|(l, _)| Some(*l) == label).map_or(items[0].1, |(_, v)| *v)
-}
-
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
@@ -190,39 +134,16 @@ fn env_var(name: &str) -> Option<String> {
 impl SettingsView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> SettingsView {
         let cfg = Config::from_env();
-        let file = |k: &str| env_var(k).or_else(|| env_file_value(&cfg, k));
-        let provider_name = file("LOCALFLOW_API_URL").unwrap_or_default().trim().to_lowercase();
-        let custom = !provider_name.is_empty() && !PROVIDERS.iter().any(|(_, id)| *id == provider_name);
-        let provider_ix = if custom { PROVIDERS.len() - 1 } else { index_of(PROVIDERS, &provider_name.as_str()) };
-        let language = cfg.language.clone().unwrap_or_default();
-        let learn = file("LOCALFLOW_LEARN").unwrap_or_else(|| "auto".into()).trim().to_lowercase();
         let submit = cfg.submit.value().unwrap_or("said");
-        let has_key = cfg.api_key.is_some() || cfg.key_file().exists();
-        let api_model = if cfg.anthropic || cfg.api_url.is_empty() { String::new() } else { cfg.model.clone() };
-        let local_model = if cfg.local() { cfg.model.clone() } else { MODEL.id.to_string() };
+        let local_model = cfg.model.clone();
 
         let view = SettingsView {
             speech_model: models::resolve(cfg.speech_model.as_deref()).id,
             downloads: vec![],
-            language: choice(LANGUAGES, index_of(LANGUAGES, &language.as_str()), window, cx),
             gpu: cfg.speech_gpu,
-            api: !cfg.api_url.is_empty(),
-            provider: choice(PROVIDERS, provider_ix, window, cx),
-            api_model: cx.new(|cx| InputState::new(window, cx).placeholder("the provider's model name").default_value(api_model)),
-            api_url: cx.new(|cx| {
-                let url = if custom { cfg.api_url.clone() } else { String::new() };
-                InputState::new(window, cx).placeholder("https://my-server.example/v1").default_value(url)
-            }),
-            api_key: cx.new(|cx| {
-                let hint = if has_key { "saved (type to replace)" } else { "your API key" };
-                InputState::new(window, cx).placeholder(hint).masked(true)
-            }),
-            has_key,
             local_model,
             fetch: Job::Idle,
             check: Job::Idle,
-            asides: cfg.asides,
-            learn: pick(LEARN, &learn),
             submit: pick(SUBMIT, submit),
             history: cfg.history,
             saved: Job::Idle,
@@ -235,49 +156,33 @@ impl SettingsView {
             look::apply_theme(cx);
         })
         .detach();
-        for entity in [&view.provider, &view.language] {
-            cx.observe(entity, |_, _, cx| cx.notify()).detach();
-        }
         view
     }
 
-    fn provider_id(&self, cx: &App) -> &'static str {
-        chosen(&self.provider, PROVIDERS, cx)
-    }
-
     /// The settings as chosen in the window, as env-file changes.
-    fn changes(&self, cx: &App) -> Vec<(&'static str, Option<String>)> {
-        let mut changes: Vec<(&'static str, Option<String>)> = vec![];
-        if self.api {
-            let id = self.provider_id(cx);
-            let url = if id.is_empty() { self.api_url.read(cx).value().trim().to_string() } else { id.to_string() };
-            let model = if id == "anthropic" { HAIKU.to_string() } else { self.api_model.read(cx).value().trim().to_string() };
-            changes.push(("LOCALFLOW_API_URL", Some(url)));
-            changes.push(("LOCALFLOW_MODEL", Some(model).filter(|m| !m.is_empty())));
-        } else {
-            changes.push(("LOCALFLOW_API_URL", None));
-            changes.push(("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())));
-        }
-        changes.push(("LOCALFLOW_SPEECH_MODEL", Some(self.speech_model.to_string())));
-        changes.push(("LOCALFLOW_SPEECH_GPU", (!self.gpu).then(|| "off".into())));
-        let language = chosen(&self.language, LANGUAGES, cx);
-        changes.push(("LOCALFLOW_LANGUAGE", (!language.is_empty()).then(|| language.into())));
-        changes.push(("LOCALFLOW_ASIDES", (!self.asides).then(|| "keep".into())));
-        changes.push(("LOCALFLOW_LEARN", (self.learn != "auto").then(|| self.learn.into())));
-        changes.push(("LOCALFLOW_SUBMIT", (self.submit != "said").then(|| self.submit.into())));
-        changes.push(("LOCALFLOW_HISTORY", (!self.history).then(|| "off".into())));
-        changes
+    fn changes(&self) -> Vec<(&'static str, Option<String>)> {
+        vec![
+            ("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())),
+            ("LOCALFLOW_SPEECH_MODEL", Some(self.speech_model.to_string())),
+            ("LOCALFLOW_SPEECH_GPU", (!self.gpu).then(|| "off".into())),
+            ("LOCALFLOW_CLEANUP_GPU", (!self.gpu).then(|| "off".into())),
+            ("LOCALFLOW_SUBMIT", (self.submit != "said").then(|| self.submit.into())),
+            ("LOCALFLOW_HISTORY", (!self.history).then(|| "off".into())),
+            // Settings localflow no longer has: drop them from an older env file.
+            ("LOCALFLOW_API_URL", None),
+            ("LOCALFLOW_API_KEY", None),
+            ("LOCALFLOW_REVIEW_MODEL", None),
+            ("LOCALFLOW_LANGUAGE", None),
+            ("LOCALFLOW_ASIDES", None),
+            ("LOCALFLOW_LEARN", None),
+        ]
     }
 
     /// The cleanup engine as set up in the window (saved or not), for "Test".
-    fn engine(&self, cx: &App) -> Localflow {
-        let changes = self.changes(cx);
-        let key = self.api_key.read(cx).value().trim().to_string();
+    fn engine(&self) -> Localflow {
+        let changes = self.changes();
         let dir = self.cfg.config_dir.clone();
         let get = move |k: &str| -> Option<String> {
-            if k == "LOCALFLOW_API_KEY" && !key.is_empty() {
-                return Some(key.clone());
-            }
             match changes.iter().find(|(name, _)| *name == k) {
                 Some((_, value)) => Some(value.clone().unwrap_or_default()),
                 None => env_var(k),
@@ -367,17 +272,13 @@ impl SettingsView {
     }
 
     fn test(&mut self, cx: &mut Context<Self>) {
-        let lf = self.engine(cx);
+        let lf = self.engine();
         self.job(
             cx,
             move |_| {
-                let model = lf.cfg.model.clone();
-                let answer = if lf.cfg.local() {
-                    lf.clean("um testing one two three", localflow_core::NO_FILES).map(drop)
-                } else {
-                    lf.chat(&model, &[Msg::user("Reply with just: ok")], 32).map(drop)
-                };
-                answer.map(|_| format!("Works: {model} via {}", lf.cfg.backend())).map_err(|e| e.0)
+                lf.clean("um testing one two three", localflow_core::NO_FILES)
+                    .map(|_| format!("Works: {}", lf.cfg.model))
+                    .map_err(|e| e.0)
             },
             |this, job| this.check = job,
             |ok| ok,
@@ -385,16 +286,11 @@ impl SettingsView {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        let changes = self.changes(cx);
+        let changes = self.changes();
         let dir = self.cfg.config_dir.clone();
-        let key = self.api_key.read(cx).value().trim().to_string();
         let pairs: Vec<(&str, Option<&str>)> = changes.iter().map(|(k, v)| (*k, v.as_deref())).collect();
-        let result = save_settings(&dir, &pairs).and_then(|_| if key.is_empty() { Ok(()) } else { save_api_key(&dir, &key) });
-        self.saved = match result.map_err(|e| e.to_string()).and_then(|_| after_save()) {
-            Ok(()) => {
-                self.has_key |= !key.is_empty();
-                Job::Done("Saved".into())
-            }
+        self.saved = match save_settings(&dir, &pairs).map_err(|e| e.to_string()).and_then(|_| after_save()) {
+            Ok(()) => Job::Done("Saved".into()),
             Err(e) => Job::Failed(format!("Couldn't save: {e}")),
         };
         cx.notify();
@@ -406,18 +302,14 @@ impl SettingsView {
 pub(super) fn after_save() -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| e.to_string())?.display().to_string();
     let linux = cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some();
-    let mac = cfg!(target_os = "macos") && me.contains(".app/Contents/MacOS/") && !me.starts_with("/Volumes/");
+    // Not from the disk image or Gatekeeper's temporary copy of a downloaded
+    // app (/private/var/.../AppTranslocation/...): neither is there after a restart.
+    let mac = cfg!(target_os = "macos") && me.contains(".app/Contents/MacOS/") && !me.starts_with("/Volumes/")
+        && !me.contains("/AppTranslocation/");
     if linux || mac {
         crate::setup::install_app(false)?;
     }
     Ok(())
-}
-
-/// A value from the env file only (not the environment), for settings
-/// Config doesn't keep in its own form.
-pub(super) fn env_file_value(cfg: &Config, name: &str) -> Option<String> {
-    let text = std::fs::read_to_string(cfg.config_dir.join("env")).ok()?;
-    text.lines().filter_map(|l| l.trim().split_once('=')).find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
 }
 
 fn mb(bytes: u64) -> String {
@@ -464,27 +356,6 @@ fn setting(title: &str, hint: Option<&str>, control: impl IntoElement, p: &Palet
         )
         .child(div().flex_none().child(control))
         .into_any_element()
-}
-
-/// A labelled field in the API settings.
-fn labelled(label: &str, control: impl IntoElement, p: &Palette) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(16.))
-        .child(div().w(px(96.)).flex_none().text_size(px(13.)).text_color(p.dim).child(label.to_string()))
-        .child(div().flex_1().min_w_0().child(control))
-}
-
-/// A tonal, borderless field around an input.
-fn field(input: impl IntoElement, p: &Palette) -> Div {
-    div().h(px(36.)).flex().items_center().px(px(16.)).rounded_full().bg(p.muted).text_size(px(14.)).child(input)
-}
-
-/// A select that is the pill itself: wrapped in `field`, its own box sat at
-/// the top of the pill instead of in the middle.
-fn select(state: &Choice, p: &Palette) -> Select<SearchableVec<&'static str>> {
-    Select::new(state).appearance(false).small().w_full().h(px(36.)).pl(px(16.)).pr(px(14.)).rounded_full().bg(p.muted).text_size(px(14.))
 }
 
 fn progress_bar(fraction: f32, p: &Palette) -> Div {
@@ -603,17 +474,6 @@ impl SettingsView {
                     .w_full()
                     .px(px(24.))
                     .py(px(14.))
-                    .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.fg).child("Language"))
-                    .child(div().w(px(160.)).child(select(&self.language, p)))
-                    .into_any_element(),
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.))
-                    .w_full()
-                    .px(px(24.))
-                    .py(px(14.))
                     .child(
                         div()
                             .flex()
@@ -634,46 +494,23 @@ impl SettingsView {
     }
 
     fn cleanup(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
-        let hover = p.hover;
-        let choices = [
-            (false, "On this computer", "Private: nothing leaves your machine. localflow runs its own small model."),
-            (true, "With your API key", "Nothing to download. Each dictation goes to the provider you pick."),
-        ];
-        let cells = choices
-            .iter()
-            .enumerate()
-            .map(|(i, (api, title, body))| {
-                let (api, checked) = (*api, self.api == *api);
+        let about = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap(px(6.))
+            .px(px(24.))
+            .py(px(16.))
+            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).child(MODEL.id))
+            .child(
                 div()
-                    .id(("cleanup-mode", i))
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .gap(px(6.))
-                    .px(px(24.))
-                    .py(px(16.))
-                    .cursor_pointer()
-                    .when(checked, |d| d.bg(p.tint))
-                    .when(!checked, |d| d.hover(move |s| s.bg(hover)))
-                    .child(look::chosen_line(("cleanup-chosen", i), checked, p))
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(if checked { p.fg } else { p.fg.opacity(0.75) })
-                            .child(*title),
-                    )
-                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.dim).child(*body))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.api = api;
-                        this.check = Job::Idle;
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-        let detail = if self.api { self.api_settings(p, cx) } else { self.local_settings(p, cx) };
+                    .text_size(px(12.))
+                    .line_height(px(17.))
+                    .text_color(p.dim)
+                    .child("localflow's own model, made for cleaning up dictation. It runs on this computer: nothing leaves your machine."),
+            )
+            .into_any_element();
+        let detail = self.local_settings(p, cx);
         let test = div()
             .flex()
             .items_center()
@@ -687,7 +524,7 @@ impl SettingsView {
             .flex()
             .flex_col()
             .pt(px(20.))
-            .child(look::band(cells, p))
+            .child(look::band(vec![about], p))
             .child(div().flex().flex_col().gap(px(14.)).px(px(24.)).pt(px(18.)).child(detail).child(test))
     }
 
@@ -724,56 +561,12 @@ impl SettingsView {
             .flex_col()
             .gap(px(12.))
             .child(status_line)
-            .when(ours, |d| d.child(mono(format!("{} MB, runs inside localflow, on the GPU when there is one", MODEL.size_mb()), p)))
+            .when(ours, |d| d.child(mono(format!("{} MB, runs inside localflow{}", MODEL.size_mb(), if cfg!(any(target_os = "macos", feature = "vulkan")) { ", on the GPU when there is one" } else { ", on the CPU for now" }), p)))
             .children(status(&self.fetch, p))
-    }
-
-    fn api_settings(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
-        let id = self.provider_id(cx);
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .child(labelled("Provider", select(&self.provider, p), p))
-            .when(id.is_empty(), |d| d.child(labelled("Base URL", field(Input::new(&self.api_url).appearance(false), p), p)))
-            .child(if id == "anthropic" {
-                labelled("Model", div().text_size(px(13.)).text_color(p.fg).child("Claude Haiku 5.5, always on Anthropic"), p)
-            } else {
-                labelled("Model", field(Input::new(&self.api_model).appearance(false), p), p)
-            })
-            .child(labelled("API key", field(Input::new(&self.api_key).appearance(false).mask_toggle(), p), p))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .pl(px(112.))
-                    .text_size(px(12.))
-                    .text_color(p.dim)
-                    .child(icon("lock", 12., p.dim))
-                    .child("Every dictation goes to this provider. Only you can read the key."),
-            )
     }
 
     fn dictation(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
         let this = cx.entity();
-        let learn_options: Vec<(&'static str, SharedString)> = LEARN.iter().map(|(label, v)| (*v, SharedString::from(*label))).collect();
-        let learn = look::chips(
-            "learn",
-            &learn_options,
-            self.learn,
-            {
-                let this = this.clone();
-                move |v, _, cx| {
-                    this.update(cx, |this, cx| {
-                        this.learn = v;
-                        cx.notify();
-                    })
-                }
-            },
-            p,
-            window,
-        );
         let submit_options: Vec<(&'static str, SharedString)> =
             SUBMIT.iter().map(|(label, v)| (*v, SharedString::from(if *v == "said" { "When you say “send it”" } else { label }))).collect();
         let submit = look::chips(
@@ -809,16 +602,6 @@ impl SettingsView {
         };
         div().pt(px(20.)).child(rows(
             vec![
-                setting(
-                    "Leave out asides",
-                    Some("What you say to yourself or to someone else, and what you mutter, isn't pasted"),
-                    Switch::new("asides").checked(self.asides).on_click(cx.listener(|this, checked, _, cx| {
-                        this.asides = *checked;
-                        cx.notify();
-                    })),
-                    p,
-                ),
-                stacked("Learn from your fixes", "When you correct a misheard word, it's spelled right from then on", learn),
                 stacked("Send prompts to coding agents", "Press Enter after pasting into Claude Code, Codex and the like", submit),
                 setting(
                     "Keep a history",

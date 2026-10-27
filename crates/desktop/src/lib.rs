@@ -41,6 +41,13 @@ pub fn ask_accessibility() {
     macos::ask_accessibility();
 }
 
+/// Open System Settings at Accessibility (macOS): the prompt shows only
+/// once, so after a Deny, or an update, this is where it's switched on.
+pub fn open_accessibility_settings() {
+    #[cfg(target_os = "macos")]
+    macos::open_accessibility_settings();
+}
+
 /// A program on PATH (with .exe on Windows).
 pub fn which(name: &str) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };

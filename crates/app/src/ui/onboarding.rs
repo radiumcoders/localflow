@@ -1,6 +1,7 @@
 //! The first-run window, in the look of localflow.radiumcoders.com: pick a
-//! speech model (it downloads while you go on), where cleanup runs, allow
-//! what macOS asks for, bind the keys (Linux), try a dictation for real, done.
+//! speech model (it downloads while you go on), meet the cleanup model (it
+//! downloads too), allow what macOS asks for, bind the keys (Linux), try a
+//! dictation for real, done.
 //!
 //! It opens instead of the settings until you finish it (`localflow
 //! onboarding` opens it again). Leaving the cleanup step saves the settings,
@@ -10,16 +11,16 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use localflow_core::local::MODEL;
-use localflow_core::{Config, Localflow, Msg, NO_FILES, config_dir, prompts::HAIKU, save_api_key, save_settings};
+use localflow_core::{Config, config_dir, save_settings};
 use localflow_speech::models;
 
 use super::jobs::{Job, Jobs};
-use super::look::{self, Palette, SOFT, SPRING, band, chips, dashes, dot_grid, ghost_button, primary_button, secondary_button, spring};
-use super::settings::{after_save, env_file_value};
+use super::look::{self, Palette, SOFT, SPRING, band, dashes, dot_grid, ghost_button, primary_button, secondary_button, spring};
+use super::settings::after_save;
 
 const WINDOW: (f32, f32) = (760., 564.);
 /// The column between the dashed rails.
@@ -28,10 +29,15 @@ const COLUMN: f32 = 600.;
 /// part way), so it opens again next time.
 const MARKER: &str = "onboarding";
 
-/// Nothing set up yet, or an onboarding left part way.
+/// Nothing set up yet, an onboarding left part way, or settings from an
+/// older localflow whose speech or cleanup model this one doesn't have.
 pub fn needed() -> bool {
     let dir = config_dir();
-    !dir.join("env").exists() || dir.join(MARKER).exists()
+    if !dir.join("env").exists() || dir.join(MARKER).exists() {
+        return true;
+    }
+    let cfg = Config::from_env();
+    !models::installed(models::resolve(cfg.speech_model.as_deref()).id) || !cfg.local_model_installed()
 }
 
 pub fn open(cx: &mut App) -> anyhow::Result<AnyWindowHandle> {
@@ -134,30 +140,12 @@ struct Pick {
     body: &'static str,
 }
 
-const ENGLISH: [Pick; 3] = [
+const PICKS: [Pick; 3] = [
     Pick { id: "base.en", name: "Base", body: "The quickest to load. Good for short notes." },
     Pick { id: "small.en", name: "Small", body: "Fast on any recent computer. Spells names right." },
     Pick { id: "large-v3-turbo", name: "Large", body: "The most accurate. Best with a GPU." },
 ];
-const ANY_LANGUAGE: [Pick; 3] = [
-    Pick { id: "base", name: "Base", body: "The quickest to load. Good for short notes." },
-    Pick { id: "small", name: "Small", body: "A good balance of speed and accuracy." },
-    Pick { id: "large-v3-turbo", name: "Large", body: "The most accurate in every language. Best with a GPU." },
-];
 const RECOMMENDED: usize = 1;
-
-/// Hosted providers offered here, by their LOCALFLOW_API_URL name; "" takes
-/// any OpenAI-compatible base URL. The settings have the rest.
-const PROVIDERS: &[(&str, &str)] =
-    &[("Anthropic", "anthropic"), ("OpenAI", "openai"), ("OpenRouter", "openrouter"), ("Groq", "groq"), ("Gemini", "gemini"), ("Other", "")];
-
-#[derive(Clone, Debug, PartialEq)]
-enum Check {
-    Idle,
-    Running,
-    Ok(String),
-    Failed(String),
-}
 
 #[derive(Clone, Debug, PartialEq)]
 enum Mic {
@@ -174,6 +162,10 @@ fn speech_key(id: &str) -> String {
 /// The cleanup model's download, in Jobs.
 const MODEL_KEY: &str = "cleanup-model";
 
+/// This build runs the models on a GPU (Metal, or Vulkan when built with it;
+/// the Windows build is CPU only for now).
+const GPU_BUILD: bool = cfg!(any(target_os = "macos", feature = "vulkan"));
+
 /// The cleanup model's download: a bar, what it is, how far.
 fn job_progress(job: &Job, p: &Palette) -> Div {
     let known = matches!(job, Job::Running(_, total, _) if *total > 0);
@@ -188,21 +180,6 @@ fn job_progress(job: &Job, p: &Palette) -> Div {
         .when(known, |d| d.child(mono(format!("{}%", (job.fraction() * 100.) as u32), p)))
 }
 
-/// A provider's error in a line: what went wrong, without the JSON.
-fn plain_error(e: &str) -> String {
-    if e.contains("401") || e.contains("403") {
-        return "The provider didn't accept that key.".into();
-    }
-    if e.contains("404") {
-        return "The provider doesn't know that model.".into();
-    }
-    let line = e.lines().next().unwrap_or(e).trim().trim_end_matches('{').trim();
-    match line.char_indices().nth(90) {
-        Some((i, _)) => format!("{}…", &line[..i]),
-        None => line.to_string(),
-    }
-}
-
 fn me() -> std::path::PathBuf {
     std::env::current_exe().unwrap_or_else(|_| "localflow".into())
 }
@@ -213,17 +190,9 @@ pub struct Onboarding {
     index: usize,
     /// 1 going forward, -1 going back: where the next step slides in from.
     direction: f32,
-    english: bool,
     speech: &'static str,
-    api: bool,
     /// localflow-clean, or the .gguf file the env file names.
     local_model: String,
-    provider: usize,
-    api_model: Entity<InputState>,
-    api_url: Entity<InputState>,
-    api_key: Entity<InputState>,
-    has_key: bool,
-    check: Check,
     mic: Mic,
     accessibility: bool,
     try_field: Entity<TextareaState>,
@@ -239,16 +208,7 @@ impl Onboarding {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Onboarding {
         let cfg = Config::from_env();
         let speech = models::resolve(cfg.speech_model.as_deref()).id;
-        let english = !matches!(speech, "base" | "small");
-        let has_key = cfg.api_key.is_some() || cfg.key_file().exists();
-        // Opened again: start from what's saved.
-        let saved_url = std::env::var("LOCALFLOW_API_URL").ok().or_else(|| env_file_value(&cfg, "LOCALFLOW_API_URL")).unwrap_or_default();
-        let saved_url = saved_url.trim().to_lowercase();
-        let api = !saved_url.is_empty();
-        let provider = if api { PROVIDERS.iter().position(|(_, id)| *id == saved_url).unwrap_or(PROVIDERS.len() - 1) } else { 0 };
-        let custom_url = if api && PROVIDERS[provider].1.is_empty() { cfg.api_url.clone() } else { String::new() };
-        let api_model = if api && PROVIDERS[provider].1 != "anthropic" { cfg.model.clone() } else { String::new() };
-        let local_model = if api { MODEL.id.to_string() } else { cfg.model.clone() };
+        let local_model = cfg.model.clone();
         let try_field = cx.new(|cx| TextareaState::new(window, cx).placeholder("Your words land here."));
         cx.subscribe(&try_field, |this, field, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) && !field.read(cx).value().trim().is_empty() {
@@ -276,22 +236,12 @@ impl Onboarding {
         })
         .detach();
 
-        let view = Onboarding {
+        Onboarding {
             platform: Platform::current(),
             index: 0,
             direction: 1.,
-            english,
             speech,
-            api,
             local_model,
-            provider,
-            api_model: cx.new(|cx| InputState::new(window, cx).placeholder("Model name").default_value(api_model)),
-            api_url: cx.new(|cx| InputState::new(window, cx).placeholder("https://my-server.example/v1").default_value(custom_url)),
-            api_key: cx.new(|cx| {
-                InputState::new(window, cx).placeholder(if has_key { "Saved (type to replace)" } else { "API key" }).masked(true)
-            }),
-            has_key,
-            check: Check::Idle,
             mic: Mic::Unasked,
             accessibility: localflow_desktop::accessibility_allowed(),
             try_field,
@@ -301,27 +251,15 @@ impl Onboarding {
             copied: false,
             error: None,
             cfg,
-        };
-        for input in [view.api_model.clone(), view.api_url.clone(), view.api_key.clone()] {
-            cx.subscribe(&input, |this, _, _: &InputEvent, cx| {
-                this.check = Check::Idle;
-                cx.notify();
-            })
-            .detach();
         }
-        view
     }
 
     fn step(&self) -> Step {
         self.platform.steps()[self.index]
     }
 
-    fn picks(&self) -> &'static [Pick; 3] {
-        if self.english { &ENGLISH } else { &ANY_LANGUAGE }
-    }
-
     fn pick(&self) -> &'static Pick {
-        self.picks().iter().find(|p| p.id == self.speech).unwrap_or(&self.picks()[RECOMMENDED])
+        PICKS.iter().find(|p| p.id == self.speech).unwrap_or(&PICKS[RECOMMENDED])
     }
 
     fn speech_job(&self, cx: &App) -> Option<Job> {
@@ -332,16 +270,12 @@ impl Onboarding {
         models::installed(self.pick().id)
     }
 
-    fn provider_id(&self) -> &'static str {
-        PROVIDERS[self.provider].1
-    }
-
     fn local_ready(&self) -> bool {
         Config { model: self.local_model.clone(), ..self.cfg.clone() }.local_model_installed()
     }
 
     fn cleanup_job(&self, cx: &App) -> Option<Job> {
-        if self.api { None } else { Jobs::get(MODEL_KEY, cx) }
+        Jobs::get(MODEL_KEY, cx)
     }
 
     /// Download the cleanup model: on a thread of its own, going on after the
@@ -353,78 +287,24 @@ impl Onboarding {
     }
 
     /// The settings as chosen, as env-file changes.
-    fn changes(&self, cx: &App) -> Vec<(&'static str, Option<String>)> {
-        let mut changes: Vec<(&'static str, Option<String>)> = vec![];
-        if self.api {
-            let id = self.provider_id();
-            let url = if id.is_empty() { self.api_url.read(cx).value().trim().to_string() } else { id.to_string() };
-            let model = if id == "anthropic" { HAIKU.to_string() } else { self.api_model.read(cx).value().trim().to_string() };
-            changes.push(("LOCALFLOW_API_URL", Some(url)));
-            changes.push(("LOCALFLOW_MODEL", Some(model).filter(|m| !m.is_empty())));
-        } else {
-            changes.push(("LOCALFLOW_API_URL", None));
-            changes.push(("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())));
-        }
-        changes.push(("LOCALFLOW_SPEECH_MODEL", Some(self.pick().id.to_string())));
-        changes
-    }
-
-    fn typed_key(&self, cx: &App) -> String {
-        self.api_key.read(cx).value().trim().to_string()
+    fn changes(&self) -> Vec<(&'static str, Option<String>)> {
+        vec![
+            ("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())),
+            ("LOCALFLOW_SPEECH_MODEL", Some(self.pick().id.to_string())),
+            // From before localflow ran only its own model.
+            ("LOCALFLOW_API_URL", None),
+            ("LOCALFLOW_API_KEY", None),
+        ]
     }
 
     /// Save what's chosen so far, and mark the onboarding as not finished.
-    fn save(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        let changes = self.changes(cx);
+    fn save(&mut self) -> Result<(), String> {
+        let changes = self.changes();
         let dir = self.cfg.config_dir.clone();
-        let key = self.typed_key(cx);
         let pairs: Vec<(&str, Option<&str>)> = changes.iter().map(|(k, v)| (*k, v.as_deref())).collect();
         save_settings(&dir, &pairs).map_err(|e| e.to_string())?;
-        if self.api && !key.is_empty() {
-            save_api_key(&dir, &key).map_err(|e| e.to_string())?;
-            self.has_key = true;
-        }
         std::fs::write(dir.join(MARKER), "").map_err(|e| e.to_string())?;
         after_save()
-    }
-
-    /// Ask the cleanup model for one word, with the settings as typed.
-    fn test(&mut self, cx: &mut Context<Self>) {
-        let changes = self.changes(cx);
-        let key = self.typed_key(cx);
-        let dir = self.cfg.config_dir.clone();
-        let get = move |k: &str| -> Option<String> {
-            if k == "LOCALFLOW_API_KEY" && !key.is_empty() {
-                return Some(key.clone());
-            }
-            match changes.iter().find(|(name, _)| *name == k) {
-                Some((_, value)) => Some(value.clone().unwrap_or_default()),
-                None => std::env::var(k).ok(),
-            }
-        };
-        let lf = Localflow::new(Config::from_vars(&get, dir));
-        self.check = Check::Running;
-        let task = cx.background_executor().spawn(async move {
-            let model = lf.cfg.model.clone();
-            let answer = if lf.cfg.local() {
-                lf.clean("um testing one two three", NO_FILES).map(drop)
-            } else {
-                lf.chat(&model, &[Msg::user("Reply with just: ok")], 32).map(drop)
-            };
-            answer.map(|_| format!("It works: {model}")).map_err(|e| e.0)
-        });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.check = match result {
-                    Ok(text) => Check::Ok(text),
-                    Err(e) => Check::Failed(plain_error(&e)),
-                };
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
     }
 
     fn ask_mic(&mut self, cx: &mut Context<Self>) {
@@ -450,19 +330,6 @@ impl Onboarding {
         cx.notify();
     }
 
-    fn can_continue(&self, cx: &App) -> bool {
-        match self.step() {
-            Step::Cleanup if self.api => {
-                let id = self.provider_id();
-                let key = self.has_key || !self.typed_key(cx).is_empty();
-                let model = id == "anthropic" || !self.api_model.read(cx).value().trim().is_empty();
-                let url = !id.is_empty() || !self.api_url.read(cx).value().trim().is_empty();
-                key && model && url
-            }
-            _ => true,
-        }
-    }
-
     fn go(&mut self, to: usize, cx: &mut Context<Self>) {
         let to = to.min(self.platform.steps().len() - 1);
         self.direction = if to >= self.index { 1. } else { -1. };
@@ -473,9 +340,6 @@ impl Onboarding {
     }
 
     fn next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_continue(cx) {
-            return;
-        }
         match self.step() {
             Step::Speech => {
                 let id = self.pick().id;
@@ -486,12 +350,12 @@ impl Onboarding {
                 }
             }
             Step::Cleanup => {
-                if let Err(e) = self.save(cx) {
+                if let Err(e) = self.save() {
                     self.error = Some(format!("Couldn't save the settings: {e}"));
                     cx.notify();
                     return;
                 }
-                if !self.api && !self.local_ready() && !matches!(self.cleanup_job(cx), Some(Job::Running(..) | Job::Done)) {
+                if !self.local_ready() && !matches!(self.cleanup_job(cx), Some(Job::Running(..) | Job::Done)) {
                     self.get_model(cx);
                 }
             }
@@ -503,7 +367,7 @@ impl Onboarding {
 
     /// Save once more (you may have gone back and changed something), and close.
     fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.save(cx) {
+        match self.save() {
             Ok(()) => {
                 let _ = std::fs::remove_file(self.cfg.config_dir.join(MARKER));
                 window.remove_window();
@@ -598,11 +462,6 @@ fn note(icon_name: &str, text: impl Into<SharedString>, p: &Palette) -> Div {
         .child(text.into())
 }
 
-/// A tonal, borderless field around an input.
-fn field(input: impl IntoElement, p: &Palette) -> Div {
-    div().h(px(36.)).flex().items_center().px(px(16.)).rounded_full().bg(p.muted).text_size(px(14.)).child(input)
-}
-
 fn progress_bar(fraction: f32, p: &Palette) -> Div {
     div()
         .relative()
@@ -686,7 +545,7 @@ impl Onboarding {
                             .text_size(px(15.))
                             .line_height(px(24.))
                             .text_color(p.dim)
-                            .child("Talk, and get clean text where you type. Three quick choices and you're set."),
+                            .child("Talk, and get clean text where you type. A few quick steps and you're set."),
                     )
                     .relative()
                     .with_animation("welcome-text", Animation::new(Duration::from_millis(900)).with_easing(ease_out_quint()), |el, t| {
@@ -702,7 +561,7 @@ impl Onboarding {
                     .items_center()
                     .gap(px(20.))
                     .child(primary_button("start", "Get started", true, p).on_click(cx.listener(|this, _, window, cx| this.next(window, cx))))
-                    .child(note("lock", "Runs on your computer. Nothing leaves it unless you add an API key.", p))
+                    .child(note("lock", "Runs on your computer. Nothing leaves it.", p))
                     .relative()
                     .with_animation("welcome-actions", Animation::new(Duration::from_millis(1000)).with_easing(ease_out_quint()), |el, t| {
                         let t = ((t - 0.55) / 0.45).clamp(0., 1.);
@@ -712,27 +571,9 @@ impl Onboarding {
             )
     }
 
-    fn speech(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
-        let this = cx.entity();
-        let language = chips(
-            "language",
-            &[(true, "English".into()), (false, "Other languages".into())],
-            self.english,
-            move |english, _, cx| {
-                this.update(cx, |this, cx| {
-                    if this.english != english {
-                        this.english = english;
-                        this.speech = this.picks()[RECOMMENDED].id;
-                        cx.notify();
-                    }
-                })
-            },
-            p,
-            window,
-        );
+    fn speech(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
         let chosen = self.pick().id;
-        let cells = self
-            .picks()
+        let cells = PICKS
             .iter()
             .enumerate()
             .map(|(i, pick)| {
@@ -775,83 +616,45 @@ impl Onboarding {
         div()
             .flex()
             .flex_col()
-            .child(head("How it hears you", "A speech model turns your voice into words, right here on this computer. Pick one; it downloads while you finish setting up.", p))
+            .child(head("How it hears you", "A speech model turns your English into words, right here on this computer. Pick one; it downloads while you finish setting up.", p))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(20.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(12.))
-                            .child(div().text_size(px(14.)).text_color(p.dim).child("You speak"))
-                            .child(language),
-                    )
                     .child(band(cells, p))
-                    .child(note("cpu", "Runs on your GPU when there is one, and loads only while it transcribes.", p)),
+                    .child(note("cpu", if GPU_BUILD { "Runs on your GPU when there is one, and loads only while it transcribes." } else { "Runs on the CPU for now, and loads only while it transcribes." }, p)),
             )
     }
 
-    fn cleanup(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
-        let choices = [
-            (false, "On this computer", "Private: nothing leaves your machine. localflow runs its own small model."),
-            (true, "With your API key", "Nothing to download. Each dictation goes to the provider you pick."),
-        ];
-        let cells = choices
-            .iter()
-            .enumerate()
-            .map(|(i, (api, title, body))| {
-                let (api, checked) = (*api, self.api == *api);
-                self.option(
-                    ("cleanup", i),
-                    checked,
-                    vec![
-                        div()
-                            .text_size(px(15.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(if checked { p.fg } else { p.fg.opacity(0.7) })
-                            .child(*title)
-                            .into_any_element(),
-                        div().text_size(px(13.)).line_height(px(18.)).text_color(p.dim).child(*body).into_any_element(),
-                    ],
-                    move |this, _| {
-                        this.api = api;
-                        this.check = Check::Idle;
-                    },
-                    p,
-                    cx,
-                )
-            })
-            .collect();
-        let detail = if self.api { self.api_detail(p, window, cx) } else { self.local_detail(p, cx) };
+    fn cleanup(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let about = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap(px(8.))
+            .px(px(24.))
+            .py(px(20.))
+            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).child(MODEL.id))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(p.dim)
+                    .child("localflow's own model, made for cleaning up dictation. Private: nothing leaves your machine."),
+            )
+            .into_any_element();
         div()
             .flex()
             .flex_col()
             .size_full()
             .child(head(
-                "Where cleanup runs",
+                "How it cleans up",
                 "A small language model turns what you said into what you meant: no fillers, no changes of mind, proper punctuation.",
                 p,
             ))
-            .child(band(cells, p))
-            .child(
-                div()
-                    .id(("detail", self.api as usize))
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(14.))
-                    .px(px(32.))
-                    .pt(px(22.))
-                    .child(detail)
-                    .with_animation(("detail-in", self.api as usize), Animation::new(Duration::from_millis(350)).with_easing(ease_out_quint()), |el, t| {
-                        el.opacity(t).top(px((1. - t) * 6.))
-                    }),
-            )
+            .child(band(vec![about], p))
+            .child(div().flex().flex_col().items_center().gap(px(14.)).px(px(32.)).pt(px(22.)).child(self.local_detail(p, cx)))
     }
 
     fn local_detail(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
@@ -880,71 +683,8 @@ impl Onboarding {
                 .text_size(px(12.))
                 .line_height(px(18.))
                 .text_color(p.dim)
-                .child("It runs inside localflow, on your GPU when there is one, and loads only while you dictate."),
+                .child(if GPU_BUILD { "It runs inside localflow, on your GPU when there is one, and loads only while you dictate." } else { "It runs inside localflow, on the CPU for now, and loads only while you dictate." }),
         )
-    }
-
-    fn api_detail(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
-        let this = cx.entity();
-        let options: Vec<(usize, SharedString)> = PROVIDERS.iter().enumerate().map(|(i, (label, _))| (i, SharedString::from(*label))).collect();
-        let providers = chips(
-            "provider",
-            &options,
-            self.provider,
-            move |i, _, cx| {
-                this.update(cx, |this, cx| {
-                    this.provider = i;
-                    this.check = Check::Idle;
-                    cx.notify();
-                })
-            },
-            p,
-            window,
-        );
-        let id = self.provider_id();
-        let result = match &self.check {
-            Check::Idle => None,
-            Check::Running => Some(div().text_color(p.dim).child("Asking…")),
-            Check::Ok(text) => Some(div().flex().items_center().gap(px(6.)).text_color(p.primary).child(icon("check", 13., p.primary)).child(text.clone())),
-            Check::Failed(e) => Some(div().text_color(p.record).child(e.clone())),
-        };
-        div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(12.))
-            .w_full()
-            .child(providers)
-            .when(id.is_empty(), |d| d.child(field(Input::new(&self.api_url).appearance(false), p).w(px(440.))))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(8.))
-                    .w(px(440.))
-                    .when(id != "anthropic", |d| d.child(field(Input::new(&self.api_model).appearance(false), p).w(px(170.))))
-                    .child(field(Input::new(&self.api_key).appearance(false), p).flex_1())
-                    .child(
-                        secondary_button("test", "Test", self.check != Check::Running, p)
-                            .h(px(36.))
-                            .on_click(cx.listener(|this, _, _, cx| this.test(cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .h(px(18.))
-                    .max_w(px(440.))
-                    .overflow_hidden()
-                    .text_size(px(12.))
-                    .whitespace_nowrap()
-                    .children(result)
-                    .when(self.check == Check::Idle, |d| {
-                        d.child(note(
-                            "lock",
-                            if id == "anthropic" { "Saved where only you can read it. Uses Claude Haiku." } else { "Saved where only you can read it." },
-                            p,
-                        ))
-                    }),
-            )
     }
 
     fn permissions(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
@@ -970,7 +710,12 @@ impl Onboarding {
                             d.child(div().text_size(px(12.)).text_color(p.record).child(e))
                         })
                 } else {
-                    div().flex().child(secondary_button("allow-access", "Allow", true, p).on_click(|_, _, _| localflow_desktop::ask_accessibility()))
+                    div().flex().child(secondary_button("allow-access", "Allow", true, p).on_click(|_, _, _| {
+                        // macOS prompts once; after a Deny (or an update, which makes
+                        // it a new app to macOS) only the pane itself can switch it on.
+                        localflow_desktop::ask_accessibility();
+                        localflow_desktop::open_accessibility_settings();
+                    }))
                 };
                 div()
                     .relative()
@@ -1144,16 +889,11 @@ impl Onboarding {
             _ if self.speech_ready() => "Ready".to_string(),
             _ => "Not downloaded".to_string(),
         };
-        let (where_, what) = if self.api {
-            ("With your API key", PROVIDERS[self.provider].0.to_string())
-        } else {
-            let what = match self.cleanup_job(cx) {
-                Some(job @ Job::Running(..)) => format!("Downloading · {}%", (job.fraction() * 100.) as u32),
-                Some(Job::Failed(_)) => "Didn't download".to_string(),
-                _ if self.local_ready() => "Ready".to_string(),
-                _ => "Not downloaded".to_string(),
-            };
-            ("On this computer", what)
+        let cleanup_note = match self.cleanup_job(cx) {
+            Some(job @ Job::Running(..)) => format!("Downloading · {}%", (job.fraction() * 100.) as u32),
+            Some(Job::Failed(_)) => "Didn't download".to_string(),
+            _ if self.local_ready() => "Ready".to_string(),
+            _ => "Not downloaded".to_string(),
         };
         let keys = match self.platform {
             Platform::Mac => ("Option Shift Space", "Hold or tap"),
@@ -1161,8 +901,8 @@ impl Onboarding {
             Platform::Linux => ("F9", "Super Ctrl X toggles"),
         };
         let cells = [
-            ("Speech", format!("{}{}", pick.name, if self.english { " (English)" } else { "" }), speech_note),
-            ("Cleanup", where_.to_string(), what),
+            ("Speech", pick.name.to_string(), speech_note),
+            ("Cleanup", MODEL.id.to_string(), cleanup_note),
             ("Keys", keys.0.to_string(), keys.1.to_string()),
         ]
         .into_iter()
@@ -1289,7 +1029,6 @@ impl Onboarding {
             Step::Permissions if !(self.accessibility && self.mic == Mic::Allowed) => "Skip for now",
             _ => "Continue",
         };
-        let enabled = self.can_continue(cx);
         div()
             .flex_none()
             .flex()
@@ -1308,7 +1047,7 @@ impl Onboarding {
                             this.go(this.index - 1, cx)
                         }
                     })))
-                    .child(primary_button("next", label, enabled, p).when(enabled, |b| b.on_click(cx.listener(|this, _, window, cx| this.next(window, cx))))),
+                    .child(primary_button("next", label, true, p).on_click(cx.listener(|this, _, window, cx| this.next(window, cx)))),
             )
     }
 }
@@ -1329,8 +1068,8 @@ impl Render for Onboarding {
         };
         let content = match step {
             Step::Welcome => self.welcome(&p, cx),
-            Step::Speech => self.speech(&p, window, cx),
-            Step::Cleanup => self.cleanup(&p, window, cx),
+            Step::Speech => self.speech(&p, cx),
+            Step::Cleanup => self.cleanup(&p, cx),
             Step::Permissions => self.permissions(&p, cx),
             Step::Keys => self.keys(&p, cx),
             Step::Try => self.try_it(&p, cx),

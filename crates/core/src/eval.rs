@@ -72,40 +72,25 @@ pub fn grade(out: &str, expected: &str) -> bool {
     norm(out) == norm(expected) && out.trim().lines().count() == 1
 }
 
-pub fn run(lf: &Localflow, model: &str, review_model: &str) -> Result<()> {
+pub fn run(lf: &Localflow) -> Result<()> {
     let cases = cases();
-    lf.clean_with("warm up", model, review_model, NO_FILES)?; // load the models so the first case isn't timed cold
-    let (mut drafts_ok, mut finals_ok, mut fixed, mut broke, mut changed) = (0, 0, 0, 0, 0);
-    let (mut ms_draft, mut ms_review) = (0, 0);
-    println!("model: {model}, review: {review_model}\n");
+    lf.clean("warm up", NO_FILES)?; // load the model so the first case isn't timed cold
+    let (mut passed, mut ms) = (0, 0);
+    println!("model: {}\n", lf.cfg.model);
     let show = |t: &str| t.replace('\n', " | ").chars().take(300).collect::<String>();
     for (raw, expected) in &cases {
-        let _ = lf.warm(model); // as when dictating: the hotkey warms the model while you speak
-        let r = lf.clean_with(raw, model, review_model, NO_FILES)?;
-        let (d_ok, f_ok) = (grade(&r.draft, expected), grade(&r.text, expected));
-        drafts_ok += d_ok as usize;
-        finals_ok += f_ok as usize;
-        changed += (r.text != r.draft) as usize;
-        fixed += (f_ok && !d_ok) as usize;
-        broke += (d_ok && !f_ok) as usize;
-        ms_draft += r.ms_draft;
-        ms_review += r.ms_review;
-        let mut tag = String::from(if f_ok { "PASS" } else { "FAIL" });
-        if d_ok != f_ok {
-            tag += if f_ok { " (review fixed)" } else { " (review broke)" };
-        }
+        let _ = lf.warm(); // as when dictating: the hotkey warms the model while you speak
+        let r = lf.clean_detailed(raw, NO_FILES)?;
+        let ok = grade(&r.text, expected);
+        passed += ok as usize;
+        ms += r.ms;
         let short: String = raw.chars().take(110).collect();
-        println!("{tag} {:5}+{:<5}ms [{}]  {short}", r.ms_draft, r.ms_review, r.verdict);
-        if !f_ok || d_ok != f_ok {
-            println!("           want:  {}", show(expected));
-            if d_ok != f_ok {
-                println!("           draft: {}", show(&r.draft));
-            }
-            println!("           final: {}", show(&r.text));
+        println!("{} {:5}ms [{}]  {short}", if ok { "PASS" } else { "FAIL" }, r.ms, r.verdict);
+        if !ok {
+            println!("           want: {}", show(expected));
+            println!("           got:  {}", show(&r.text));
         }
     }
-    let n = cases.len().max(1) as u128;
-    println!("\ndraft {drafts_ok}/{}, final {finals_ok}/{} (review changed {changed}: fixed {fixed}, broke {broke}); \
-              avg {}ms draft + {}ms review", cases.len(), cases.len(), ms_draft / n, ms_review / n);
+    println!("\n{passed}/{} passed; avg {}ms", cases.len(), ms / cases.len().max(1) as u128);
     Ok(())
 }

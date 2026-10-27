@@ -2,8 +2,9 @@ name: ci
 
 # Every push, on Linux, macOS and Windows: the tests, clippy, and a dictation
 # end to end with the release build (cargo xtask e2e): text-to-speech through
-# our speech engine and a fake cleanup API, pasted into a text box through
-# the hotkey (macOS, Windows) or `localflow start` / `stop` (Linux, on Xvfb).
+# our speech engine and localflow's own cleanup model, pasted into a text box
+# through the hotkey (macOS, Windows) or `localflow start` / `stop` (Linux, on
+# Xvfb).
 
 on:
   push:
@@ -25,6 +26,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v2-portable-ggml
+      # localflow's own cleanup model, which the end-to-end dictation downloads.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/localflow/models/localflow-clean-*.gguf
+            ~/Library/Application Support/localflow/models/localflow-clean-*.gguf
+            ~/AppData/Local/localflow/models/localflow-clean-*.gguf
+          key: localflow-clean-${{ hashFiles('crates/core/src/local.rs') }}
       - name: Linux packages (headers to build; Xvfb, paste tools, speech and Vulkan to run)
         if: runner.os == 'Linux'
         run: |

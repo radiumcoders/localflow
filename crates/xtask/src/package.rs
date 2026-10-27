@@ -3,7 +3,7 @@
 //! macOS (localflow.app), an AppImage on Linux.
 //!
 //! Needs cmake (whisper.cpp), WiX on Windows (`dotnet tool install --global
-//! wix --version 5.0.2`), and on Linux the headers listed in
+//! wix --version 5.0.2`, plus `wix extension add -g WixToolset.Util.wixext/5.0.2`), and on Linux the headers listed in
 //! .github/workflows/package.yml. appimagetool is downloaded.
 
 use std::path::{Path, PathBuf};
@@ -111,7 +111,7 @@ fn msi(build: &Path, exe: &Path, version: &str) -> Result<PathBuf, String> {
     std::fs::copy(exe, app.join("localflow.exe")).map_err(|e| e.to_string())?;
     let out = build.join(format!("localflow-{version}-x64.msi"));
     let wxs = ROOT.join("pkg/localflow.wxs");
-    run("wix", &["build", &s(&wxs), "-arch", "x64", "-d", &format!("Version={version}"), "-d",
+    run("wix", &["build", &s(&wxs), "-ext", "WixToolset.Util.wixext", "-arch", "x64", "-d", &format!("Version={version}"), "-d",
                  &format!("AppDir={}", s(&app)), "-d", &format!("Icon={}", s(&build.join("icon.ico"))), "-o", &s(&out)])?;
     Ok(out)
 }

@@ -1,5 +1,6 @@
-//! One dictation: record, transcribe, clean up, paste, then watch for your
-//! fixes. Runs on worker threads; the overlay hears about it through `Ui`.
+//! One dictation: record, transcribe, clean up, paste, and keep what was
+//! pasted for the learn key. Runs on worker threads; the overlay hears about
+//! it through `Ui`.
 
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -8,7 +9,7 @@ use std::time::{Duration, Instant};
 use localflow_core::agent::{Command, Submit, command, split_send};
 use localflow_core::{Config, Localflow};
 use localflow_desktop::history::{self, Entry};
-use localflow_desktop::learn::{Learning, learning_mode, remember};
+use localflow_desktop::learn::remember;
 use localflow_desktop::paste::{Key, paste_text, press};
 use localflow_desktop::paths::{info, warn};
 use localflow_desktop::project::file_candidates;
@@ -17,7 +18,7 @@ use localflow_speech::{RATE, Recorder, Transcript, level, read_wav};
 
 use crate::ui::{Ui, UiMsg};
 
-/// Speech to text with the model and language from the settings, nudged
+/// Speech to text with the model from the settings, nudged
 /// towards the spellings in your vocabulary.
 pub fn transcribe(lf: &Localflow, samples: &[i16]) -> Result<Transcript, String> {
     let words: Vec<String> = lf
@@ -33,7 +34,6 @@ fn speech_config(cfg: &Config, vocabulary: Vec<String>) -> localflow_speech::Spe
     localflow_speech::SpeechConfig {
         model: cfg.speech_model.clone(),
         use_gpu: cfg.speech_gpu,
-        language: cfg.language.clone(),
         vocabulary,
         ..Default::default()
     }
@@ -101,7 +101,7 @@ impl Dictation {
             let warm = lf.clone();
             std::thread::spawn(move || {
                 // Load the local model while you speak (nothing to do on an API).
-                if let Err(e) = warm.warm(&warm.cfg.model) {
+                if let Err(e) = warm.warm() {
                     info(format_args!("warm failed: {e}"));
                 }
             });
@@ -176,8 +176,9 @@ impl Dictation {
             info(format_args!("{secs:.1}s of audio: {} to {agent}{}", cmd.describe(), if done { "" } else { " (keys not sent)" }));
             return message(if done { cmd.describe() } else { "Couldn't press the keys" }, 1200);
         }
-        let mut input = heard.for_cleanup(self.lf.cfg.asides);
+        let mut input = heard.for_cleanup(true);
         let mut send = agent.is_some() && self.lf.cfg.submit == Submit::Always;
+        let mut as_heard = false;
         if agent.is_some() && self.lf.cfg.submit == Submit::Said {
             let (rest, said_send) = split_send(&input);
             (input, send) = (rest, said_send);
@@ -192,6 +193,7 @@ impl Dictation {
                 Err(e) => {
                     // Never lose a dictation: the transcript as heard.
                     warn(format_args!("cleanup failed, pasting the raw transcript: {e}"));
+                    as_heard = true;
                     input.replace("<quiet>", "").replace("</quiet>", "")
                 }
             }
@@ -208,10 +210,7 @@ impl Dictation {
             press(Key::Enter)
         };
         keep(&text, if sent { "sent" } else if pasted { "pasted" } else { "copied" });
-        let stamp = remember(&text);
-        if pasted && !sent && !self.raw {
-            crate::session::watch_for_fixes(target.as_ref().and_then(|t| t.pid), stamp);
-        }
+        remember(&text);
         info(format_args!(
             "{secs:.1}s of audio: transcribed in {:.2}s, done in {:.2}s{}{}{}",
             t_stt.as_secs_f32(),
@@ -224,7 +223,11 @@ impl Dictation {
             let keys = if cfg!(target_os = "macos") { "Cmd+V" } else { "Ctrl+V" };
             return message(&format!("Copied: paste with {keys}"), 2500);
         }
-        // A moment of "it went in", once the text is there.
+        // A moment of "it went in", once the text is there (and a word when
+        // the cleanup couldn't run: the transcript as heard went in).
+        if as_heard {
+            return message("Pasted as heard (no cleanup)", 1800);
+        }
         message(if sent { "Sent" } else { "Pasted" }, 900)
     }
 }
@@ -264,9 +267,4 @@ fn join_for(handle: JoinHandle<()>, limit: Duration) {
     if handle.is_finished() {
         let _ = handle.join();
     }
-}
-
-/// Learning on its own is on (LOCALFLOW_LEARN=auto).
-pub fn learns_on_its_own() -> bool {
-    learning_mode() == Learning::Auto
 }
