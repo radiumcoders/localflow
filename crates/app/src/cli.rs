@@ -11,7 +11,7 @@ use localflow_core::local::MODEL;
 use localflow_core::{Config, Localflow, NO_FILES, eval};
 use localflow_desktop::history;
 use localflow_desktop::paths::utc;
-use localflow_speech::{RATE, Recorder, level, models, read_wav, wav_bytes};
+use localflow_speech::{RATE, Recorder, default_microphone, level, microphones, models, read_wav, wav_bytes};
 
 const USAGE: &str = "localflow: talk, and get clean text where you type
 
@@ -25,6 +25,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow history --last         # just the last text that went out
     localflow history --clear
     localflow models [download ID]   # speech and cleanup models: list, or download one
+    localflow mics                   # the microphones, by the names LOCALFLOW_MIC takes
     localflow listen [SECONDS]       # record (default 5 s), transcribe, clean up, print
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
     localflow record SECONDS FILE.wav
@@ -53,6 +54,7 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         }
         "models" => return models_command(&lf.cfg, &args[1..]),
+        "mics" => return mics_command(&lf.cfg),
         "history" => return history_command(&lf.cfg, &args[1..]),
         "listen" => {
             let seconds = arg(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
@@ -156,6 +158,32 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
             }
         }
         _ => return usage(),
+    }
+    ExitCode::SUCCESS
+}
+
+/// The microphones, marking the system's default and the one a dictation
+/// records: LOCALFLOW_MIC's when it's connected, else the default.
+fn mics_command(cfg: &Config) -> ExitCode {
+    let mics = microphones();
+    if mics.is_empty() {
+        return fail("no microphones");
+    }
+    let default = default_microphone();
+    let chosen = cfg.mic.as_deref().filter(|m| mics.iter().any(|name| name.trim() == *m));
+    for name in &mics {
+        let is_default = default.as_deref() == Some(name.as_str());
+        let in_use = chosen.map_or(is_default, |m| name.trim() == m);
+        let tags = match (is_default, in_use) {
+            (true, true) => "  (system default, in use)",
+            (true, false) => "  (system default)",
+            (false, true) => "  (in use)",
+            (false, false) => "",
+        };
+        println!("  {name}{tags}");
+    }
+    if let Some(mic) = cfg.mic.as_deref().filter(|_| chosen.is_none()) {
+        println!("\nLOCALFLOW_MIC is {mic}, which isn't available: the system default is recorded");
     }
     ExitCode::SUCCESS
 }

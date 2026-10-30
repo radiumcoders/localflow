@@ -331,6 +331,7 @@ Logs (never your words; those are in the [history](#history)) go to `~/.local/st
 
 ```sh
 localflow models [download ID]       # speech models and the cleanup model (localflow-clean)
+localflow mics                       # the microphones, by the names LOCALFLOW_MIC takes
 localflow history [N]                # what you said and what went out
 localflow listen 5                   # record 5 s, transcribe, clean up, print (segments and levels on stderr)
 localflow transcribe talk.wav        # the same from a WAV file
