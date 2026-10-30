@@ -32,7 +32,8 @@ pub struct Options {
     /// CPU threads; 0 for a sensible number for this machine.
     pub threads: usize,
     /// whisper's whole 30 s window (true), or just the dictation's length
-    /// (false). None: the whole window on a GPU, the shortened one on the CPU.
+    /// (false). None: the whole window on a graphics card, and for Large on
+    /// any GPU; else the shortened one.
     pub full_window: Option<bool>,
 }
 
@@ -127,8 +128,8 @@ fn quiet_logs() {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gpu {
     pub name: String,
-    /// Part of the processor (a laptop's Intel or AMD graphics), not a card
-    /// of its own. Apple Silicon counts as a GPU of its own.
+    /// Part of the processor, sharing its memory: a laptop's Intel or AMD
+    /// graphics, and Apple Silicon. Not a graphics card of its own.
     pub integrated: bool,
 }
 
@@ -146,7 +147,9 @@ pub fn gpu() -> Option<&'static Gpu> {
             (0..sys::ggml_backend_dev_count()).find_map(|i| {
                 let dev = sys::ggml_backend_dev_get(i);
                 let kind = sys::ggml_backend_dev_type(dev);
-                let integrated = kind == sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU;
+                // Metal says GPU, but a Mac's is part of its processor (and an
+                // Intel Mac uses the CPU anyway).
+                let integrated = kind == sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU || cfg!(target_os = "macos");
                 if kind != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU && !integrated {
                     return None;
                 }
@@ -168,8 +171,8 @@ fn default_threads() -> usize {
 pub struct Engine {
     ctx: WhisperContext,
     vad: Option<WhisperVadContext>,
-    /// whisper runs on a GPU, where its full 30 s window costs little.
-    on_gpu: bool,
+    /// whisper's full 30 s window, when [`Options::full_window`] doesn't say.
+    full_window: bool,
 }
 
 /// A stretch of the recording that went to whisper: where it starts in the
@@ -202,7 +205,12 @@ impl Engine {
             vp.set_use_gpu(false); // tiny; the GPU would only add setup time
             WhisperVadContext::new(p.to_str()?, vp).ok()
         });
-        Ok(Engine { ctx, vad, on_gpu: use_gpu && gpu().is_some() })
+        // The full window on a graphics card, where it costs little; and for
+        // Large (32 encoder layers) on any GPU: with a shortened one it got
+        // nearly twice the words wrong on hard speech (LibriSpeech test-other,
+        // 8.8% against 4.8%), where Small barely changed (8.7% against 8.4%).
+        let full_window = use_gpu && gpu().is_some_and(|g| !g.integrated || ctx.model_n_audio_layer() >= 24);
+        Ok(Engine { ctx, vad, full_window })
     }
 
     pub fn has_vad(&self) -> bool {
@@ -274,14 +282,13 @@ impl Engine {
 
         let threads = if opts.threads == 0 { default_threads() } else { opts.threads };
         let prompt = vocabulary_prompt(&opts.vocabulary);
-        // whisper encodes 30 s at a time, silence included. On the CPU, a short
-        // dictation encodes just its length (50 frames a second, plus some
-        // room), several times faster. But a shortened window can send whisper
-        // round in a loop ("She passed. Cotton. She passed. Cotton."): then
-        // that dictation goes again with the full window. On a GPU the full
-        // window costs little, so it's always used there.
+        // whisper encodes 30 s at a time, silence included. A short dictation
+        // encodes just its length (50 frames a second, plus some room), several
+        // times faster. But a shortened window can send whisper round in a loop
+        // ("She passed. Cotton. She passed. Cotton."): then that dictation goes
+        // again with the full window. Which one a model gets: see load().
         let input_s = input.len() as f32 / RATE as f32;
-        let full = std::env::var_os("LOCALFLOW_SPEECH_FULL_WINDOW").is_some() || opts.full_window.unwrap_or(self.on_gpu);
+        let full = std::env::var_os("LOCALFLOW_SPEECH_FULL_WINDOW").is_some() || opts.full_window.unwrap_or(self.full_window);
         let shortened = (input_s < 28.0 && !full).then(|| (((input_s + 1.0) * 50.0) as u32).div_ceil(64) as i32 * 64);
         let mut heard = self.decode(&input, &prompt, threads, shortened)?;
         if shortened.is_some() && transcript::loops(&heard.iter().map(|(t, _, _)| t.as_str()).collect::<Vec<_>>().join(" ")) {
