@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 pub use audio::{RATE, level, read_wav, resample, wav_bytes};
 pub use engine::{Engine, Options, SpeechConfig, transcribe};
-pub use recorder::{Recorder, default_microphone, microphones};
+pub use recorder::{Microphone, Recorder, microphones};
 pub use transcript::{QUIET_DROP_DB, Segment, Transcript};
 
 #[derive(Debug, Clone, PartialEq)]

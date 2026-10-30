@@ -11,7 +11,7 @@ use localflow_core::local::MODEL;
 use localflow_core::{Config, Localflow, NO_FILES, eval};
 use localflow_desktop::history;
 use localflow_desktop::paths::utc;
-use localflow_speech::{RATE, Recorder, default_microphone, level, microphones, models, read_wav, wav_bytes};
+use localflow_speech::{RATE, Recorder, level, microphones, models, read_wav, wav_bytes};
 
 const USAGE: &str = "localflow: talk, and get clean text where you type
 
@@ -163,24 +163,26 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
 }
 
 /// The microphones, marking the system's default and the one a dictation
-/// records: LOCALFLOW_MIC's when it's connected, else the default.
+/// records: LOCALFLOW_MIC's when it's connected, else the default. The id
+/// LOCALFLOW_MIC takes goes under the name when it's another.
 fn mics_command(cfg: &Config) -> ExitCode {
     let mics = microphones();
     if mics.is_empty() {
         return fail("no microphones");
     }
-    let default = default_microphone();
-    let chosen = cfg.mic.as_deref().filter(|m| mics.iter().any(|name| name.trim() == *m));
-    for name in &mics {
-        let is_default = default.as_deref() == Some(name.as_str());
-        let in_use = chosen.map_or(is_default, |m| name.trim() == m);
-        let tags = match (is_default, in_use) {
+    let chosen = cfg.mic.as_deref().filter(|m| mics.iter().any(|mic| mic.id.trim() == *m));
+    for mic in &mics {
+        let in_use = chosen.map_or(mic.default, |m| mic.id.trim() == m);
+        let tags = match (mic.default, in_use) {
             (true, true) => "  (system default, in use)",
             (true, false) => "  (system default)",
             (false, true) => "  (in use)",
             (false, false) => "",
         };
-        println!("  {name}{tags}");
+        println!("  {}{tags}", mic.name);
+        if mic.id != mic.name {
+            println!("    {}", mic.id);
+        }
     }
     if let Some(mic) = cfg.mic.as_deref().filter(|_| chosen.is_none()) {
         println!("\nLOCALFLOW_MIC is {mic}, which isn't available: the system default is recorded");

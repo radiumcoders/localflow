@@ -14,7 +14,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use localflow_core::local::MODEL;
 use localflow_core::{Config, Localflow, save_settings};
-use localflow_speech::{microphones, models};
+use localflow_speech::{Microphone, microphones, models};
 
 use super::look::{self, Palette};
 
@@ -137,10 +137,10 @@ fn pick(items: &[(&'static str, &'static str)], value: &str) -> &'static str {
 /// The microphone select's rows, as (label, LOCALFLOW_MIC): the system's
 /// default, then the microphones there are, then the saved one when it isn't
 /// there now, so saving with the headset unplugged doesn't forget it.
-fn mic_rows(saved: Option<&str>, names: Vec<String>) -> Vec<(SharedString, Option<String>)> {
-    let missing = saved.filter(|s| !names.iter().any(|n| n == s)).map(|s| (format!("{s} (not available)").into(), Some(s.to_string())));
+fn mic_rows(saved: Option<&str>, mics: Vec<Microphone>) -> Vec<(SharedString, Option<String>)> {
+    let missing = saved.filter(|s| !mics.iter().any(|m| m.id == *s)).map(|s| (format!("{s} (not available)").into(), Some(s.to_string())));
     let mut rows = vec![(SharedString::from("System default"), None)];
-    rows.extend(names.into_iter().map(|n| (n.clone().into(), Some(n))));
+    rows.extend(mics.into_iter().map(|m| (m.name.into(), Some(m.id))));
     rows.extend(missing);
     rows
 }
@@ -836,19 +836,22 @@ impl SettingsView {
 #[cfg(test)]
 mod tests {
     use super::mic_rows;
+    use localflow_speech::Microphone;
 
     #[test]
     fn microphone_rows() {
-        let names = || vec!["MacBook Pro Microphone".to_string(), "Jabra Evolve2 65".to_string()];
-        let rows = |saved| mic_rows(saved, names()).into_iter().map(|(l, m)| (l.to_string(), m)).collect::<Vec<_>>();
+        let mic = |id: &str, name: &str| Microphone { id: id.into(), name: name.into(), default: false };
+        // Shown by name, saved by id (PipeWire's node name on Linux).
+        let mics = || vec![mic("MacBook Pro Microphone", "MacBook Pro Microphone"), mic("alsa_input.usb-Jabra", "Jabra Evolve2 65")];
+        let rows = |saved| mic_rows(saved, mics()).into_iter().map(|(l, m)| (l.to_string(), m)).collect::<Vec<_>>();
         let row = |l: &str, m: Option<&str>| (l.to_string(), m.map(String::from));
         let there = vec![
             row("System default", None),
             row("MacBook Pro Microphone", Some("MacBook Pro Microphone")),
-            row("Jabra Evolve2 65", Some("Jabra Evolve2 65")),
+            row("Jabra Evolve2 65", Some("alsa_input.usb-Jabra")),
         ];
         assert_eq!(rows(None), there);
-        assert_eq!(rows(Some("Jabra Evolve2 65")), there);
+        assert_eq!(rows(Some("alsa_input.usb-Jabra")), there);
         // Unplugged: still there, so Save keeps it.
         let mut unplugged = there.clone();
         unplugged.push(row("AirPods Pro (not available)", Some("AirPods Pro")));

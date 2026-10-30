@@ -120,23 +120,29 @@ fn offered(name: &str) -> bool {
     !(cfg!(target_os = "linux") && matches!(name, "jack" | "oss"))
 }
 
-/// The microphones there are, by name, for `LOCALFLOW_MIC`. Two of the same
-/// model have the same name, so it's listed once (and the first is recorded).
-pub fn microphones() -> Vec<String> {
-    let mut names: Vec<String> = vec![];
-    let devices = cpal::default_host().input_devices().into_iter().flatten();
-    for name in devices.filter_map(|d| d.name().ok()) {
-        if offered(&name) && !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    names
+/// A microphone to pick.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Microphone {
+    /// What `LOCALFLOW_MIC` holds.
+    pub id: String,
+    /// What a person sees.
+    pub name: String,
+    /// The system's default.
+    pub default: bool,
 }
 
-/// The system's default microphone's name ("default" on Linux, where the
-/// sound server picks the device).
-pub fn default_microphone() -> Option<String> {
-    cpal::default_host().default_input_device().and_then(|d| d.name().ok())
+/// The microphones there are, for `LOCALFLOW_MIC`. Two of the same model
+/// have the same name, so it's listed once (and the first is recorded).
+pub fn microphones() -> Vec<Microphone> {
+    let host = cpal::default_host();
+    let default = host.default_input_device().and_then(|d| d.name().ok());
+    let mut mics: Vec<Microphone> = vec![];
+    for name in host.input_devices().into_iter().flatten().filter_map(|d| d.name().ok()) {
+        if offered(&name) && !mics.iter().any(|m| m.id == name) {
+            mics.push(Microphone { default: default.as_ref() == Some(&name), id: name.clone(), name });
+        }
+    }
+    mics
 }
 
 impl Recorder {
