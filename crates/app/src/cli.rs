@@ -11,7 +11,7 @@ use localflow_core::local::MODEL;
 use localflow_core::{Config, Localflow, NO_FILES, eval};
 use localflow_desktop::history;
 use localflow_desktop::paths::utc;
-use localflow_speech::{RATE, Recorder, level, models, read_wav, wav_bytes};
+use localflow_speech::{RATE, Recorder, level, microphones, models, read_wav, wav_bytes};
 
 const USAGE: &str = "localflow: talk, and get clean text where you type
 
@@ -25,6 +25,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow history --last         # just the last text that went out
     localflow history --clear
     localflow models [download ID]   # speech and cleanup models: list, or download one
+    localflow mics                   # the microphones, with the ids LOCALFLOW_MIC takes
     localflow listen [SECONDS]       # record (default 5 s), transcribe, clean up, print
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
     localflow record SECONDS FILE.wav
@@ -53,10 +54,11 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         }
         "models" => return models_command(&lf.cfg, &args[1..]),
+        "mics" => return mics_command(&lf.cfg),
         "history" => return history_command(&lf.cfg, &args[1..]),
         "listen" => {
             let seconds = arg(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
-            return match record(seconds) {
+            return match record(lf.cfg.mic.as_deref(), seconds) {
                 Ok(samples) => dictate(&lf, &samples),
                 Err(e) => fail(e),
             };
@@ -70,7 +72,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         "record" => {
             let (Some(seconds), Some(path)) = (arg(1).and_then(|s| s.parse().ok()), arg(2)) else { return usage() };
-            match record(seconds).and_then(|s| std::fs::write(path, wav_bytes(&s, RATE)).map(|_| s).map_err(|e| e.to_string())) {
+            match record(lf.cfg.mic.as_deref(), seconds).and_then(|s| std::fs::write(path, wav_bytes(&s, RATE)).map(|_| s).map_err(|e| e.to_string())) {
                 Ok(samples) => eprintln!("  {path}: {:.1}s, level {:.2}", samples.len() as f32 / RATE as f32, level(&samples)),
                 Err(e) => return fail(e),
             }
@@ -160,6 +162,34 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The microphones, marking the system's default and the one a dictation
+/// records: LOCALFLOW_MIC's when it's connected, else the default. The id
+/// LOCALFLOW_MIC takes goes under the name when it's another.
+fn mics_command(cfg: &Config) -> ExitCode {
+    let mics = microphones();
+    if mics.is_empty() {
+        return fail("no microphones");
+    }
+    let chosen = cfg.mic.as_deref().filter(|m| mics.iter().any(|mic| mic.id.trim() == *m));
+    for mic in &mics {
+        let in_use = chosen.map_or(mic.default, |m| mic.id.trim() == m);
+        let tags = match (mic.default, in_use) {
+            (true, true) => "  (system default, in use)",
+            (true, false) => "  (system default)",
+            (false, true) => "  (in use)",
+            (false, false) => "",
+        };
+        println!("  {}{tags}", mic.name);
+        if mic.id != mic.name {
+            println!("    {}", mic.id);
+        }
+    }
+    if let Some(mic) = cfg.mic.as_deref().filter(|_| chosen.is_none()) {
+        println!("\nLOCALFLOW_MIC is {mic}, which isn't available: the system default is recorded");
+    }
+    ExitCode::SUCCESS
+}
+
 fn history_command(cfg: &Config, args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("--clear") => {
@@ -193,11 +223,14 @@ fn history_command(cfg: &Config, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Record for `seconds`, drawing the level on stderr.
-fn record(seconds: f32) -> Result<Vec<i16>, String> {
+/// Record `mic` (None: the default) for `seconds`, drawing the level on stderr.
+fn record(mic: Option<&str>, seconds: f32) -> Result<Vec<i16>, String> {
     let loudness = Arc::new(AtomicU32::new(0));
     let shown = loudness.clone();
-    let rec = Recorder::start(move |l| shown.store(l.to_bits(), Ordering::Relaxed)).map_err(|e| e.to_string())?;
+    let rec = Recorder::start_on(mic, move |l| shown.store(l.to_bits(), Ordering::Relaxed)).map_err(|e| e.to_string())?;
+    if let Some(why) = rec.fallback() {
+        eprintln!("  {why}; recording the default microphone");
+    }
     let start = Instant::now();
     while start.elapsed().as_secs_f32() < seconds {
         let l = f32::from_bits(loudness.load(Ordering::Relaxed));

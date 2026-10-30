@@ -1,4 +1,4 @@
-//! localflow's speech input: record the default microphone as 16 kHz mono,
+//! localflow's speech input: record the microphone as 16 kHz mono,
 //! show its level, and turn it into text with whisper.cpp, in this process.
 //! No other app is needed: the speech model (a ggml file localflow downloads,
 //! see [`models`]) is loaded for a dictation and dropped after it.
@@ -15,6 +15,8 @@
 mod audio;
 mod engine;
 pub mod models;
+#[cfg(target_os = "linux")]
+mod pipewire;
 mod recorder;
 mod transcript;
 
@@ -23,7 +25,7 @@ use std::path::PathBuf;
 
 pub use audio::{RATE, level, read_wav, resample, wav_bytes};
 pub use engine::{Engine, Options, SpeechConfig, transcribe};
-pub use recorder::Recorder;
+pub use recorder::{Microphone, Recorder, microphones};
 pub use transcript::{QUIET_DROP_DB, Segment, Transcript};
 
 #[derive(Debug, Clone, PartialEq)]
