@@ -56,7 +56,7 @@ pub fn run(args: &[String]) -> ExitCode {
         "history" => return history_command(&lf.cfg, &args[1..]),
         "listen" => {
             let seconds = arg(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
-            return match record(seconds) {
+            return match record(lf.cfg.mic.as_deref(), seconds) {
                 Ok(samples) => dictate(&lf, &samples),
                 Err(e) => fail(e),
             };
@@ -70,7 +70,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         "record" => {
             let (Some(seconds), Some(path)) = (arg(1).and_then(|s| s.parse().ok()), arg(2)) else { return usage() };
-            match record(seconds).and_then(|s| std::fs::write(path, wav_bytes(&s, RATE)).map(|_| s).map_err(|e| e.to_string())) {
+            match record(lf.cfg.mic.as_deref(), seconds).and_then(|s| std::fs::write(path, wav_bytes(&s, RATE)).map(|_| s).map_err(|e| e.to_string())) {
                 Ok(samples) => eprintln!("  {path}: {:.1}s, level {:.2}", samples.len() as f32 / RATE as f32, level(&samples)),
                 Err(e) => return fail(e),
             }
@@ -193,11 +193,14 @@ fn history_command(cfg: &Config, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Record for `seconds`, drawing the level on stderr.
-fn record(seconds: f32) -> Result<Vec<i16>, String> {
+/// Record `mic` (None: the default) for `seconds`, drawing the level on stderr.
+fn record(mic: Option<&str>, seconds: f32) -> Result<Vec<i16>, String> {
     let loudness = Arc::new(AtomicU32::new(0));
     let shown = loudness.clone();
-    let rec = Recorder::start(move |l| shown.store(l.to_bits(), Ordering::Relaxed)).map_err(|e| e.to_string())?;
+    let rec = Recorder::start_on(mic, move |l| shown.store(l.to_bits(), Ordering::Relaxed)).map_err(|e| e.to_string())?;
+    if let Some(why) = rec.fallback() {
+        eprintln!("  {why}; recording the default microphone");
+    }
     let start = Instant::now();
     while start.elapsed().as_secs_f32() < seconds {
         let l = f32::from_bits(loudness.load(Ordering::Relaxed));

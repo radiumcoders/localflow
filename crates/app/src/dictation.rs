@@ -47,10 +47,15 @@ enum Mic {
 }
 
 impl Mic {
-    fn start(ui: &Ui) -> Result<Mic, String> {
+    /// `mic` is the microphone from the settings; a missing one records the default.
+    fn start(ui: &Ui, mic: Option<&str>) -> Result<Mic, String> {
         let Some(path) = std::env::var_os("LOCALFLOW_TEST_WAV") else {
             let level = ui.clone();
-            return Recorder::start(move |l| level.level(l)).map(Mic::Real).map_err(|e| e.to_string());
+            let recorder = Recorder::start_on(mic, move |l| level.level(l)).map_err(|e| e.to_string())?;
+            if let Some(why) = recorder.fallback() {
+                warn(format_args!("{why}; recording the default microphone"));
+            }
+            return Ok(Mic::Real(recorder));
         };
         let wav = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| read_wav(&b).map_err(|e| e.0))?;
         let (samples, stop): (Arc<Mutex<Vec<i16>>>, Arc<std::sync::atomic::AtomicBool>) = Default::default();
@@ -92,9 +97,9 @@ pub struct Dictation {
 impl Dictation {
     /// Start recording now; the overlay and the rest catch up.
     pub fn start(ui: Ui, raw: bool) -> Result<Dictation, String> {
-        let mic = Mic::start(&ui)?;
-        ui.send(UiMsg::Recording { raw });
         let lf = Arc::new(Localflow::new(Config::from_env()));
+        let mic = Mic::start(&ui, lf.cfg.mic.as_deref())?;
+        ui.send(UiMsg::Recording { raw });
         let target: Arc<Mutex<Option<Target>>> = Arc::default();
         let mut finder = None;
         if !raw {

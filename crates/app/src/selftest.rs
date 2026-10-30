@@ -151,17 +151,24 @@ fn hotkey_check() -> Check {
     }
 }
 
+/// The microphone from the settings, as a dictation records it.
 fn microphone() -> Check {
-    let rec = match Recorder::start(|_| {}) {
+    let mic = Config::from_env().mic;
+    let rec = match Recorder::start_on(mic.as_deref(), |_| {}) {
         Ok(rec) => rec,
         Err(e) => return skip(format!("no microphone ({e})")),
+    };
+    let which = match (rec.fallback(), &mic) {
+        (Some(why), _) => format!(" from the default ({why})"),
+        (None, Some(mic)) => format!(" from {mic}"),
+        (None, None) => String::new(),
     };
     std::thread::sleep(Duration::from_millis(600));
     let samples = rec.stop();
     if samples.is_empty() {
         return skip("the recorder gave no audio (no microphone?)");
     }
-    pass(format!("{:.2}s recorded, level {:.2}", samples.len() as f32 / RATE as f32, level(&samples)))
+    pass(format!("{:.2}s recorded{which}, level {:.2}", samples.len() as f32 / RATE as f32, level(&samples)))
 }
 
 fn https() -> Check {
