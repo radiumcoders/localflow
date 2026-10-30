@@ -273,7 +273,7 @@ Anywhere else, what you say is pasted as always and nothing is pressed.
 ## History
 
 Every dictation is kept on your computer: when, where it went, what was heard
-and what went out (pasted, sent, or a command's keys). The last 200, readable
+and what went out (pasted, sent, a snippet, or a command's keys). The last 200, readable
 only by you, next to the log; "Keep a history" in the settings
 (`LOCALFLOW_HISTORY=off`) turns it off.
 
@@ -307,6 +307,26 @@ Pine Script: TradingView's scripting language, often heard as "Py script"
 Your own list, `~/.config/localflow/words.txt`, is read too: learning adds to
 it, and you can edit it. Both are read on every dictation.
 
+## Snippets
+
+Say "my email" and get your email address. `snippets.txt`, next to your
+`words.txt` (`~/.config/localflow/snippets.txt`,
+`%APPDATA%\localflow\snippets.txt` on Windows), holds what you'd rather not
+spell out, one per line, with `\n` for a new line:
+
+```
+# trigger => what's pasted
+my email => jay@example.com
+sign off => Thanks,\nJay
+```
+
+A snippet only counts when it's the whole dictation: case and punctuation
+don't matter, and "insert", "paste" or "type" in front is fine, but "my email
+is broken" is a dictation as always. The text is pasted exactly as written,
+without the cleanup, so it's quicker too. In a coding agent it's only pasted,
+never sent. The file is read on every dictation; `localflow snippets` shows
+what it read. Raw dictation pastes a trigger as heard.
+
 ## Settings
 
 The settings window writes `~/.config/localflow/env` (`%APPDATA%\localflow\env`
@@ -331,6 +351,7 @@ Logs (never your words; those are in the [history](#history)) go to `~/.local/st
 ```sh
 localflow models [download ID]       # speech models and the cleanup model (localflow-clean)
 localflow history [N]                # what you said and what went out
+localflow snippets                   # your snippets, as read from snippets.txt
 localflow listen 5                   # record 5 s, transcribe, clean up, print (segments and levels on stderr)
 localflow transcribe talk.wav        # the same from a WAV file
 echo "call mom tomorrow actually tonight" | localflow -
@@ -384,7 +405,7 @@ what `localflow --selftest` checks on yours.
 
 | Path | What |
 | --- | --- |
-| `crates/core` | the cleanup with localflow's own model; your vocabulary and learning |
+| `crates/core` | the cleanup with localflow's own model; your vocabulary, snippets and learning |
 | `crates/llm` | llama.cpp in a library of its own, embedded in the binary, that runs the cleanup model |
 | `crates/speech` | the microphone, the speech engine (whisper.cpp), its models, quiet segments |
 | `crates/desktop` | where you're dictating, paste and clipboard, hotkeys, the learn key |

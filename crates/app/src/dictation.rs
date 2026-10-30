@@ -7,6 +7,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use localflow_core::agent::{Command, Submit, command, split_send};
+use localflow_core::snippets::snippet;
 use localflow_core::{Config, Localflow};
 use localflow_desktop::history::{self, Entry};
 use localflow_desktop::learn::remember;
@@ -166,6 +167,21 @@ impl Dictation {
                 history::add(Entry { app, agent: agent.clone(), heard, text, outcome, ..Entry::default() });
             }
         };
+        // A snippet's trigger, and nothing else: its text as written, without
+        // the cleanup. Only pasted, even in a coding agent. Not kept for the
+        // learn key: a fix to it is a new snippet, not a misheard word.
+        let snippets = if self.raw { vec![] } else { self.lf.snippets() };
+        if let Some(snippet) = snippet(&heard.text, &snippets) {
+            self.ui.send(UiMsg::Hide);
+            std::thread::sleep(Duration::from_millis(100)); // the overlay goes before the paste
+            let pasted = deliver(&snippet.text, target.as_ref(), &[]);
+            keep(&snippet.text, if pasted { "snippet" } else { "copied" });
+            info(format_args!("{secs:.1}s of audio: a snippet{}", if pasted { "" } else { " (left on the clipboard)" }));
+            if !pasted {
+                return message(&copied(), 2500);
+            }
+            return message("Pasted a snippet", 1200);
+        }
         if let Some(agent) = &agent
             && let Some(cmd) = command(&heard.text, agent)
         {
@@ -220,8 +236,7 @@ impl Dictation {
             if sent { " and sent" } else if pasted { "" } else { " (left on the clipboard)" },
         ));
         if !pasted {
-            let keys = if cfg!(target_os = "macos") { "Cmd+V" } else { "Ctrl+V" };
-            return message(&format!("Copied: paste with {keys}"), 2500);
+            return message(&copied(), 2500);
         }
         // A moment of "it went in", once the text is there (and a word when
         // the cleanup couldn't run: the transcript as heard went in).
@@ -250,6 +265,12 @@ fn run_command(cmd: Command) -> bool {
         }
         Command::Send => press(Key::Enter),
     }
+}
+
+/// For the pill when the paste keys couldn't be sent.
+fn copied() -> String {
+    let keys = if cfg!(target_os = "macos") { "Cmd+V" } else { "Ctrl+V" };
+    format!("Copied: paste with {keys}")
 }
 
 /// An error, short enough for the pill.

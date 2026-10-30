@@ -18,6 +18,7 @@ mod config;
 pub mod difflib;
 pub mod eval;
 pub mod local;
+pub mod snippets;
 mod vocab;
 
 use std::fmt;
