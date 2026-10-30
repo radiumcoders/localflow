@@ -15,9 +15,11 @@
 //! dictation would work too, but its first audio came ~45 ms after it
 //! started, and it's one more program to find.
 
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
 use alsa::pcm::{Access, Format, HwParams, PCM};
 use alsa::{Direction, ValueOr};
@@ -26,14 +28,48 @@ use crate::audio::{RATE, level};
 use crate::recorder::{Microphone, OnLevel};
 use crate::{Error, Result};
 
-/// 20 ms at 16 kHz: how often the level meter moves, and how soon a stop is seen.
+/// 20 ms at 16 kHz: how often the level meter moves.
 const PERIOD: usize = 320;
 
-/// PipeWire's audio sources, or None when PipeWire isn't running (or pw-dump
-/// isn't installed).
+/// The longest a read waits for audio, so a stop is seen that soon even when
+/// the source sends nothing (a Bluetooth headset dropping out).
+const WAIT_MS: u32 = 100;
+
+/// How long pw-dump may take (it takes ~20 ms): a PipeWire that doesn't
+/// answer is no PipeWire, rather than a dictation or a window that hangs.
+const PW_DUMP_DEADLINE: Duration = Duration::from_secs(1);
+
+/// PipeWire's audio sources, or None when PipeWire isn't running or doesn't
+/// answer (or pw-dump isn't installed).
 pub fn sources() -> Option<Vec<Microphone>> {
-    let out = Command::new("pw-dump").output().ok().filter(|o| o.status.success())?;
-    parse(&String::from_utf8_lossy(&out.stdout))
+    let out = output_within(Command::new("pw-dump").stdin(Stdio::null()), PW_DUMP_DEADLINE)?;
+    parse(&String::from_utf8_lossy(&out))
+}
+
+/// What `cmd` prints, when it succeeds within `deadline`; else it's killed.
+fn output_within(cmd: &mut Command, deadline: Duration) -> Option<Vec<u8>> {
+    let start = Instant::now();
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    // Read on a thread of its own: a full pipe would keep the child from exiting.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = vec![];
+        let _ = stdout.read_to_end(&mut out);
+        let _ = tx.send(out);
+    });
+    let out = rx.recv_timeout(deadline).ok();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return out.filter(|_| status.success()),
+            Ok(None) if out.is_some() && start.elapsed() < deadline => std::thread::sleep(Duration::from_millis(1)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 /// pw-dump's objects: each node of class Audio/Source (a microphone; an
@@ -66,10 +102,11 @@ fn parse(json: &str) -> Option<Vec<Microphone>> {
     Some(sources)
 }
 
-/// Open the source `node` through PipeWire, as 16 kHz mono.
+/// Open the source `node` through PipeWire, as 16 kHz mono. Non-blocking:
+/// `capture` waits for audio itself, for a while at most.
 pub fn open(node: &str) -> Result<PCM> {
     let failed = |e: alsa::Error| Error(format!("couldn't open the microphone ({e})"));
-    let pcm = PCM::new(&format!("pipewire:NODE={node}"), Direction::Capture, false).map_err(failed)?;
+    let pcm = PCM::new(&format!("pipewire:NODE={node}"), Direction::Capture, true).map_err(failed)?;
     {
         let hw = HwParams::any(&pcm).map_err(failed)?;
         hw.set_access(Access::RWInterleaved).map_err(failed)?;
@@ -85,16 +122,20 @@ pub fn open(node: &str) -> Result<PCM> {
 }
 
 /// Read `pcm` into `mono` (scaled as cpal's samples are) until `stop` says
-/// so or the Recorder is dropped.
+/// so or the Recorder is dropped: within WAIT_MS, whatever the source does.
 pub fn capture(pcm: &PCM, mono: &Mutex<Vec<f32>>, on_level: &OnLevel, stop: &Receiver<()>) {
     let Ok(io) = pcm.io_i16() else { return };
     let mut buf = [0i16; PERIOD];
     while matches!(stop.try_recv(), Err(TryRecvError::Empty)) {
-        match io.readi(&mut buf) {
+        let read = pcm.wait(Some(WAIT_MS)).and_then(|ready| if ready { io.readi(&mut buf) } else { Ok(0) });
+        match read {
+            Ok(0) => {}
             Ok(n) => {
                 on_level(level(&buf[..n]));
                 mono.lock().unwrap().extend(buf[..n].iter().map(|&s| f32::from(s)));
             }
+            // Woken, yet nothing to read.
+            Err(e) if std::io::Error::from_raw_os_error(e.errno()).kind() == std::io::ErrorKind::WouldBlock => {}
             // An overrun (the thread was late): carry on.
             Err(e) => {
                 if let Err(e) = pcm.try_recover(e, true) {
@@ -108,8 +149,26 @@ pub fn capture(pcm: &PCM, mono: &Mutex<Vec<f32>>, on_level: &OnLevel, stop: &Rec
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    use super::{output_within, parse};
     use crate::recorder::Microphone;
+
+    #[test]
+    fn commands_have_a_deadline() {
+        let deadline = Duration::from_millis(200);
+        assert_eq!(output_within(Command::new("echo").arg("hi"), deadline), Some(b"hi\n".to_vec()));
+        assert_eq!(output_within(Command::new("sh").args(["-c", "echo hi; exit 1"]), deadline), None);
+        assert_eq!(output_within(&mut Command::new("localflow-no-such-program"), deadline), None);
+        // A PipeWire that doesn't answer: killed at the deadline.
+        let start = Instant::now();
+        assert_eq!(output_within(Command::new("sleep").arg("5"), deadline), None);
+        assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
+        // Printed, then hung.
+        assert_eq!(output_within(Command::new("sh").args(["-c", "echo hi; exec sleep 5 >&-"]), deadline), None);
+        assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
+    }
 
     /// pw-dump's output, cut down to what's read.
     const DUMP: &str = r#"[
