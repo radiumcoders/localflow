@@ -22,3 +22,7 @@ whisper-rs = { version = "0.16", features = ["raw-api"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal", "raw-api"] }
+
+[dev-dependencies]
+# Reads the LibriSpeech clips (FLAC) in examples/bench.rs.
+claxon = "0.4"
