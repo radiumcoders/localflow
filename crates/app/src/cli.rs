@@ -25,7 +25,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow history --last         # just the last text that went out
     localflow history --clear
     localflow models [download ID]   # speech and cleanup models: list, or download one
-    localflow mics                   # the microphones, by the names LOCALFLOW_MIC takes
+    localflow mics                   # the microphones, with the ids LOCALFLOW_MIC takes
     localflow listen [SECONDS]       # record (default 5 s), transcribe, clean up, print
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
     localflow record SECONDS FILE.wav

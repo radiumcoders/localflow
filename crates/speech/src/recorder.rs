@@ -1,7 +1,7 @@
 //! The microphone, through the OS's audio API (ALSA/PipeWire on Linux,
 //! WASAPI on Windows, Core Audio on macOS): the default or one picked by
-//! name, mixed to mono at its own rate while recording, resampled to 16 kHz
-//! when it stops.
+//! name (on Linux with PipeWire, one of its sources: see `pipewire`), mixed
+//! to mono at its own rate while recording, resampled to 16 kHz when it stops.
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,22 @@ pub struct Recorder {
     fallback: Option<String>,
 }
 
-type OnLevel = Arc<dyn Fn(f32) + Send + Sync>;
+pub(crate) type OnLevel = Arc<dyn Fn(f32) + Send + Sync>;
+
+/// What's recording: a cpal stream, or a PipeWire source read on the
+/// recorder's thread.
+enum Input {
+    Stream(cpal::Stream),
+    #[cfg(target_os = "linux")]
+    PipeWire(alsa::pcm::PCM),
+}
+
+/// A microphone found by its id.
+enum Found {
+    Device(cpal::Device),
+    #[cfg(target_os = "linux")]
+    Source(String),
+}
 
 fn open<T>(device: &cpal::Device, config: &cpal::StreamConfig, mono: Arc<Mutex<Vec<f32>>>, on_level: OnLevel)
     -> Result<cpal::Stream>
@@ -85,37 +100,53 @@ fn pick<D>(wanted: Option<&str>, devices: impl IntoIterator<Item = (String, D)>)
     devices.into_iter().find(|(name, _)| name.trim() == wanted).map_or(Pick::Missing, |(_, d)| Pick::Named(d))
 }
 
-/// Start the microphone named `mic`, else the default: the stream, its rate,
-/// and why it's the default when another was asked for. A missing or busy
-/// microphone never stops a dictation.
-fn start_mic(mic: Option<&str>, mono: Arc<Mutex<Vec<f32>>>, on_level: OnLevel)
-    -> Result<(cpal::Stream, u32, Option<String>)> {
-    let host = cpal::default_host();
-    let devices = host.input_devices().into_iter().flatten().map(|d| (d.name().unwrap_or_default(), d));
-    let fallback = match pick(mic, devices) {
-        Pick::Default => None,
-        Pick::Named(device) => match record(&device, mono.clone(), on_level.clone()) {
-            Ok((stream, rate)) => return Ok((stream, rate, None)),
-            // Another app has it, or it went away just now.
-            Err(e) => Some(format!("{}: {e}", mic.unwrap_or_default())),
-        },
-        // Unplugged; on Linux, also a sound card another program has open
-        // (PipeWire keeps one open for a few seconds after it's used).
-        Pick::Missing => Some(format!("{} isn't available", mic.unwrap_or_default())),
-    };
-    let device = host.default_input_device().ok_or_else(|| Error("no microphone".into()))?;
-    let (stream, rate) = record(&device, mono, on_level)?;
-    Ok((stream, rate, fallback))
+/// The microphone `mic` names: on Linux with PipeWire one of its sources,
+/// else one of cpal's devices.
+fn find(mic: Option<&str>) -> Pick<Found> {
+    #[cfg(target_os = "linux")]
+    if mic.is_some_and(|m| !m.trim().is_empty())
+        && let Some(sources) = crate::pipewire::sources()
+    {
+        return pick(mic, sources.into_iter().map(|s| (s.id.clone(), Found::Source(s.id))));
+    }
+    let devices = cpal::default_host().input_devices().into_iter().flatten();
+    pick(mic, devices.map(|d| (d.name().unwrap_or_default(), Found::Device(d))))
 }
 
-/// Whether a microphone is offered for picking. On Linux, cpal's ALSA host
-/// lists the sound servers it can reach (default, pipewire, pulse, jack,
-/// oss), then each sound card by its name ("HD-Audio Generic", a USB
-/// headset's). default, pipewire and pulse record what the desktop's sound
+/// Start the microphone named `mic`, else the default: what's recording, its
+/// rate, and why it's the default when another was asked for. A missing or
+/// busy microphone never stops a dictation.
+fn start_mic(mic: Option<&str>, mono: Arc<Mutex<Vec<f32>>>, on_level: OnLevel) -> Result<(Input, u32, Option<String>)> {
+    let wanted = mic.unwrap_or_default();
+    let fallback = match find(mic) {
+        Pick::Default => None,
+        Pick::Named(Found::Device(device)) => match record(&device, mono.clone(), on_level.clone()) {
+            Ok((stream, rate)) => return Ok((Input::Stream(stream), rate, None)),
+            // Another app has it, or it went away just now.
+            Err(e) => Some(format!("{wanted}: {e}")),
+        },
+        #[cfg(target_os = "linux")]
+        Pick::Named(Found::Source(node)) => match crate::pipewire::open(&node) {
+            Ok(pcm) => return Ok((Input::PipeWire(pcm), RATE, None)),
+            Err(e) => Some(format!("{wanted}: {e}")),
+        },
+        // Unplugged; on Linux without PipeWire, also a sound card another
+        // program has open.
+        Pick::Missing => Some(format!("{wanted} isn't available")),
+    };
+    let device = cpal::default_host().default_input_device().ok_or_else(|| Error("no microphone".into()))?;
+    let (stream, rate) = record(&device, mono, on_level)?;
+    Ok((Input::Stream(stream), rate, fallback))
+}
+
+/// Whether one of cpal's devices is offered for picking. On Linux without
+/// PipeWire, cpal's ALSA host lists the sound servers it can reach (default,
+/// pulse, jack, oss), then each sound card by its name ("HD-Audio Generic", a
+/// USB headset's). default and pulse record what the desktop's sound
 /// settings chose, so they stay; jack and oss aren't microphones a person
 /// picks (JACK's inputs are wired up in JACK, OSS is an old emulation). A
-/// card is recorded directly, past PipeWire, and is listed only while no
-/// other program has it open. macOS and Windows list only real devices.
+/// card is recorded directly and is listed only while no other program has
+/// it open. macOS and Windows list only real devices.
 fn offered(name: &str) -> bool {
     !(cfg!(target_os = "linux") && matches!(name, "jack" | "oss"))
 }
@@ -131,9 +162,14 @@ pub struct Microphone {
     pub default: bool,
 }
 
-/// The microphones there are, for `LOCALFLOW_MIC`. Two of the same model
-/// have the same name, so it's listed once (and the first is recorded).
+/// The microphones there are, for `LOCALFLOW_MIC`: on Linux with PipeWire its
+/// sources, else cpal's devices. Two of the same model have the same name,
+/// so it's listed once (and the first is recorded).
 pub fn microphones() -> Vec<Microphone> {
+    #[cfg(target_os = "linux")]
+    if let Some(sources) = crate::pipewire::sources() {
+        return sources;
+    }
     let host = cpal::default_host();
     let default = host.default_input_device().and_then(|d| d.name().ok());
     let mut mics: Vec<Microphone> = vec![];
@@ -162,11 +198,17 @@ impl Recorder {
         let (stop, stopped) = mpsc::channel::<()>();
         let samples = mono.clone();
         let mic = mic.map(String::from);
-        let thread = std::thread::spawn(move || match start_mic(mic.as_deref(), samples, on_level) {
-            Ok((stream, rate, fallback)) => {
+        let thread = std::thread::spawn(move || match start_mic(mic.as_deref(), samples.clone(), on_level.clone()) {
+            Ok((input, rate, fallback)) => {
                 let _ = started.send(Ok((rate, fallback)));
-                let _ = stopped.recv(); // until stop(), or the Recorder is dropped
-                drop(stream);
+                match input {
+                    Input::Stream(stream) => {
+                        let _ = stopped.recv(); // until stop(), or the Recorder is dropped
+                        drop(stream);
+                    }
+                    #[cfg(target_os = "linux")]
+                    Input::PipeWire(pcm) => crate::pipewire::capture(&pcm, &samples, &on_level, &stopped),
+                }
             }
             Err(e) => {
                 let _ = started.send(Err(e));

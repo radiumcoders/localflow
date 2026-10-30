@@ -7,8 +7,8 @@
 //! LOCALFLOW_CLEANUP_GPU   off to clean up on the CPU (default: the GPU when there is one)
 //! LOCALFLOW_SPEECH_MODEL  speech model id (see `localflow models`; default: the recommended one)
 //! LOCALFLOW_SPEECH_GPU    off to transcribe on the CPU (default: the GPU when there is one)
-//! LOCALFLOW_MIC           the microphone to record, by name (see `localflow mics`; default:
-//!                         the system's)
+//! LOCALFLOW_MIC           the microphone to record (see `localflow mics`: a PipeWire source's
+//!                         node name on Linux, else the device's name; default: the system's)
 //! LOCALFLOW_SUBMIT        in a coding agent, press Enter after pasting: said (when you end
 //!                         with "send it", the default), always, or never
 //! LOCALFLOW_HISTORY       off to keep no history of what you dictated (default: the last 200,

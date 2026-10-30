@@ -3698,6 +3698,7 @@ dependencies = [
 name = "localflow-speech"
 version = "0.1.0"
 dependencies = [
+ "alsa",
  "cpal",
  "serde_json",
  "sha2 0.10.9",

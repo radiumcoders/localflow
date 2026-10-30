@@ -15,6 +15,8 @@
 mod audio;
 mod engine;
 pub mod models;
+#[cfg(target_os = "linux")]
+mod pipewire;
 mod recorder;
 mod transcript;
 

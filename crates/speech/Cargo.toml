@@ -20,5 +20,9 @@ sha2 = "0.10"
 ureq = "2.12"
 whisper-rs = "0.16"
 
+# cpal's own ALSA bindings, for PipeWire's sources by name (see pipewire.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.9"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] }
