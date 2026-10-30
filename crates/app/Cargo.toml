@@ -4,6 +4,7 @@ description = "localflow: talk, and get clean text where you type"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [features]
 # Transcription and cleanup on the GPU through Vulkan (Linux, Windows).

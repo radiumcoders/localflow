@@ -393,3 +393,12 @@ what `localflow --selftest` checks on yours.
 | `crates/testbox` | the text box the end-to-end test dictates into |
 | `pkg/localflow.wxs` | the Windows installer |
 | `words.txt`, `cases.txt` | the shipped vocabulary, the eval cases |
+
+## License
+
+localflow is licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
+or [MIT license](LICENSE-MIT), at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in localflow by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.

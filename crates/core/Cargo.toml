@@ -4,6 +4,7 @@ description = "localflow's dictation cleanup with its own model, localflow-clean
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [features]
 # The cleanup model on the GPU through Vulkan (Linux, Windows).

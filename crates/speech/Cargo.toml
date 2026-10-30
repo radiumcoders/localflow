@@ -4,6 +4,7 @@ description = "localflow's speech input: the microphone (16 kHz mono), its level
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [features]
 # GPU transcription through Vulkan (Linux, Windows): needs the Vulkan headers
