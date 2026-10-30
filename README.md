@@ -402,3 +402,8 @@ or [MIT license](LICENSE-MIT), at your option.
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in localflow by you, as defined in the Apache-2.0 license, shall
 be dual licensed as above, without any additional terms or conditions.
+
+The software localflow includes (whisper.cpp, llama.cpp, the Geist fonts, the
+Rust crates) and the models it downloads are listed with their licenses in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), which every installer
+includes too.
