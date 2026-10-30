@@ -148,6 +148,16 @@ pub fn default_model() -> &'static Model {
     find(DEFAULT).expect("the default model is in the catalog")
 }
 
+/// The model to suggest on this computer. Large v3 Turbo where whisper runs
+/// on a graphics card: the most accurate, and still ~0.2 s a dictation (RX
+/// 9070). Small elsewhere: on Apple Silicon it was as accurate as Large and
+/// four times faster (M4: 0.16 s against 0.67 s); on the CPU or a laptop's
+/// integrated graphics, Large takes seconds.
+pub fn recommended(use_gpu: bool) -> &'static Model {
+    let id = if use_gpu && crate::gpu().is_some_and(|g| !g.integrated) { "large-v3-turbo" } else { DEFAULT };
+    find(id).expect("the recommended model is in the catalog")
+}
+
 /// The model a LOCALFLOW_SPEECH_MODEL setting means: one of ours by id, else
 /// the default (also for Handy's old model ids, like "handy-computer/...").
 pub fn resolve(setting: Option<&str>) -> &'static Model {

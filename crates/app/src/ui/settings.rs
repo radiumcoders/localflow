@@ -446,7 +446,7 @@ impl SettingsView {
                                             .child(model.name),
                                     )
                                     .child(mono(format!("{} MB", model.size_mb()), p))
-                                    .when(model.id == models::default_model().id, |d| {
+                                    .when(model.id == models::recommended(self.gpu).id, |d| {
                                         d.child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.primary).child("Recommended"))
                                     }),
                             )

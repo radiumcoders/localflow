@@ -209,6 +209,31 @@ speech model, Small (English):
 Small heard the same words as Handy's Parakeet on real recordings, at about
 half the memory. On a machine without a GPU, Base (82 MB) is faster still.
 
+Accuracy, on 100 LibriSpeech test clips each (word error rate, lower is
+better; time is the median per clip):
+
+| | test-clean | test-other (harder) |
+| --- | --- | --- |
+| **large-v3-turbo**, RX 9070 | 1.6%, 0.18 s | 4.8%, 0.16 s |
+| small.en, RX 9070 | 2.2%, 0.13 s | 8.4%, 0.10 s |
+| small.en, CPU (Ryzen 5 5600) | 2.1%, 0.71 s | 8.4%, 0.52 s |
+| tiny.en, CPU | 4.8%, 0.11 s | 16.1%, 0.10 s |
+| large-v3-turbo, Apple M4 | 1.6%, 1.38 s | |
+| **small.en**, Apple M4 | 2.0%, 0.16 s | |
+
+So with a graphics card, setup picks Large: half the mistakes of Small on
+hard speech for a few hundredths of a second. On Apple Silicon and the CPU it
+picks Small: nearly as good on clear speech, and many times faster there.
+
+whisper encodes 30 s at a time; a shorter dictation can encode just its own
+length, several times faster on a CPU or Apple Silicon. That shortcut can send
+whisper round in a loop ("She passed. Cotton. She passed. Cotton."), and it
+costs Large accuracy on hard speech (8.8% instead of 4.8%). So localflow
+uses the full window on a graphics card, and for Large on any GPU; elsewhere it
+takes the shortcut, and a transcript that loops goes again with the full
+window. `cargo run -p localflow-speech --release --example bench` measures it
+all on your machine.
+
 Cleanup on this computer runs localflow's own model, `localflow-clean`: Qwen3.5
 0.8B fine-tuned on the cleanup rules alone, with an English-only vocabulary, in
 a 351 MB file. localflow runs it in its own process with llama.cpp (Vulkan,
@@ -316,7 +341,7 @@ and cleanup models and puts the app in place.
 
 | Variable | What |
 | --- | --- |
-| `LOCALFLOW_SPEECH_MODEL` | `tiny.en`, `base.en`, `small.en` (default), `large-v3-turbo` (see `localflow models`) |
+| `LOCALFLOW_SPEECH_MODEL` | `tiny.en`, `base.en`, `small.en`, `large-v3-turbo` (see `localflow models`). Setup picks `large-v3-turbo` with a graphics card, else `small.en` |
 | `LOCALFLOW_SPEECH_GPU` | `off` to transcribe on the CPU (`on` to try the GPU on an Intel Mac, where the CPU is the default) |
 | `LOCALFLOW_MODEL` | the cleanup model: `localflow-clean` (default) or a `.gguf` file |
 | `LOCALFLOW_CLEANUP_GPU` | `off` to clean up on the CPU (the default on an Intel Mac) |
