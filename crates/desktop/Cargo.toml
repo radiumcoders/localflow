@@ -4,6 +4,8 @@ description = "localflow's desktop plumbing: where you're dictating (app, projec
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
+publish = false
 
 [dependencies]
 localflow-core = { path = "../core" }

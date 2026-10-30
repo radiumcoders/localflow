@@ -55,6 +55,15 @@ fn s(p: &Path) -> String {
     p.display().to_string()
 }
 
+/// localflow's license and the third-party notices, into an installer's `dir`.
+fn licenses(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    for f in ["LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_LICENSES.md"] {
+        std::fs::copy(ROOT.join(f), dir.join(f)).map_err(|e| format!("{f}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// localflow.app: the binary, its icon, and Info.plist (no Dock icon: it's a
 /// background helper; the microphone message macOS shows when asking).
 fn mac_app(build: &Path, exe: &Path, version: &str) -> Result<PathBuf, String> {
@@ -65,6 +74,7 @@ fn mac_app(build: &Path, exe: &Path, version: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(app.join("Contents/Resources")).map_err(io)?;
     std::fs::copy(exe, app.join("Contents/MacOS/localflow")).map_err(io)?;
     std::fs::copy(build.join("localflow.icns"), app.join("Contents/Resources/localflow.icns")).map_err(io)?;
+    licenses(&app.join("Contents/Resources"))?;
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -109,6 +119,7 @@ fn msi(build: &Path, exe: &Path, version: &str) -> Result<PathBuf, String> {
     let _ = std::fs::remove_dir_all(&app);
     std::fs::create_dir_all(&app).map_err(|e| e.to_string())?;
     std::fs::copy(exe, app.join("localflow.exe")).map_err(|e| e.to_string())?;
+    licenses(&app)?;
     let out = build.join(format!("localflow-{version}-x64.msi"));
     let wxs = ROOT.join("pkg/localflow.wxs");
     run("wix", &["build", &s(&wxs), "-ext", "WixToolset.Util.wixext", "-arch", "x64", "-d", &format!("Version={version}"), "-d",
@@ -129,6 +140,7 @@ fn appimage(build: &Path, exe: &Path, version: &str) -> Result<PathBuf, String> 
     let io = |e: std::io::Error| e.to_string();
     std::fs::create_dir_all(appdir.join("usr/bin")).map_err(io)?;
     std::fs::copy(exe, appdir.join("usr/bin/localflow")).map_err(io)?;
+    licenses(&appdir.join("usr/share/doc/localflow"))?;
     std::fs::write(appdir.join("AppRun"), "#!/bin/sh\nexec \"$(dirname \"$(readlink -f \"$0\")\")/usr/bin/localflow\" \"$@\"\n").map_err(io)?;
     std::fs::write(
         appdir.join("localflow.desktop"),

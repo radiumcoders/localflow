@@ -4,6 +4,7 @@ description = "A text box for localflow's end-to-end tests: dictation pastes int
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]

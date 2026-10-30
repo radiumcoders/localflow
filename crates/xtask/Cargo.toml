@@ -4,6 +4,7 @@ description = "localflow's build and test tasks: cargo xtask package | e2e | ins
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]
