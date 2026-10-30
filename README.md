@@ -218,8 +218,8 @@ better; time is the median per clip):
 | small.en, RX 9070 | 2.2%, 0.13 s | 8.4%, 0.10 s |
 | small.en, CPU (Ryzen 5 5600) | 2.1%, 0.71 s | 8.4%, 0.52 s |
 | tiny.en, CPU | 4.8%, 0.11 s | 16.1%, 0.10 s |
-| large-v3-turbo, Apple M4 | 1.6%, 1.38 s | |
-| **small.en**, Apple M4 | 2.0%, 0.16 s | |
+| large-v3-turbo, Apple M4 | 1.6%, 1.38 s | 4.8%, 2.13 s |
+| **small.en**, Apple M4 | 2.0%, 0.16 s | 8.7%, 0.17 s |
 
 So with a graphics card, setup picks Large: half the mistakes of Small on
 hard speech for a few hundredths of a second. On Apple Silicon and the CPU it
