@@ -7,6 +7,8 @@
 //! LOCALFLOW_CLEANUP_GPU   off to clean up on the CPU (default: the GPU when there is one)
 //! LOCALFLOW_SPEECH_MODEL  speech model id (see `localflow models`; default: the recommended one)
 //! LOCALFLOW_SPEECH_GPU    off to transcribe on the CPU (default: the GPU when there is one)
+//! LOCALFLOW_MIC           the microphone to record, by name (see `localflow mics`; default:
+//!                         the system's)
 //! LOCALFLOW_SUBMIT        in a coding agent, press Enter after pasting: said (when you end
 //!                         with "send it", the default), always, or never
 //! LOCALFLOW_HISTORY       off to keep no history of what you dictated (default: the last 200,
@@ -29,6 +31,8 @@ pub struct Config {
     pub speech_model: Option<String>,
     /// Transcribe on the GPU when there is one.
     pub speech_gpu: bool,
+    /// The microphone's name, or None for the system's default.
+    pub mic: Option<String>,
     /// When a prompt dictated into a coding agent is sent.
     pub submit: Submit,
     /// Keep what you said and what went out, for `localflow history`.
@@ -96,6 +100,7 @@ impl Config {
             cleanup_gpu: gpu(var("LOCALFLOW_CLEANUP_GPU")),
             speech_model: var("LOCALFLOW_SPEECH_MODEL").filter(|m| !m.is_empty()),
             speech_gpu: gpu(var("LOCALFLOW_SPEECH_GPU")),
+            mic: var("LOCALFLOW_MIC").map(|m| m.trim().to_string()).filter(|m| !m.is_empty()),
             submit: Submit::parse(var("LOCALFLOW_SUBMIT").as_deref()),
             history: !off(var("LOCALFLOW_HISTORY")),
             model: model.unwrap_or_else(|| MODEL.id.into()),
