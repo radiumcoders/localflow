@@ -24,6 +24,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow history [N]            # the last N dictations (default 10): what was heard, what went out
     localflow history --last         # just the last text that went out
     localflow history --clear
+    localflow snippets               # your snippets: what each trigger pastes
     localflow models [download ID]   # speech and cleanup models: list, or download one
     localflow listen [SECONDS]       # record (default 5 s), transcribe, clean up, print
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
@@ -54,6 +55,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         "models" => return models_command(&lf.cfg, &args[1..]),
         "history" => return history_command(&lf.cfg, &args[1..]),
+        "snippets" => snippets_command(&lf),
         "listen" => {
             let seconds = arg(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
             return match record(seconds) {
@@ -191,6 +193,19 @@ fn history_command(cfg: &Config, args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// Each snippet as it's read: the trigger, then the text pasted for it.
+fn snippets_command(lf: &Localflow) {
+    let (snippets, path) = (lf.snippets(), lf.cfg.user_snippets());
+    if snippets.is_empty() {
+        println!("no snippets in {} (one a line: my email => jay@example.com)", path.display());
+        return;
+    }
+    for s in snippets {
+        println!("{}\n  {}\n", s.trigger, s.text.replace('\n', "\n  "));
+    }
+    println!("in {}", path.display());
 }
 
 /// Record for `seconds`, drawing the level on stderr.
