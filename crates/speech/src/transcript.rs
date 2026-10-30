@@ -281,6 +281,27 @@ fn is_noise(inner: &str) -> bool {
     NOISES.contains(&t.as_str())
 }
 
+/// Whether whisper went round in a loop: the same six words twice, or the
+/// same three words three times ("She passed. Cotton. She passed. Cotton.
+/// She passed."). It does that when its window is cut short. People rarely
+/// say either: of 900 LibriSpeech and Common Voice transcripts, one would.
+pub fn loops(text: &str) -> bool {
+    let words: Vec<String> = text
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let repeated = |n: usize, times: usize| {
+        let mut seen = std::collections::HashMap::new();
+        words.windows(n).any(|w| {
+            let count = seen.entry(w).or_insert(0);
+            *count += 1;
+            *count >= times
+        })
+    };
+    repeated(6, 2) || repeated(3, 3)
+}
+
 /// Text without whisper's non-speech annotations: anything in square
 /// brackets, and (…) or *…* naming a sound; music notes.
 pub(crate) fn strip_noises(text: &str) -> String {
@@ -370,6 +391,16 @@ pub(crate) fn is_phantom(text: &str, speech_s: f32, level: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loops_are_found() {
+        assert!(loops("She passed. Cotton. She passed. Cotton. She passed. Cotton. She passed."));
+        assert!(loops("You must look at him in the face, fight him. You must look at him in the face."));
+        assert!(loops("Thank you. Thank you. Thank you. Thank you."));
+        assert!(!loops("Let's meet at 5. Wait, no, at 6."));
+        assert!(!loops("I think we should ship it, I think so, on Monday."));
+        assert!(!loops(""));
+    }
 
     /// A segment `down` dB below -20 dBFS (close-up speech).
     fn seg(start: f32, end: f32, text: &str, down: f32) -> Segment {

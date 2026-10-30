@@ -35,7 +35,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     }
     let dir = config_dir();
-    let speech = speech.unwrap_or_else(|| models::default_model().id.to_string());
+    let speech = speech.unwrap_or_else(|| models::recommended(Config::from_env().speech_gpu).id.to_string());
     let Some(info) = models::MODELS.iter().find(|m| m.id == speech) else {
         eprintln!("localflow: no speech model {speech} (see `localflow models`)");
         return ExitCode::from(2);
