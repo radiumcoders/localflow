@@ -79,7 +79,7 @@ fn record(device: &cpal::Device, mono: Arc<Mutex<Vec<f32>>>, on_level: OnLevel) 
         other => return err(format!("microphone sample format {other} isn't supported")),
     };
     stream.play().map_err(|e| Error(format!("couldn't start the microphone ({e})")))?;
-    Ok((stream, config.sample_rate.0))
+    Ok((stream, config.sample_rate))
 }
 
 /// Which microphone to record.
@@ -100,6 +100,11 @@ fn pick<D>(wanted: Option<&str>, devices: impl IntoIterator<Item = (String, D)>)
     devices.into_iter().find(|(name, _)| name.trim() == wanted).map_or(Pick::Missing, |(_, d)| Pick::Named(d))
 }
 
+/// A cpal device's name, as `LOCALFLOW_MIC` holds it.
+fn name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_string())
+}
+
 /// The microphone `mic` names: on Linux with PipeWire one of its sources,
 /// else one of cpal's devices. Nothing is listed for the default.
 fn find(mic: Option<&str>) -> Pick<Found> {
@@ -111,7 +116,7 @@ fn find(mic: Option<&str>) -> Pick<Found> {
         return pick(mic, sources.into_iter().map(|s| (s.id.clone(), Found::Source(s.id))));
     }
     let devices = cpal::default_host().input_devices().into_iter().flatten();
-    pick(mic, devices.map(|d| (d.name().unwrap_or_default(), Found::Device(d))))
+    pick(mic, devices.map(|d| (name(&d).unwrap_or_default(), Found::Device(d))))
 }
 
 /// Start the microphone named `mic`, else the default: what's recording, its
@@ -140,16 +145,18 @@ fn start_mic(mic: Option<&str>, mono: Arc<Mutex<Vec<f32>>>, on_level: OnLevel) -
     Ok((Input::Stream(stream), rate, fallback))
 }
 
-/// Whether one of cpal's devices is offered for picking. On Linux without
-/// PipeWire, cpal's ALSA host lists the sound servers it can reach (default,
-/// pulse, jack, oss), then each sound card by its name ("HD-Audio Generic", a
-/// USB headset's). default and pulse record what the desktop's sound
-/// settings chose, so they stay; jack and oss aren't microphones a person
-/// picks (JACK's inputs are wired up in JACK, OSS is an old emulation). A
-/// card is recorded directly and is listed only while no other program has
-/// it open. macOS and Windows list only real devices.
-fn offered(name: &str) -> bool {
-    !(cfg!(target_os = "linux") && matches!(name, "jack" | "oss"))
+/// Whether one of cpal's devices is offered for picking, by its driver. On
+/// Linux without PipeWire, cpal's ALSA host lists the sound servers it can
+/// reach (default, pulse, jack, oss, null), then each sound card's ways in
+/// (sysdefault:CARD=…, front:…, hw:…, plughw:…), each named for the card
+/// ("HD-Audio Generic, ALC897 Analog", a USB headset's). default and pulse
+/// record what the desktop's sound settings chose, so they stay; jack, oss
+/// and null aren't microphones a person picks (JACK's inputs are wired up in
+/// JACK, OSS is an old emulation, null is silence). A card is recorded
+/// directly and is listed only while no other program has it open. macOS
+/// and Windows list only real devices.
+fn offered(driver: &str) -> bool {
+    !(cfg!(target_os = "linux") && matches!(driver, "jack" | "oss" | "null"))
 }
 
 /// A microphone to pick.
@@ -172,11 +179,15 @@ pub fn microphones() -> Vec<Microphone> {
         return sources;
     }
     let host = cpal::default_host();
-    let default = host.default_input_device().and_then(|d| d.name().ok());
+    // By id: on Linux the default's name isn't the one it's listed under.
+    let default = host.default_input_device().and_then(|d| d.id().ok());
     let mut mics: Vec<Microphone> = vec![];
-    for name in host.input_devices().into_iter().flatten().filter_map(|d| d.name().ok()) {
-        if offered(&name) && !mics.iter().any(|m| m.id == name) {
-            mics.push(Microphone { default: default.as_ref() == Some(&name), id: name.clone(), name });
+    for device in host.input_devices().into_iter().flatten() {
+        let Ok(desc) = device.description() else { continue };
+        let name = desc.name().to_string();
+        if offered(desc.driver().unwrap_or_default()) && !mics.iter().any(|m| m.id == name) {
+            let default = default.is_some() && device.id().ok() == default;
+            mics.push(Microphone { default, id: name.clone(), name });
         }
     }
     mics
@@ -265,11 +276,12 @@ mod tests {
 
     #[test]
     fn offers_microphones() {
-        for name in ["default", "pipewire", "pulse", "HD-Audio Generic", "Jabra Evolve2 65"] {
-            assert!(offered(name), "{name}");
+        for driver in ["default", "pipewire", "pulse", "sysdefault:CARD=Generic", "plughw:CARD=2,DEV=0", ""] {
+            assert!(offered(driver), "{driver}");
         }
-        assert_eq!(offered("jack"), !cfg!(target_os = "linux"));
-        assert_eq!(offered("oss"), !cfg!(target_os = "linux"));
+        for driver in ["jack", "oss", "null"] {
+            assert_eq!(offered(driver), !cfg!(target_os = "linux"), "{driver}");
+        }
     }
 
     /// The session hands its recorder to a worker thread; Core Audio's
