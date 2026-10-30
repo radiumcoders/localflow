@@ -1,22 +1,26 @@
-//! The settings window: the speech model (downloaded here), the cleanup model
-//! (localflow-clean, on this computer), dictation, and the keys to dictate
-//! with. Saves to the env file the rest of localflow reads
+//! The settings window: the speech model (downloaded here) and microphone,
+//! the cleanup model (localflow-clean, on this computer), dictation, and the
+//! keys to dictate with. Saves to the env file the rest of localflow reads
 //! (`localflow_core::Config`).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use gpui_kit::component::select::{SearchableVec, Select, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::theme::Theme;
+use gpui_kit::component::{IndexPath, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use localflow_core::local::MODEL;
 use localflow_core::{Config, Localflow, save_settings};
-use localflow_speech::models;
+use localflow_speech::{microphones, models};
 
 use super::look::{self, Palette};
 
 const SUBMIT: &[(&str, &str)] = &[("When you say \"send it\"", "said"), ("Always", "always"), ("Never", "never")];
+
+type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Job {
@@ -97,6 +101,9 @@ pub struct SettingsView {
     speech_model: &'static str,
     downloads: Vec<(&'static str, Job, Arc<AtomicBool>)>,
     gpu: bool,
+    mic: Choice,
+    /// The microphone select's rows, as (label, LOCALFLOW_MIC).
+    mics: Vec<(SharedString, Option<String>)>,
     /// localflow-clean, or the .gguf file the env file names.
     local_model: String,
     /// The cleanup model's download.
@@ -127,6 +134,17 @@ fn pick(items: &[(&'static str, &'static str)], value: &str) -> &'static str {
     items.iter().find(|(_, v)| *v == value).map_or(items[0].1, |(_, v)| *v)
 }
 
+/// The microphone select's rows, as (label, LOCALFLOW_MIC): the system's
+/// default, then the microphones there are, then the saved one when it isn't
+/// there now, so saving with the headset unplugged doesn't forget it.
+fn mic_rows(saved: Option<&str>, names: Vec<String>) -> Vec<(SharedString, Option<String>)> {
+    let missing = saved.filter(|s| !names.iter().any(|n| n == s)).map(|s| (format!("{s} (not available)").into(), Some(s.to_string())));
+    let mut rows = vec![(SharedString::from("System default"), None)];
+    rows.extend(names.into_iter().map(|n| (n.clone().into(), Some(n))));
+    rows.extend(missing);
+    rows
+}
+
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
@@ -136,11 +154,16 @@ impl SettingsView {
         let cfg = Config::from_env();
         let submit = cfg.submit.value().unwrap_or("said");
         let local_model = cfg.model.clone();
+        let mics = mic_rows(cfg.mic.as_deref(), microphones());
+        let mic = mics.iter().position(|(_, m)| *m == cfg.mic).unwrap_or(0);
+        let labels: Vec<SharedString> = mics.iter().map(|(label, _)| label.clone()).collect();
 
         let view = SettingsView {
             speech_model: models::resolve(cfg.speech_model.as_deref()).id,
             downloads: vec![],
             gpu: cfg.speech_gpu,
+            mic: cx.new(|cx| SelectState::new(SearchableVec::new(labels), Some(IndexPath::new(mic)), window, cx)),
+            mics,
             local_model,
             fetch: Job::Idle,
             check: Job::Idle,
@@ -159,12 +182,19 @@ impl SettingsView {
         view
     }
 
+    /// The microphone chosen in the select: None for the system's default.
+    fn mic(&self, cx: &App) -> Option<String> {
+        let label = self.mic.read(cx).selected_value().cloned();
+        self.mics.iter().find(|(l, _)| Some(l) == label.as_ref()).and_then(|(_, mic)| mic.clone())
+    }
+
     /// The settings as chosen in the window, as env-file changes.
-    fn changes(&self) -> Vec<(&'static str, Option<String>)> {
+    fn changes(&self, cx: &App) -> Vec<(&'static str, Option<String>)> {
         vec![
             ("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())),
             ("LOCALFLOW_SPEECH_MODEL", Some(self.speech_model.to_string())),
             ("LOCALFLOW_SPEECH_GPU", (!self.gpu).then(|| "off".into())),
+            ("LOCALFLOW_MIC", self.mic(cx)),
             ("LOCALFLOW_CLEANUP_GPU", (!self.gpu).then(|| "off".into())),
             ("LOCALFLOW_SUBMIT", (self.submit != "said").then(|| self.submit.into())),
             ("LOCALFLOW_HISTORY", (!self.history).then(|| "off".into())),
@@ -179,8 +209,8 @@ impl SettingsView {
     }
 
     /// The cleanup engine as set up in the window (saved or not), for "Test".
-    fn engine(&self) -> Localflow {
-        let changes = self.changes();
+    fn engine(&self, cx: &App) -> Localflow {
+        let changes = self.changes(cx);
         let dir = self.cfg.config_dir.clone();
         let get = move |k: &str| -> Option<String> {
             match changes.iter().find(|(name, _)| *name == k) {
@@ -272,7 +302,7 @@ impl SettingsView {
     }
 
     fn test(&mut self, cx: &mut Context<Self>) {
-        let lf = self.engine();
+        let lf = self.engine(cx);
         self.job(
             cx,
             move |_| {
@@ -286,7 +316,7 @@ impl SettingsView {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        let changes = self.changes();
+        let changes = self.changes(cx);
         let dir = self.cfg.config_dir.clone();
         let pairs: Vec<(&str, Option<&str>)> = changes.iter().map(|(k, v)| (*k, v.as_deref())).collect();
         self.saved = match save_settings(&dir, &pairs).map_err(|e| e.to_string()).and_then(|_| after_save()) {
@@ -356,6 +386,11 @@ fn setting(title: &str, hint: Option<&str>, control: impl IntoElement, p: &Palet
         )
         .child(div().flex_none().child(control))
         .into_any_element()
+}
+
+/// A select that is the pill itself: tonal and borderless, its text centred.
+fn select(state: &Choice, p: &Palette) -> Select<SearchableVec<SharedString>> {
+    Select::new(state).appearance(false).small().w_full().h(px(36.)).pl(px(16.)).pr(px(14.)).rounded_full().bg(p.muted).text_size(px(14.))
 }
 
 fn progress_bar(fraction: f32, p: &Palette) -> Div {
@@ -466,6 +501,18 @@ impl SettingsView {
             .collect();
         let options = look::band(
             vec![
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .w_full()
+                    .px(px(24.))
+                    .py(px(14.))
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.fg).child("Microphone"))
+                    // The list wider than the pill: a headset's name is often long.
+                    .child(div().w(px(160.)).child(select(&self.mic, p).menu_width(px(280.))))
+                    .into_any_element(),
                 div()
                     .flex()
                     .items_center()
@@ -783,5 +830,28 @@ impl SettingsView {
             .text_color(p.dim)
             .child(div().size(px(7.)).rounded_full().bg(if ready { p.primary } else { p.record }))
             .child(if ready { "Speech model ready" } else { "Download a speech model" })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mic_rows;
+
+    #[test]
+    fn microphone_rows() {
+        let names = || vec!["MacBook Pro Microphone".to_string(), "Jabra Evolve2 65".to_string()];
+        let rows = |saved| mic_rows(saved, names()).into_iter().map(|(l, m)| (l.to_string(), m)).collect::<Vec<_>>();
+        let row = |l: &str, m: Option<&str>| (l.to_string(), m.map(String::from));
+        let there = vec![
+            row("System default", None),
+            row("MacBook Pro Microphone", Some("MacBook Pro Microphone")),
+            row("Jabra Evolve2 65", Some("Jabra Evolve2 65")),
+        ];
+        assert_eq!(rows(None), there);
+        assert_eq!(rows(Some("Jabra Evolve2 65")), there);
+        // Unplugged: still there, so Save keeps it.
+        let mut unplugged = there.clone();
+        unplugged.push(row("AirPods Pro (not available)", Some("AirPods Pro")));
+        assert_eq!(rows(Some("AirPods Pro")), unplugged);
     }
 }
