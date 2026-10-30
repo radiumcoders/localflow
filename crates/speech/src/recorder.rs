@@ -101,12 +101,13 @@ fn pick<D>(wanted: Option<&str>, devices: impl IntoIterator<Item = (String, D)>)
 }
 
 /// The microphone `mic` names: on Linux with PipeWire one of its sources,
-/// else one of cpal's devices.
+/// else one of cpal's devices. Nothing is listed for the default.
 fn find(mic: Option<&str>) -> Pick<Found> {
+    if !mic.is_some_and(|m| !m.trim().is_empty()) {
+        return Pick::Default;
+    }
     #[cfg(target_os = "linux")]
-    if mic.is_some_and(|m| !m.trim().is_empty())
-        && let Some(sources) = crate::pipewire::sources()
-    {
+    if let Some(sources) = crate::pipewire::sources() {
         return pick(mic, sources.into_iter().map(|s| (s.id.clone(), Found::Source(s.id))));
     }
     let devices = cpal::default_host().input_devices().into_iter().flatten();
