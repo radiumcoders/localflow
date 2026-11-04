@@ -25,7 +25,7 @@ question stays a question.
 
 Say "visualize …" or "draw a flowchart of …" and describe it, and you get the
 diagram: a picture in a chat or a document, Mermaid in an editor or terminal
-([Visualize](#visualize-diagrams-from-speech)).
+([Visualize](#visualize-diagrams-from-speech-beta), in beta).
 
 For coding, files you name become `@path` references
 ([Referring to files](#referring-to-files)), and in a terminal running Claude
@@ -299,7 +299,7 @@ over (and fix: the learn key learns from that). "Send prompts to coding agents"
 in the settings (`LOCALFLOW_SUBMIT`): `said` (default), `always`, `never`.
 Anywhere else, what you say is pasted as always and nothing is pressed.
 
-## Visualize: diagrams from speech
+## Visualize: diagrams from speech (beta)
 
 Start a dictation by asking for a diagram, then describe it the way you'd
 explain it to someone:
@@ -338,6 +338,23 @@ Radeon RX 9070 XT a diagram takes ~0.4 s, on the CPU (Ryzen 5 5600) ~3.5 s.
 Qwen3.5 4B (2.7 GB) draws better diagrams in about twice the time and memory.
 Without the model, or when a diagram can't be drawn, what you said is pasted
 as text, as always.
+
+Or let Claude Haiku 5.5 draw, with your Anthropic API key: pick it in the
+Visualize tab and paste the key there (kept in `anthropic_api_key` next to
+your settings, readable only by you; or set `LOCALFLOW_ANTHROPIC_API_KEY`).
+It gets the diagrams right more often, notably long descriptions, loops
+("after three failed attempts…") and sequence diagrams, and needs no download,
+but **what you describe is sent to Anthropic**: only a dictation that asks for
+a diagram, and only while Haiku is chosen. It answers with the diagram's parts
+(a JSON schema holds it to them) and localflow writes and draws the Mermaid.
+A diagram takes ~3–4.5 s and costs a few hundredths of a cent. When Claude
+can't be reached, a diagram model downloaded here draws instead.
+
+| 10 spoken descriptions | Right | Time |
+| --- | --- | --- |
+| Qwen3.5 2B, RX 9070 XT | most; misses a branch or an order now and then | ~0.4 s |
+| Qwen3.5 4B, RX 9070 XT | more | ~0.7 s |
+| Claude Haiku 5.5 | all 10 | ~3–4.5 s |
 
 The trigger has to come first: "I drew a flowchart yesterday" is a dictation.
 In a coding agent only "visualize …" draws: "make a flowchart of the auth
@@ -416,7 +433,8 @@ and cleanup models and puts the app in place.
 | `LOCALFLOW_CLEANUP_GPU` | `off` to clean up on the CPU (the default on an Intel Mac) |
 | `LOCALFLOW_SUBMIT` | in a coding agent, press Enter after pasting: `said` (when you end with "send it", default), `always`, `never` |
 | `LOCALFLOW_HISTORY` | `off` to keep no history of your dictations |
-| `LOCALFLOW_DIAGRAM_MODEL` | what draws diagrams: `qwen3.5-2b` (default), `qwen3.5-4b`, a `.gguf` file, or `off` (see [Visualize](#visualize-diagrams-from-speech)) |
+| `LOCALFLOW_DIAGRAM_MODEL` | what draws diagrams: `qwen3.5-2b` (default), `qwen3.5-4b`, `claude-haiku-5-5` (your API key), a `.gguf` file, or `off` (see [Visualize](#visualize-diagrams-from-speech-beta)) |
+| `LOCALFLOW_ANTHROPIC_API_KEY` | the key for `claude-haiku-5-5` (else `ANTHROPIC_API_KEY`, else the one saved in the settings) |
 
 Logs (never your words; those are in the [history](#history)) go to `~/.local/state/localflow/dictate.log`,
 `~/Library/Logs/localflow/dictate.log` or `%LOCALAPPDATA%\localflow\dictate.log`.
