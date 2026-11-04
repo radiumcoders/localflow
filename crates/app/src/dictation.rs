@@ -7,14 +7,16 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use localflow_core::agent::{Command, Submit, command, split_send};
+use localflow_core::diagram::{Diagram, request};
 use localflow_core::snippets::snippet;
-use localflow_core::{Config, Localflow};
+use localflow_core::{Config, Localflow, Part};
+use localflow_desktop::diagram::{Drawn, fenced, save};
 use localflow_desktop::history::{self, Entry};
 use localflow_desktop::learn::remember;
-use localflow_desktop::paste::{Key, paste_text, press};
+use localflow_desktop::paste::{Key, paste_parts, paste_text, press};
 use localflow_desktop::paths::{info, warn};
 use localflow_desktop::project::file_candidates;
-use localflow_desktop::target::{Target, deliver, focused_window};
+use localflow_desktop::target::{Kind, Target, deliver, focused_window};
 use localflow_speech::{RATE, Recorder, Transcript, level, read_wav};
 
 use crate::ui::{Ui, UiMsg};
@@ -197,6 +199,47 @@ impl Dictation {
             info(format_args!("{secs:.1}s of audio: {} to {agent}{}", cmd.describe(), if done { "" } else { " (keys not sent)" }));
             return message(if done { cmd.describe() } else { "Couldn't press the keys" }, 1200);
         }
+        // "Visualize …", "draw a flowchart of …": a diagram, pasted as a
+        // picture, or as Mermaid where code goes. When it can't be drawn, the
+        // dictation goes in as text, as always, and the pill says why. A
+        // coding agent may be asked to draw a flowchart itself: there only
+        // "visualize" draws.
+        let mut note = None;
+        if !self.raw
+            && self.lf.cfg.diagrams()
+            && let Some(request) = request(&heard.text)
+            && (request.visualize || agent.is_none())
+        {
+            if !self.lf.cfg.diagram_model_installed() {
+                info("asked for a diagram, but the diagram model isn't downloaded");
+                note = Some("Diagrams: get the model in Settings");
+            } else {
+                self.ui.send(UiMsg::Working(format!("Drawing a {}", request.kind.map_or("diagram", |k| k.name()))));
+                match self.lf.diagram(&request).and_then(|d| save(&d).map(|drawn| (d, drawn)).map_err(localflow_core::Error)) {
+                    Ok((diagram, drawn)) => {
+                        self.ui.send(UiMsg::Hide);
+                        std::thread::sleep(Duration::from_millis(100));
+                        let pasted = paste_diagram(&diagram, &drawn, target.as_ref());
+                        keep(&diagram.mermaid, if pasted { "diagram" } else { "copied" });
+                        info(format_args!(
+                            "{secs:.1}s of audio: a {} in {:.2}s, {}{}",
+                            diagram.kind.name(),
+                            start.elapsed().as_secs_f32(),
+                            drawn.png.display(),
+                            if pasted { "" } else { " (left on the clipboard)" }
+                        ));
+                        if !pasted {
+                            return message(&copied(), 2500);
+                        }
+                        return message(&format!("Pasted a {}", diagram.kind.name()), 1200);
+                    }
+                    Err(e) => {
+                        warn(format_args!("couldn't draw the diagram, pasting the text: {e}"));
+                        note = Some("Couldn't draw that: pasted the text");
+                    }
+                }
+            }
+        }
         let mut input = heard.for_cleanup(true);
         let mut send = agent.is_some() && self.lf.cfg.submit == Submit::Always;
         let mut as_heard = false;
@@ -245,10 +288,23 @@ impl Dictation {
         }
         // A moment of "it went in", once the text is there (and a word when
         // the cleanup couldn't run: the transcript as heard went in).
+        if let Some(note) = note {
+            return message(note, 2400);
+        }
         if as_heard {
             return message("Pasted as heard (no cleanup)", 1800);
         }
         message(if sent { "Sent" } else { "Pasted" }, 900)
+    }
+}
+
+/// Paste a drawn diagram: where code goes (an editor, a terminal) its
+/// Mermaid, which they show or take as it is; anywhere else the picture,
+/// pasted as a file. False when the paste keys couldn't be sent.
+fn paste_diagram(diagram: &Diagram, drawn: &Drawn, target: Option<&Target>) -> bool {
+    match target.map(|t| t.kind) {
+        Some(Kind::Editor | Kind::Terminal) => paste_text(&fenced(&diagram.mermaid)),
+        _ => paste_parts(&[Part::File(drawn.png.to_string_lossy().into_owned())]),
     }
 }
 
