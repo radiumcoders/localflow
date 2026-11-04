@@ -23,3 +23,15 @@ python3 scripts/prepare.py                      # word timings and pill levels
 If a dictation line changes, run its new clip through localflow (16 kHz WAV:
 `ffmpeg -i public/audio/d_msg.wav -ar 16000 -ac 1 d_msg.16k.wav`, then
 `localflow transcribe d_msg.16k.wav`) and put its output in `src/Video.tsx`.
+
+## Visualize (beta)
+
+A ~30 s video of Visualize (composition `Visualize`): "Visualize how we deploy…" dictated into a
+chat, where the drawn flowchart lands as a picture, then the same diagram as Mermaid in an
+editor. The transcript is what `localflow transcribe` heard in `d_viz`, and
+`public/viz/deploy.png` / `deploy.mmd` are what `localflow visualize` drew from it with Claude
+Haiku 5.5.
+
+```sh
+npm run render:visualize   # out/visualize.mp4
+```
