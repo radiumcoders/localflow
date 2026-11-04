@@ -23,6 +23,10 @@ multi-topic dictation, spoken commands ("new paragraph", "new line",
 else while dictating is left out. It never answers what you say: a dictated
 question stays a question.
 
+Say "visualize …" or "draw a flowchart of …" and describe it, and you get the
+diagram: a picture in a chat or a document, Mermaid in an editor or terminal
+([Visualize](#visualize-diagrams-from-speech)).
+
 For coding, files you name become `@path` references
 ([Referring to files](#referring-to-files)), and in a terminal running Claude
 Code, Codex and the like, "…and send it" sends the prompt while "stop",
@@ -295,6 +299,50 @@ over (and fix: the learn key learns from that). "Send prompts to coding agents"
 in the settings (`LOCALFLOW_SUBMIT`): `said` (default), `always`, `never`.
 Anywhere else, what you say is pasted as always and nothing is pressed.
 
+## Visualize: diagrams from speech
+
+Start a dictation by asking for a diagram, then describe it the way you'd
+explain it to someone:
+
+> "Draw a flowchart of how we deploy: open a pull request, CI runs the tests,
+> if they pass someone reviews it and we merge, otherwise we fix it."
+
+> "Make a mind map of the launch: marketing has the blog post and the video,
+> engineering has the release."
+
+| You start with | You get |
+| --- | --- |
+| "visualize …", "draw a diagram of …", "diagram: …" | a flowchart, or a mind map for topics and subtopics |
+| "draw a flowchart of …", "flowchart: …" | a flowchart: steps, and decisions with their yes/no branches |
+| "make a mind map of …", "mind map: …" | a mind map |
+| "create a sequence diagram: …" | who sends what to whom, in order |
+
+Where it goes depends on the app, like [file references](#referring-to-files):
+
+| You're dictating into | You get |
+| --- | --- |
+| A chat, a document, mail, a browser | the picture (a PNG), pasted as an attachment |
+| An editor or a terminal (a coding agent too) | a ` ```mermaid ` block: coding agents read it, Markdown previews and GitHub draw it |
+
+The last 50 diagrams are kept, as `.png` and `.mmd` (the Mermaid), in
+`~/.local/share/localflow/diagrams` (`~/Library/Application
+Support/localflow/diagrams`, `%LOCALAPPDATA%\localflow\diagrams`), and
+the Mermaid is in your [history](#history).
+
+Diagrams are drawn by a model of their own, Qwen3.5 2B (Apache-2.0, 1.3 GB),
+downloaded from the Visualize tab in the settings (or `localflow models
+download qwen3.5-2b`). It runs only when you ask for a diagram, in the cleanup
+model's place, and writes Mermaid held to a grammar, so what comes out always
+draws; localflow then lays it out and draws it itself (no browser). On a
+Radeon RX 9070 XT a diagram takes ~0.4 s, on the CPU (Ryzen 5 5600) ~3.5 s.
+Qwen3.5 4B (2.7 GB) draws better diagrams in about twice the time and memory.
+Without the model, or when a diagram can't be drawn, what you said is pasted
+as text, as always.
+
+The trigger has to come first: "I drew a flowchart yesterday" is a dictation.
+In a coding agent only "visualize …" draws: "make a flowchart of the auth
+module" is a prompt, for the agent. Raw dictation never draws.
+
 ## History
 
 Every dictation is kept on your computer: when, where it went, what was heard
@@ -368,6 +416,7 @@ and cleanup models and puts the app in place.
 | `LOCALFLOW_CLEANUP_GPU` | `off` to clean up on the CPU (the default on an Intel Mac) |
 | `LOCALFLOW_SUBMIT` | in a coding agent, press Enter after pasting: `said` (when you end with "send it", default), `always`, `never` |
 | `LOCALFLOW_HISTORY` | `off` to keep no history of your dictations |
+| `LOCALFLOW_DIAGRAM_MODEL` | what draws diagrams: `qwen3.5-2b` (default), `qwen3.5-4b`, a `.gguf` file, or `off` (see [Visualize](#visualize-diagrams-from-speech)) |
 
 Logs (never your words; those are in the [history](#history)) go to `~/.local/state/localflow/dictate.log`,
 `~/Library/Logs/localflow/dictate.log` or `%LOCALAPPDATA%\localflow\dictate.log`.
@@ -379,6 +428,7 @@ localflow models [download ID]       # speech models and the cleanup model (loca
 localflow mics                       # the microphones, with the ids LOCALFLOW_MIC takes
 localflow history [N]                # what you said and what went out
 localflow snippets                   # your snippets, as read from snippets.txt
+localflow visualize "a flowchart of how we deploy: …"   # Mermaid on stdout, the PNG's path on stderr
 localflow listen 5                   # record 5 s, transcribe, clean up, print (segments and levels on stderr)
 localflow transcribe talk.wav        # the same from a WAV file
 echo "call mom tomorrow actually tonight" | localflow -
