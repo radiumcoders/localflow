@@ -37,7 +37,7 @@ pub struct Config {
     pub submit: Submit,
     /// Keep what you said and what went out, for `localflow history`.
     pub history: bool,
-    /// Where the env file and your learned words.txt live.
+    /// Where the env file, your learned words.txt and your snippets.txt live.
     pub config_dir: PathBuf,
 }
 
@@ -111,6 +111,11 @@ impl Config {
     /// Your own vocabulary: learning from your fixes adds to it.
     pub fn user_words(&self) -> PathBuf {
         self.config_dir.join("words.txt")
+    }
+
+    /// Your snippets: what to paste when a dictation is only a trigger.
+    pub fn user_snippets(&self) -> PathBuf {
+        self.config_dir.join("snippets.txt")
     }
 
     /// The local model's file: ours in the models folder, or the .gguf named.

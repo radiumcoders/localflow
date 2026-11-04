@@ -209,6 +209,31 @@ speech model, Small (English):
 Small heard the same words as Handy's Parakeet on real recordings, at about
 half the memory. On a machine without a GPU, Base (82 MB) is faster still.
 
+Accuracy, on 100 LibriSpeech test clips each (word error rate, lower is
+better; time is the median per clip):
+
+| | test-clean | test-other (harder) |
+| --- | --- | --- |
+| **large-v3-turbo**, RX 9070 | 1.6%, 0.18 s | 4.8%, 0.16 s |
+| small.en, RX 9070 | 2.2%, 0.13 s | 8.4%, 0.10 s |
+| small.en, CPU (Ryzen 5 5600) | 2.1%, 0.71 s | 8.4%, 0.52 s |
+| tiny.en, CPU | 4.8%, 0.11 s | 16.1%, 0.10 s |
+| large-v3-turbo, Apple M4 | 1.6%, 1.38 s | 4.8%, 2.13 s |
+| **small.en**, Apple M4 | 2.0%, 0.16 s | 8.7%, 0.17 s |
+
+So with a graphics card, setup picks Large: half the mistakes of Small on
+hard speech for a few hundredths of a second. On Apple Silicon and the CPU it
+picks Small: nearly as good on clear speech, and many times faster there.
+
+whisper encodes 30 s at a time; a shorter dictation can encode just its own
+length, several times faster on a CPU or Apple Silicon. That shortcut can send
+whisper round in a loop ("She passed. Cotton. She passed. Cotton."), and it
+costs Large accuracy on hard speech (8.8% instead of 4.8%). So localflow
+uses the full window on a graphics card, and for Large on any GPU; elsewhere it
+takes the shortcut, and a transcript that loops goes again with the full
+window. `cargo run -p localflow-speech --release --example bench` measures it
+all on your machine.
+
 Cleanup on this computer runs localflow's own model, `localflow-clean`: Qwen3.5
 0.8B fine-tuned on the cleanup rules alone, with an English-only vocabulary, in
 a 351 MB file. localflow runs it in its own process with llama.cpp (Vulkan,
@@ -273,7 +298,7 @@ Anywhere else, what you say is pasted as always and nothing is pressed.
 ## History
 
 Every dictation is kept on your computer: when, where it went, what was heard
-and what went out (pasted, sent, or a command's keys). The last 200, readable
+and what went out (pasted, sent, a snippet, or a command's keys). The last 200, readable
 only by you, next to the log; "Keep a history" in the settings
 (`LOCALFLOW_HISTORY=off`) turns it off.
 
@@ -307,6 +332,26 @@ Pine Script: TradingView's scripting language, often heard as "Py script"
 Your own list, `~/.config/localflow/words.txt`, is read too: learning adds to
 it, and you can edit it. Both are read on every dictation.
 
+## Snippets
+
+Say "my email" and get your email address. `snippets.txt`, next to your
+`words.txt` (`~/.config/localflow/snippets.txt`,
+`%APPDATA%\localflow\snippets.txt` on Windows), holds what you'd rather not
+spell out, one per line, with `\n` for a new line:
+
+```
+# trigger => what's pasted
+my email => jay@example.com
+sign off => Thanks,\nJay
+```
+
+A snippet only counts when it's the whole dictation: case and punctuation
+don't matter, and "insert", "paste" or "type" in front is fine, but "my email
+is broken" is a dictation as always. The text is pasted exactly as written,
+without the cleanup, so it's quicker too. In a coding agent it's only pasted,
+never sent. The file is read on every dictation; `localflow snippets` shows
+what it read. Raw dictation pastes a trigger as heard.
+
 ## Settings
 
 The settings window writes `~/.config/localflow/env` (`%APPDATA%\localflow\env`
@@ -316,7 +361,7 @@ and cleanup models and puts the app in place.
 
 | Variable | What |
 | --- | --- |
-| `LOCALFLOW_SPEECH_MODEL` | `tiny.en`, `base.en`, `small.en` (default), `large-v3-turbo` (see `localflow models`) |
+| `LOCALFLOW_SPEECH_MODEL` | `tiny.en`, `base.en`, `small.en`, `large-v3-turbo` (see `localflow models`). Setup picks `large-v3-turbo` with a graphics card, else `small.en` |
 | `LOCALFLOW_SPEECH_GPU` | `off` to transcribe on the CPU (`on` to try the GPU on an Intel Mac, where the CPU is the default) |
 | `LOCALFLOW_MIC` | the microphone to record, as `localflow mics` lists it: on Linux with PipeWire a source's node name (recorded through PipeWire), elsewhere the device's name; the system default when unset, or when it isn't connected |
 | `LOCALFLOW_MODEL` | the cleanup model: `localflow-clean` (default) or a `.gguf` file |
@@ -333,6 +378,7 @@ Logs (never your words; those are in the [history](#history)) go to `~/.local/st
 localflow models [download ID]       # speech models and the cleanup model (localflow-clean)
 localflow mics                       # the microphones, with the ids LOCALFLOW_MIC takes
 localflow history [N]                # what you said and what went out
+localflow snippets                   # your snippets, as read from snippets.txt
 localflow listen 5                   # record 5 s, transcribe, clean up, print (segments and levels on stderr)
 localflow transcribe talk.wav        # the same from a WAV file
 echo "call mom tomorrow actually tonight" | localflow -
@@ -386,7 +432,7 @@ what `localflow --selftest` checks on yours.
 
 | Path | What |
 | --- | --- |
-| `crates/core` | the cleanup with localflow's own model; your vocabulary and learning |
+| `crates/core` | the cleanup with localflow's own model; your vocabulary, snippets and learning |
 | `crates/llm` | llama.cpp in a library of its own, embedded in the binary, that runs the cleanup model |
 | `crates/speech` | the microphone, the speech engine (whisper.cpp), its models, quiet segments |
 | `crates/desktop` | where you're dictating, paste and clipboard, hotkeys, the learn key |

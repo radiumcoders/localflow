@@ -145,7 +145,6 @@ const PICKS: [Pick; 3] = [
     Pick { id: "small.en", name: "Small", body: "Fast on any recent computer. Spells names right." },
     Pick { id: "large-v3-turbo", name: "Large", body: "The most accurate. Best with a GPU." },
 ];
-const RECOMMENDED: usize = 1;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Mic {
@@ -207,7 +206,11 @@ pub struct Onboarding {
 impl Onboarding {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Onboarding {
         let cfg = Config::from_env();
-        let speech = models::resolve(cfg.speech_model.as_deref()).id;
+        // A new install starts on the model that suits this computer.
+        let speech = match cfg.speech_model.as_deref() {
+            Some(m) => models::resolve(Some(m)).id,
+            None => models::recommended(cfg.speech_gpu).id,
+        };
         let local_model = cfg.model.clone();
         let try_field = cx.new(|cx| TextareaState::new(window, cx).placeholder("Your words land here."));
         cx.subscribe(&try_field, |this, field, event: &InputEvent, cx| {
@@ -259,7 +262,13 @@ impl Onboarding {
     }
 
     fn pick(&self) -> &'static Pick {
-        PICKS.iter().find(|p| p.id == self.speech).unwrap_or(&PICKS[RECOMMENDED])
+        PICKS.iter().find(|p| p.id == self.speech).unwrap_or(&PICKS[self.recommended()])
+    }
+
+    /// Which of the picks suits this computer.
+    fn recommended(&self) -> usize {
+        let id = models::recommended(self.cfg.speech_gpu).id;
+        PICKS.iter().position(|p| p.id == id).unwrap_or(1)
     }
 
     fn speech_job(&self, cx: &App) -> Option<Job> {
@@ -573,6 +582,7 @@ impl Onboarding {
 
     fn speech(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
         let chosen = self.pick().id;
+        let recommended = self.recommended();
         let cells = PICKS
             .iter()
             .enumerate()
@@ -596,7 +606,7 @@ impl Onboarding {
                                     .text_color(if checked { p.fg } else { p.fg.opacity(0.7) })
                                     .child(pick.name),
                             )
-                            .when(i == RECOMMENDED, |d| {
+                            .when(i == recommended, |d| {
                                 d.child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.primary).child("Recommended"))
                             })
                             .into_any_element(),
