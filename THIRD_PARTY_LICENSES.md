@@ -1,8 +1,8 @@
 # Third-party licenses
 
-localflow itself is licensed under MIT OR Apache-2.0 (see `LICENSE-MIT` and
-`LICENSE-APACHE`). It includes the software below, under the licenses that
-follow. This file is generated from `about.hbs` by
+localflow itself is Copyright (c) 2026 radiumcoders. All rights reserved. It
+includes the software below, under the licenses that follow. This file is
+generated from `about.hbs` by
 [cargo-about](https://github.com/EmbarkStudios/cargo-about); don't edit it by
 hand.
 

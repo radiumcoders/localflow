@@ -4,7 +4,6 @@ description = "localflow's cleanup model in-process: llama.cpp in a library of i
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
-license.workspace = true
 publish = false
 
 [features]
