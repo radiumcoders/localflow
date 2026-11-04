@@ -135,6 +135,9 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
                 let chosen = if cfg.diagram_model == m.id { "  (in use)" } else { "" };
                 println!("{mark} {:<24} {:>5} MB  {}{chosen}", m.id, m.size_mb(), m.name);
             }
+            let key = if cfg.anthropic_key.is_some() { "✓" } else { " " };
+            let chosen = if cfg.haiku_diagrams() { "  (in use)" } else { "" };
+            println!("{key} {:<24} {:>8}  Claude Haiku 5.5, your Anthropic API key (beta){chosen}", diagram::HAIKU, "API");
             if !cfg.diagrams() {
                 println!("  (off: LOCALFLOW_DIAGRAM_MODEL=off)");
             }
@@ -274,11 +277,21 @@ fn visualize_command(lf: &Localflow, args: &[String]) -> ExitCode {
     let drawn = lf.diagram(&request).map_err(|e| e.0).and_then(|d| localflow_desktop::diagram::save(&d).map(|p| (d, p)));
     match drawn {
         Ok((d, drawn)) => {
+            if let Some(why) = &d.fallback {
+                eprintln!("  {} didn't draw it ({why}): a model on this computer did", lf.cfg.diagram_model);
+            }
             println!("{}", d.mermaid.trim_end());
             eprintln!("  a {} in {} ms: {}", d.kind.name(), start.elapsed().as_millis(), drawn.png.display());
             ExitCode::SUCCESS
         }
-        Err(e) => fail(format!("{e}{}", if lf.cfg.diagram_model_installed() { "" } else { " (localflow models download qwen3.5-2b)" })),
+        Err(e) => {
+            let hint = match (lf.cfg.can_draw(), lf.cfg.haiku_diagrams()) {
+                (true, _) => "",
+                (false, true) => "", // the error says where the key goes
+                (false, false) => " (localflow models download qwen3.5-2b)",
+            };
+            fail(format!("{e}{hint}"))
+        }
     }
 }
 

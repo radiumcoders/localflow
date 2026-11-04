@@ -210,13 +210,16 @@ impl Dictation {
             && let Some(request) = request(&heard.text)
             && (request.visualize || agent.is_none())
         {
-            if !self.lf.cfg.diagram_model_installed() {
-                info("asked for a diagram, but the diagram model isn't downloaded");
-                note = Some("Diagrams: get the model in Settings");
+            if !self.lf.cfg.can_draw() {
+                info(format_args!("asked for a diagram, but {} isn't ready", self.lf.cfg.diagram_model));
+                note = Some(self.lf.cfg.diagram_setup());
             } else {
                 self.ui.send(UiMsg::Working(format!("Drawing a {}", request.kind.map_or("diagram", |k| k.name()))));
                 match self.lf.diagram(&request).and_then(|d| save(&d).map(|drawn| (d, drawn)).map_err(localflow_core::Error)) {
                     Ok((diagram, drawn)) => {
+                        if let Some(why) = &diagram.fallback {
+                            warn(format_args!("{} didn't draw it ({why}): a model on this computer did", self.lf.cfg.diagram_model));
+                        }
                         self.ui.send(UiMsg::Hide);
                         std::thread::sleep(Duration::from_millis(100));
                         let pasted = paste_diagram(&diagram, &drawn, target.as_ref());
