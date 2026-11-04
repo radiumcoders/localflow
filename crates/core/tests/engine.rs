@@ -91,3 +91,22 @@ fn microphone() {
     assert_eq!(config(&[], dir.clone()).mic.as_deref(), Some("Jabra Evolve2 65: USB Audio"));
     assert_eq!(config(&[("LOCALFLOW_MIC", "")], dir).mic, None); // the environment wins, even empty
 }
+
+#[test]
+fn diagram_model_setting() {
+    let cfg = config(&[], temp_dir("diagram"));
+    assert_eq!(cfg.diagram_model, "qwen3.5-2b");
+    assert!(cfg.diagrams());
+    assert!(cfg.diagram_model_file().ends_with("localflow/models/Qwen3.5-2B-Q4_K_M.gguf"));
+    for (value, expected) in [("qwen3.5-4b", "qwen3.5-4b"), ("off", "off"), ("OFF", "off"), ("/m/draw.gguf", "/m/draw.gguf"),
+                              ("gpt-9", "qwen3.5-2b"), ("", "qwen3.5-2b")] {
+        let cfg = config(&[("LOCALFLOW_DIAGRAM_MODEL", value)], temp_dir("diagram-set"));
+        assert_eq!(cfg.diagram_model, expected, "{value}");
+    }
+    let off = config(&[("LOCALFLOW_DIAGRAM_MODEL", "off")], temp_dir("diagram-off"));
+    assert!(!off.diagrams() && !off.diagram_model_installed());
+    // Not downloaded: drawing says so instead of failing to load.
+    let lf = Localflow::new(config(&[("LOCALFLOW_DIAGRAM_MODEL", "/nowhere/draw.gguf")], temp_dir("diagram-missing")));
+    let request = localflow_core::diagram::Request { kind: None, visualize: true, about: "wake up then work".into() };
+    assert!(lf.diagram(&request).unwrap_err().0.contains("isn't downloaded"));
+}

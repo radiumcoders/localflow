@@ -15,6 +15,7 @@
 pub mod agent;
 mod cleanup;
 mod config;
+pub mod diagram;
 pub mod difflib;
 pub mod eval;
 pub mod local;
@@ -53,10 +54,13 @@ pub struct Localflow {
     pub cfg: Config,
     /// The local model, once loaded; freed with this Localflow.
     engine: Mutex<Option<localflow_llm::Model>>,
+    /// The diagram model, loaded (in the cleanup model's place) for a
+    /// dictation that asks for a diagram.
+    diagram_engine: Mutex<Option<localflow_llm::Model>>,
 }
 
 impl Localflow {
     pub fn new(cfg: Config) -> Localflow {
-        Localflow { cfg, engine: Mutex::new(None) }
+        Localflow { cfg, engine: Mutex::new(None), diagram_engine: Mutex::new(None) }
     }
 }

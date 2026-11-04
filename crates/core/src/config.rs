@@ -13,6 +13,8 @@
 //!                         with "send it", the default), always, or never
 //! LOCALFLOW_HISTORY       off to keep no history of what you dictated (default: the last 200,
 //!                         for `localflow history`)
+//! LOCALFLOW_DIAGRAM_MODEL what draws a diagram you ask for ("visualize …"): qwen3.5-2b (the
+//!                         default), qwen3.5-4b, a .gguf file, or off
 //! ```
 
 use std::collections::HashMap;
@@ -37,6 +39,9 @@ pub struct Config {
     pub submit: Submit,
     /// Keep what you said and what went out, for `localflow history`.
     pub history: bool,
+    /// The model that draws diagrams: an id from `diagram::MODELS`, a .gguf
+    /// file, or "off" (a dictation that asks for one is a dictation).
+    pub diagram_model: String,
     /// Where the env file, your learned words.txt and your snippets.txt live.
     pub config_dir: PathBuf,
 }
@@ -103,6 +108,11 @@ impl Config {
             mic: var("LOCALFLOW_MIC").map(|m| m.trim().to_string()).filter(|m| !m.is_empty()),
             submit: Submit::parse(var("LOCALFLOW_SUBMIT").as_deref()),
             history: !off(var("LOCALFLOW_HISTORY")),
+            diagram_model: match var("LOCALFLOW_DIAGRAM_MODEL").map(|m| m.trim().to_string()) {
+                Some(m) if off(Some(m.clone())) => "off".into(),
+                Some(m) if m.ends_with(".gguf") || crate::diagram::MODELS.iter().any(|d| d.id == m) => m,
+                _ => crate::diagram::MODELS[0].id.into(),
+            },
             model: model.unwrap_or_else(|| MODEL.id.into()),
             config_dir: dir,
         }

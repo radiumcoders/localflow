@@ -83,6 +83,15 @@ pub fn cleanup_prompt(vocabulary: &[String], text: &str, files: &[impl AsRef<str
     chat_prompt(&system, &user_turn(text, files))
 }
 
+/// Load a GGUF file, on the GPU when `gpu` says (and it can), else the CPU.
+pub(crate) fn load_model(path: &std::path::Path, gpu: bool) -> Result<localflow_llm::Model> {
+    match localflow_llm::Model::load(path, gpu, CONTEXT) {
+        // A GPU that can't run it (a broken driver, too little memory): the CPU can.
+        Err(e) if gpu => localflow_llm::Model::load(path, false, CONTEXT).map_err(|cpu| Error(format!("{e}; on the CPU: {cpu}"))),
+        loaded => loaded.map_err(Error),
+    }
+}
+
 impl Config {
     /// Downloaded and complete (or a .gguf file you named that exists).
     pub fn local_model_installed(&self) -> bool {
@@ -100,15 +109,7 @@ impl Localflow {
             if !self.cfg.local_model_installed() {
                 return err(format!("{} isn't downloaded yet", MODEL.name));
             }
-            let path = self.cfg.model_file();
-            let model = match localflow_llm::Model::load(&path, self.cfg.cleanup_gpu, CONTEXT) {
-                // A GPU that can't run it (a broken driver, too little memory): the CPU can.
-                Err(e) if self.cfg.cleanup_gpu => {
-                    localflow_llm::Model::load(&path, false, CONTEXT).map_err(|cpu| Error(format!("{e}; on the CPU: {cpu}")))?
-                }
-                loaded => loaded.map_err(Error)?,
-            };
-            *engine = Some(model);
+            *engine = Some(load_model(&self.cfg.model_file(), self.cfg.cleanup_gpu)?);
         }
         Ok(())
     }
