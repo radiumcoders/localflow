@@ -55,12 +55,12 @@ fn s(p: &Path) -> String {
     p.display().to_string()
 }
 
-/// localflow's license and the third-party notices, into an installer's `dir`.
+/// The third-party notices, into an installer's `dir`: the licenses of the
+/// software localflow includes ask for them to ship with it.
 fn licenses(dir: &Path) -> Result<(), String> {
+    const NOTICES: &str = "THIRD_PARTY_LICENSES.md";
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    for f in ["LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_LICENSES.md"] {
-        std::fs::copy(ROOT.join(f), dir.join(f)).map_err(|e| format!("{f}: {e}"))?;
-    }
+    std::fs::copy(ROOT.join(NOTICES), dir.join(NOTICES)).map_err(|e| format!("{NOTICES}: {e}"))?;
     Ok(())
 }
 
