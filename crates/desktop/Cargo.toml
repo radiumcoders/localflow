@@ -10,6 +10,9 @@ publish = false
 localflow-core = { path = "../core" }
 regex = "1.11"
 serde_json = "1.0"
+# Diagrams: Mermaid laid out and drawn in this process, then a PNG.
+mermaid-rs-renderer = { version = "0.3.1", default-features = false }
+resvg = "0.47"
 
 # Editors keep their open folders and Cursor its chat history in SQLite. Linux
 # and Windows build SQLite in (no system library to depend on); macOS has one.
