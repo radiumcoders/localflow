@@ -267,8 +267,8 @@ fn visualize_command(lf: &Localflow, args: &[String]) -> ExitCode {
             return fail("stdin isn't text");
         }
     }
-    let request = diagram::request(&format!("visualize {said}"))
-        .or_else(|| diagram::request(&said))
+    let request = diagram::request(&said)
+        .or_else(|| diagram::request(&format!("visualize {said}")))
         .unwrap_or(Request { kind: None, visualize: true, about: said.trim().to_string() });
     if request.about.is_empty() {
         return usage();

@@ -150,6 +150,13 @@ static ASK: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+/// "a sequence diagram of …" without its "a" (after "visualize" only: at the
+/// start of a dictation, "A flowchart of the deploy is in the doc" is prose).
+fn strip_article(text: &str) -> &str {
+    let lower = text.to_lowercase();
+    ["a ", "an ", "the "].iter().find(|a| lower.starts_with(*a)).map_or(text, |a| &text[a.len()..])
+}
+
 /// The diagram a dictation asks for, or None when it's a dictation. Only the
 /// start counts, and something to draw must follow: "I drew a flowchart" and
 /// "visualize" alone are dictations; a kind said first needs "of" or a pause
@@ -168,7 +175,15 @@ pub fn request(said: &str) -> Option<Request> {
     if about.split_whitespace().count() < 3 {
         return None;
     }
-    Some(Request { kind, visualize: m.name("visualize").is_some(), about: about.to_string() })
+    let visualize = m.name("visualize").is_some();
+    // "Visualize a sequence diagram of …": the kind said after it.
+    if visualize
+        && kind.is_none()
+        && let Some(inner) = request(strip_article(about)).filter(|r| !r.visualize)
+    {
+        return Some(Request { visualize, ..inner });
+    }
+    Some(Request { kind, visualize, about: about.to_string() })
 }
 
 /// The instruction and examples the model draws from.
@@ -461,6 +476,9 @@ mod tests {
         assert!(!request("Draw a flowchart of the deploy: test, merge, ship").unwrap().visualize);
         assert_eq!(req("Create a sequence diagram the browser calls the API"),
                    Some((Some(Kind::Sequence), "the browser calls the API".into())));
+        assert_eq!(req("Visualize a sequence diagram of the app asking the server"),
+                   Some((Some(Kind::Sequence), "the app asking the server".into())));
+        assert!(request("visualize create a sequence diagram: the app asks the server").unwrap().visualize);
         assert_eq!(req("Visualize the signup flow: user signs up, we email them, they log in."),
                    Some((None, "the signup flow: user signs up, we email them, they log in".into())));
         assert_eq!(req("Draw a flowchart of how we deploy: tests, review, merge."),
@@ -477,7 +495,8 @@ mod tests {
                    Some((Some(Kind::Flowchart), "we ship on monday and test on tuesday".into())));
         for dictation in ["I drew a flowchart of the deploy yesterday.", "Visualize.", "Draw a flowchart.",
                           "Diagrams are a great way to explain things to people.", "Make the diagram bigger",
-                          "The flowchart is wrong, fix the second step please.", "Let's visualize success"] {
+                          "The flowchart is wrong, fix the second step please.", "Let's visualize success",
+                          "A flowchart of the deploy is in the doc"] {
             assert_eq!(req(dictation), None, "{dictation}");
         }
     }
