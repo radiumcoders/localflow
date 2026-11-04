@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::select::{SearchableVec, Select, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::theme::Theme;
@@ -14,7 +15,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use localflow_core::diagram::{self, Request};
 use localflow_core::local::MODEL;
-use localflow_core::{Config, Localflow, save_settings};
+use localflow_core::{Config, Localflow, Secret, save_anthropic_key, save_settings};
 use localflow_speech::{Microphone, microphones, models};
 
 use super::look::{self, Palette};
@@ -114,6 +115,11 @@ pub struct SettingsView {
     diagram_model: String,
     /// Drawing a test diagram.
     drawn: Job,
+    /// Your Anthropic API key, for drawing with Claude Haiku: typed here,
+    /// saved to a file of its own.
+    anthropic_key: Entity<InputState>,
+    /// A key is saved (or set in the environment).
+    has_key: bool,
     submit: &'static str,
     history: bool,
     saved: Job,
@@ -175,6 +181,11 @@ impl SettingsView {
             check: Job::Idle,
             diagram_model: cfg.diagram_model.clone(),
             drawn: Job::Idle,
+            anthropic_key: cx.new(|cx| {
+                let hint = if cfg.anthropic_key.is_some() { "saved (type to replace)" } else { "sk-ant-…" };
+                InputState::new(window, cx).placeholder(hint).masked(true)
+            }),
+            has_key: cfg.anthropic_key.is_some(),
             submit: pick(SUBMIT, submit),
             history: cfg.history,
             saved: Job::Idle,
@@ -227,7 +238,16 @@ impl SettingsView {
                 None => env_var(k),
             }
         };
-        Localflow::new(Config::from_vars(&get, dir))
+        let mut cfg = Config::from_vars(&get, dir);
+        if let Some(key) = self.typed_key(cx) {
+            cfg.anthropic_key = Some(Secret(key));
+        }
+        Localflow::new(cfg)
+    }
+
+    /// The API key typed in the field, if any.
+    fn typed_key(&self, cx: &App) -> Option<String> {
+        Some(self.anthropic_key.read(cx).value().trim().to_string()).filter(|k| !k.is_empty())
     }
 
     /// The local model is here (downloaded, or your .gguf file exists).
@@ -367,7 +387,12 @@ impl SettingsView {
         let changes = self.changes(cx);
         let dir = self.cfg.config_dir.clone();
         let pairs: Vec<(&str, Option<&str>)> = changes.iter().map(|(k, v)| (*k, v.as_deref())).collect();
-        self.saved = match save_settings(&dir, &pairs).map_err(|e| e.to_string()).and_then(|_| after_save()) {
+        let key = self.typed_key(cx);
+        let saved = save_settings(&dir, &pairs)
+            .and_then(|_| key.as_deref().map_or(Ok(()), |k| save_anthropic_key(&dir, k)))
+            .map_err(|e| e.to_string());
+        self.has_key |= key.is_some() && saved.is_ok();
+        self.saved = match saved.and_then(|_| after_save()) {
             Ok(()) => Job::Done("Saved".into()),
             Err(e) => Job::Failed(format!("Couldn't save: {e}")),
         };
@@ -668,14 +693,31 @@ impl SettingsView {
             .gap(px(6.))
             .px(px(24.))
             .py(px(16.))
-            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).child("Visualize"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).child("Visualize"))
+                    .child(
+                        div()
+                            .px(px(7.))
+                            .py(px(1.))
+                            .rounded_full()
+                            .bg(p.tint)
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(p.primary)
+                            .child("Beta"),
+                    ),
+            )
             .child(
                 div()
                     .text_size(px(12.))
                     .line_height(px(17.))
                     .text_color(p.dim)
                     .child("Start a dictation with “visualize”, “draw a flowchart of” or “make a mind map of”, then describe it. \
-                            Chats and documents get a picture; editors and terminals get Mermaid. Drawn on this computer."),
+                            Chats and documents get a picture; editors and terminals get Mermaid."),
             )
             .into_any_element();
         let hover = p.hover;
@@ -687,16 +729,24 @@ impl SettingsView {
                     "Better diagrams, for twice the memory and time"
                 };
                 (m.id, m.name, m.size_mb(), note)
-            }));
+            }))
+            .chain(std::iter::once((
+                diagram::HAIKU,
+                "Claude Haiku 5.5",
+                0,
+                "The best diagrams, with your Anthropic API key. What you describe is sent to Anthropic",
+            )));
         let items = choices
             .enumerate()
             .map(|(i, (id, name, size, note))| {
                 let selected = self.diagram_model == id;
-                let model = id != "off";
-                let here = !model || Config { diagram_model: id.into(), ..self.cfg.clone() }.diagram_model_installed();
+                let (model, api) = (id != "off", id == diagram::HAIKU);
+                let here = !model || api || Config { diagram_model: id.into(), ..self.cfg.clone() }.diagram_model_installed();
                 let job = self.downloads.iter().find(|(d, _, _)| *d == id).map(|(_, j, _)| j.clone());
                 let action: AnyElement = if !model {
                     div().into_any_element()
+                } else if api {
+                    mono(if self.has_key { "Key saved" } else { "Needs a key" }, p).into_any_element()
                 } else if here {
                     mono("Downloaded", p).into_any_element()
                 } else if let Some(job @ Job::Running(_)) = &job {
@@ -737,7 +787,7 @@ impl SettingsView {
                                             .text_color(if selected { p.fg } else { p.fg.opacity(0.75) })
                                             .child(name),
                                     )
-                                    .when(model, |d| d.child(mono(format!("{size} MB"), p))),
+                                    .when(model, |d| d.child(mono(if api { "API".to_string() } else { format!("{size} MB") }, p))),
                             )
                             .child(div().text_size(px(12.)).text_color(p.dim).child(note))
                             .children(if let Some(Job::Failed(e)) = &job { Some(div().text_size(px(12.)).text_color(p.record).child(e.clone())) } else { None }),
@@ -746,7 +796,7 @@ impl SettingsView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.diagram_model = id.into();
                         let busy = this.downloads.iter().any(|(d, j, _)| *d == id && matches!(j, Job::Running(_)));
-                        if model && !here && !busy {
+                        if model && !api && !here && !busy {
                             this.download_diagram(id, cx);
                         }
                         cx.notify();
@@ -755,9 +805,44 @@ impl SettingsView {
             })
             .collect();
         // A .gguf file of your own, from the env file.
-        let custom = (self.diagram_model != "off" && !diagram::MODELS.iter().any(|m| m.id == self.diagram_model))
+        let haiku = self.diagram_model == diagram::HAIKU;
+        let custom = (self.diagram_model != "off" && !haiku && !diagram::MODELS.iter().any(|m| m.id == self.diagram_model))
             .then(|| mono(format!("Using {}", self.diagram_model), p));
-        let ready = Config { diagram_model: self.diagram_model.clone(), ..self.cfg.clone() }.diagram_model_installed();
+        let key = haiku.then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(16.))
+                        .child(div().w(px(64.)).flex_none().text_size(px(13.)).text_color(p.dim).child("API key"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h(px(36.))
+                                .flex()
+                                .items_center()
+                                .px(px(16.))
+                                .rounded_full()
+                                .bg(p.muted)
+                                .text_size(px(14.))
+                                .child(Input::new(&self.anthropic_key).appearance(false).mask_toggle()),
+                        ),
+                )
+                .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.dim).child(
+                    "From console.anthropic.com, kept on this computer, readable only by you. Only a dictation that asks \
+                     for a diagram is sent; without a connection, a model downloaded here draws it.",
+                ))
+        });
+        let ready = if haiku {
+            self.has_key || self.typed_key(cx).is_some() || self.cfg.local_diagram_model().is_some()
+        } else {
+            Config { diagram_model: self.diagram_model.clone(), ..self.cfg.clone() }.diagram_model_installed()
+        };
         let busy = matches!(self.drawn, Job::Running(_));
         let test = div()
             .flex()
@@ -778,7 +863,7 @@ impl SettingsView {
             .pt(px(20.))
             .child(look::band(vec![about], p))
             .child(div().pt(px(20.)).child(rows(items, p)))
-            .child(div().flex().flex_col().gap(px(12.)).px(px(24.)).pt(px(18.)).pb(px(24.)).children(custom).child(test))
+            .child(div().flex().flex_col().gap(px(14.)).px(px(24.)).pt(px(18.)).pb(px(24.)).children(custom).children(key).child(test))
     }
 
     fn dictation(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
