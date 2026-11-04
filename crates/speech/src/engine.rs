@@ -8,8 +8,9 @@
 //! Words come back with their timing, so each phrase gets its loudness and
 //! the quiet ones (muttered asides, voices in the background) are marked.
 
+use std::ffi::CStr;
 use std::path::Path;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use std::time::Instant;
 
 use whisper_rs::{
@@ -30,6 +31,10 @@ pub struct Options {
     pub vocabulary: Vec<String>,
     /// CPU threads; 0 for a sensible number for this machine.
     pub threads: usize,
+    /// whisper's whole 30 s window (true), or just the dictation's length
+    /// (false). None: the whole window on a graphics card, and for Large on
+    /// any GPU; else the shortened one.
+    pub full_window: Option<bool>,
 }
 
 /// Settings for [`transcribe`]: what LOCALFLOW_SPEECH_* say.
@@ -83,7 +88,7 @@ impl SpeechConfig {
     }
 
     pub fn options(&self) -> Options {
-        Options { vocabulary: self.vocabulary.clone(), threads: self.threads }
+        Options { vocabulary: self.vocabulary.clone(), threads: self.threads, full_window: None }
     }
 }
 
@@ -119,6 +124,44 @@ fn quiet_logs() {
     });
 }
 
+/// A GPU whisper can run on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gpu {
+    pub name: String,
+    /// Part of the processor, sharing its memory: a laptop's Intel or AMD
+    /// graphics, and Apple Silicon. Not a graphics card of its own.
+    pub integrated: bool,
+}
+
+/// The GPU this build of whisper would use, if any: Metal on a Mac, Vulkan
+/// when built with the `vulkan` feature (the Windows build has none). Looked
+/// up once.
+pub fn gpu() -> Option<&'static Gpu> {
+    static GPU: OnceLock<Option<Gpu>> = OnceLock::new();
+    GPU.get_or_init(|| {
+        quiet_logs();
+        use whisper_rs::whisper_rs_sys as sys;
+        // SAFETY: ggml's device registry, built in with the backends this build
+        // has; its devices and their descriptions live as long as the process.
+        unsafe {
+            (0..sys::ggml_backend_dev_count()).find_map(|i| {
+                let dev = sys::ggml_backend_dev_get(i);
+                let kind = sys::ggml_backend_dev_type(dev);
+                // Metal says GPU, but a Mac's is part of its processor (and an
+                // Intel Mac uses the CPU anyway).
+                let integrated = kind == sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU || cfg!(target_os = "macos");
+                if kind != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU && !integrated {
+                    return None;
+                }
+                let desc = sys::ggml_backend_dev_description(dev);
+                let name = if desc.is_null() { String::new() } else { CStr::from_ptr(desc).to_string_lossy().into_owned() };
+                Some(Gpu { name, integrated })
+            })
+        }
+    })
+    .as_ref()
+}
+
 fn default_threads() -> usize {
     // Physical cores do the work; hyperthreads don't help whisper.
     std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).clamp(1, 8))
@@ -128,6 +171,8 @@ fn default_threads() -> usize {
 pub struct Engine {
     ctx: WhisperContext,
     vad: Option<WhisperVadContext>,
+    /// whisper's full 30 s window, when [`Options::full_window`] doesn't say.
+    full_window: bool,
 }
 
 /// A stretch of the recording that went to whisper: where it starts in the
@@ -160,7 +205,12 @@ impl Engine {
             vp.set_use_gpu(false); // tiny; the GPU would only add setup time
             WhisperVadContext::new(p.to_str()?, vp).ok()
         });
-        Ok(Engine { ctx, vad })
+        // The full window on a graphics card, where it costs little; and for
+        // Large (32 encoder layers) on any GPU: with a shortened one it got
+        // nearly twice the words wrong on hard speech (LibriSpeech test-other,
+        // 8.8% against 4.8%), where Small barely changed (8.7% against 8.4%).
+        let full_window = use_gpu && gpu().is_some_and(|g| !g.integrated || ctx.model_n_audio_layer() >= 24);
+        Ok(Engine { ctx, vad, full_window })
     }
 
     pub fn has_vad(&self) -> bool {
@@ -230,58 +280,40 @@ impl Engine {
             input.resize(RATE as usize + RATE as usize / 10, 0.0);
         }
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         let threads = if opts.threads == 0 { default_threads() } else { opts.threads };
-        params.set_n_threads(threads as i32);
-        // localflow is English only, on every model.
-        params.set_language(Some("en"));
-        params.set_translate(false);
-        params.set_no_context(true);
-        params.set_suppress_blank(true);
-        params.set_suppress_nst(true);
-        params.set_temperature(0.0);
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        // A segment per word, with its timing
-        params.set_token_timestamps(true);
-        params.set_max_len(1);
-        params.set_split_on_word(true);
-        // whisper encodes 30 s at a time, silence included: for a short
-        // dictation, encode just its length (50 frames a second, plus some
-        // room), several times faster.
-        let input_s = input.len() as f32 / RATE as f32;
-        if input_s < 28.0 && std::env::var_os("LOCALFLOW_SPEECH_FULL_WINDOW").is_none() {
-            params.set_audio_ctx((((input_s + 1.0) * 50.0) as u32).div_ceil(64) as i32 * 64);
-        }
         let prompt = vocabulary_prompt(&opts.vocabulary);
-        if !prompt.is_empty() {
-            params.set_initial_prompt(&prompt);
+        // whisper encodes 30 s at a time, silence included. A short dictation
+        // encodes just its length (50 frames a second, plus some room), several
+        // times faster. But a shortened window can send whisper round in a loop
+        // ("She passed. Cotton. She passed. Cotton."): then that dictation goes
+        // again with the full window. Which one a model gets: see load().
+        let input_s = input.len() as f32 / RATE as f32;
+        let full = std::env::var_os("LOCALFLOW_SPEECH_FULL_WINDOW").is_some() || opts.full_window.unwrap_or(self.full_window);
+        let shortened = (input_s < 28.0 && !full).then(|| (((input_s + 1.0) * 50.0) as u32).div_ceil(64) as i32 * 64);
+        let mut heard = self.decode(&input, &prompt, threads, shortened)?;
+        if shortened.is_some() && transcript::loops(&heard.iter().map(|(t, _, _)| t.as_str()).collect::<Vec<_>>().join(" ")) {
+            if debug {
+                eprintln!("  went round in a loop; again with the full window");
+            }
+            heard = self.decode(&input, &prompt, threads, None)?;
         }
-
-        let mut state = self.ctx.create_state().map_err(|e| Error(format!("speech engine: {e}")))?;
-        state.full(params, &input).map_err(|e| Error(format!("couldn't transcribe: {e}")))?;
         // whisper's time (in `input`) to the recording's, and which piece it's in
         let piece = |t: f32| pieces.iter().rposition(|p| p.at <= t + 1e-3).unwrap_or(0);
         let to_orig = |t: f32| {
             let p = &pieces[piece(t)];
             p.orig + (t - p.at).clamp(0.0, p.len)
         };
-        let words: Vec<Word> = state
-            .as_iter()
-            .filter_map(|s| {
-                let text = s.to_str_lossy().ok()?.into_owned();
-                let (a, b) = (s.start_timestamp() as f32 / 100.0, s.end_timestamp() as f32 / 100.0);
+        let words: Vec<Word> = heard
+            .into_iter()
+            .map(|(text, a, b)| {
                 // whisper starts a word right where the one before ended,
                 // even across a pause: its end says which piece it's in
                 let b = b.max(a);
                 let span = piece((b - 0.02).max(a));
                 let start = if piece(a) == span { to_orig(a) } else { pieces[span].orig };
-                Some(Word { text: transcript::strip_noises(&text), start_s: start, end_s: to_orig(b), span })
+                Word { text: transcript::strip_noises(&text), start_s: start, end_s: to_orig(b), span }
             })
             .collect();
-        drop(state);
         let mut segments = transcript::phrases(&words, samples, PHRASE_GAP_S, &spans);
         let mut out = Transcript::from_segments(segments.clone());
         let loudness = spans
@@ -312,6 +344,42 @@ impl Engine {
             eprintln!("  transcribed {total:.1}s ({speech_s:.1}s speech) in {} ms", started.elapsed().as_millis());
         }
         Ok(out)
+    }
+    /// One whisper pass over `input`: each word with its start and end
+    /// (seconds in `input`). `audio_ctx` shortens whisper's 30 s window.
+    fn decode(&self, input: &[f32], prompt: &str, threads: usize, audio_ctx: Option<i32>) -> Result<Vec<(String, f32, f32)>> {
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_n_threads(threads as i32);
+        // localflow is English only, on every model.
+        params.set_language(Some("en"));
+        params.set_translate(false);
+        params.set_no_context(true);
+        params.set_suppress_blank(true);
+        params.set_suppress_nst(true);
+        params.set_temperature(0.0);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        // A segment per word, with its timing
+        params.set_token_timestamps(true);
+        params.set_max_len(1);
+        params.set_split_on_word(true);
+        if let Some(ctx) = audio_ctx {
+            params.set_audio_ctx(ctx);
+        }
+        if !prompt.is_empty() {
+            params.set_initial_prompt(prompt);
+        }
+        let mut state = self.ctx.create_state().map_err(|e| Error(format!("speech engine: {e}")))?;
+        state.full(params, input).map_err(|e| Error(format!("couldn't transcribe: {e}")))?;
+        Ok(state
+            .as_iter()
+            .filter_map(|s| {
+                let text = s.to_str_lossy().ok()?.into_owned();
+                Some((text, s.start_timestamp() as f32 / 100.0, s.end_timestamp() as f32 / 100.0))
+            })
+            .collect())
     }
 }
 

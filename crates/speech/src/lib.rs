@@ -22,9 +22,9 @@ use std::fmt;
 use std::path::PathBuf;
 
 pub use audio::{RATE, level, read_wav, resample, wav_bytes};
-pub use engine::{Engine, Options, SpeechConfig, transcribe};
+pub use engine::{Engine, Gpu, Options, SpeechConfig, gpu, transcribe};
 pub use recorder::Recorder;
-pub use transcript::{QUIET_DROP_DB, Segment, Transcript};
+pub use transcript::{QUIET_DROP_DB, Segment, Transcript, loops};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Error(pub String);
