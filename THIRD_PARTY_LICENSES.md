@@ -175,7 +175,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.```
 
 ## Rust crates
 
-- Apache License 2.0 (462)
+- Apache License 2.0 (459)
 - MIT License (146)
 - ISC License (26)
 - Unicode License v3 (19)
@@ -1795,7 +1795,6 @@ Used by:
 Used by:
 
 - [windows-collections 0.3.2](https://github.com/microsoft/windows-rs)
-- [windows-core 0.54.0](https://github.com/microsoft/windows-rs)
 - [windows-core 0.58.0](https://github.com/microsoft/windows-rs)
 - [windows-core 0.62.2](https://github.com/microsoft/windows-rs)
 - [windows-future 0.3.2](https://github.com/microsoft/windows-rs)
@@ -1806,7 +1805,6 @@ Used by:
 - [windows-link 0.2.1](https://github.com/microsoft/windows-rs)
 - [windows-numerics 0.3.1](https://github.com/microsoft/windows-rs)
 - [windows-registry 0.6.1](https://github.com/microsoft/windows-rs)
-- [windows-result 0.1.2](https://github.com/microsoft/windows-rs)
 - [windows-result 0.2.0](https://github.com/microsoft/windows-rs)
 - [windows-result 0.4.1](https://github.com/microsoft/windows-rs)
 - [windows-strings 0.1.0](https://github.com/microsoft/windows-rs)
@@ -1819,7 +1817,6 @@ Used by:
 - [windows-targets 0.53.5](https://github.com/microsoft/windows-rs)
 - [windows-threading 0.2.1](https://github.com/microsoft/windows-rs)
 - [windows-version 0.1.7](https://github.com/microsoft/windows-rs)
-- [windows 0.54.0](https://github.com/microsoft/windows-rs)
 - [windows 0.58.0](https://github.com/microsoft/windows-rs)
 - [windows 0.62.2](https://github.com/microsoft/windows-rs)
 - [windows_x86_64_gnu 0.48.5](https://github.com/microsoft/windows-rs)
@@ -2675,7 +2672,7 @@ Used by:
 Used by:
 
 - [codespan-reporting 0.13.1](https://github.com/brendanzab/codespan)
-- [cpal 0.16.0](https://github.com/rustaudio/cpal)
+- [cpal 0.17.3](https://github.com/RustAudio/cpal)
 - [self_cell 1.3.0](https://github.com/Voultapher/self_cell)
 - [sys-locale 0.3.2](https://github.com/1Password/sys-locale)
 - [unicode-linebreak 0.1.5](https://github.com/axelf4/unicode-linebreak)
@@ -6110,7 +6107,7 @@ Used by:
 - [core-graphics 0.24.0](https://github.com/servo/core-foundation-rs)
 - [core-graphics 0.25.0](https://github.com/servo/core-foundation-rs)
 - [core-text 21.0.0](https://github.com/servo/core-foundation-rs)
-- [coreaudio-rs 0.13.0](https://github.com/RustAudio/coreaudio-rs.git)
+- [coreaudio-rs 0.14.2](https://github.com/RustAudio/coreaudio-rs.git)
 - [crossbeam-deque 0.8.8](https://github.com/crossbeam-rs/crossbeam)
 - [crossbeam-epoch 0.9.21](https://github.com/crossbeam-rs/crossbeam)
 - [crossbeam-utils 0.8.23](https://github.com/crossbeam-rs/crossbeam)
@@ -10291,7 +10288,7 @@ Used by:
 - [accesskit_unix 0.22.1](https://github.com/AccessKit/accesskit)
 - [accesskit_windows 0.34.0](https://github.com/AccessKit/accesskit)
 - [allocator-api2 0.2.21](https://github.com/zakarumych/allocator-api2)
-- [alsa 0.9.1](https://github.com/diwic/alsa-rs)
+- [alsa 0.11.0](https://github.com/diwic/alsa-rs)
 - [anyhow 1.0.104](https://github.com/dtolnay/anyhow)
 - [arraydeque 0.5.1](https://github.com/andylokandy/arraydeque)
 - [async-trait 0.1.92](https://github.com/dtolnay/async-trait)
@@ -10327,7 +10324,7 @@ Used by:
 - [lyon_tessellation 1.0.23](https://github.com/nical/lyon)
 - [mac-notification-sys 0.6.15](https://github.com/h4llow3En/mac-notification-sys)
 - [mac 0.1.1](https://github.com/reem/rust-mac.git)
-- [mach2 0.4.3](https://github.com/JohnTitor/mach2)
+- [mach2 0.5.0](https://github.com/JohnTitor/mach2)
 - [mach2 0.6.0](https://github.com/JohnTitor/mach2)
 - [miniz_oxide 0.8.9](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
 - [miniz_oxide 0.9.1](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
@@ -14241,7 +14238,7 @@ SOFTWARE.
 
 Used by:
 
-- [alsa-sys 0.3.1](https://github.com/diwic/alsa-sys)
+- [alsa-sys 0.4.0](https://github.com/diwic/alsa-sys)
 
 ```
 MIT License

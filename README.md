@@ -363,6 +363,7 @@ and cleanup models and puts the app in place.
 | --- | --- |
 | `LOCALFLOW_SPEECH_MODEL` | `tiny.en`, `base.en`, `small.en`, `large-v3-turbo` (see `localflow models`). Setup picks `large-v3-turbo` with a graphics card, else `small.en` |
 | `LOCALFLOW_SPEECH_GPU` | `off` to transcribe on the CPU (`on` to try the GPU on an Intel Mac, where the CPU is the default) |
+| `LOCALFLOW_MIC` | the microphone to record, as `localflow mics` lists it: on Linux with PipeWire a source's node name (recorded through PipeWire), elsewhere the device's name; the system default when unset, or when it isn't connected |
 | `LOCALFLOW_MODEL` | the cleanup model: `localflow-clean` (default) or a `.gguf` file |
 | `LOCALFLOW_CLEANUP_GPU` | `off` to clean up on the CPU (the default on an Intel Mac) |
 | `LOCALFLOW_SUBMIT` | in a coding agent, press Enter after pasting: `said` (when you end with "send it", default), `always`, `never` |
@@ -375,6 +376,7 @@ Logs (never your words; those are in the [history](#history)) go to `~/.local/st
 
 ```sh
 localflow models [download ID]       # speech models and the cleanup model (localflow-clean)
+localflow mics                       # the microphones, with the ids LOCALFLOW_MIC takes
 localflow history [N]                # what you said and what went out
 localflow snippets                   # your snippets, as read from snippets.txt
 localflow listen 5                   # record 5 s, transcribe, clean up, print (segments and levels on stderr)
