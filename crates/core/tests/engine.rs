@@ -80,3 +80,14 @@ fn settings_are_saved_to_the_env_file() {
     assert!(!cfg.cleanup_gpu);
     assert_eq!(cfg.speech_model.as_deref(), Some("base.en"));
 }
+
+#[test]
+fn microphone() {
+    assert_eq!(config(&[], temp_dir("mic")).mic, None); // the system's default
+    assert_eq!(config(&[("LOCALFLOW_MIC", " ")], temp_dir("mic-empty")).mic, None);
+    // A name with spaces and a colon, as the settings window saves it.
+    let dir = temp_dir("mic-file");
+    save_settings(&dir, &[("LOCALFLOW_MIC", Some("Jabra Evolve2 65: USB Audio"))]).unwrap();
+    assert_eq!(config(&[], dir.clone()).mic.as_deref(), Some("Jabra Evolve2 65: USB Audio"));
+    assert_eq!(config(&[("LOCALFLOW_MIC", "")], dir).mic, None); // the environment wins, even empty
+}
