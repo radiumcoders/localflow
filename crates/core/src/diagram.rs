@@ -33,7 +33,16 @@ pub const MODELS: [ModelFile; 2] = [
     },
 ];
 
+/// Claude Haiku 5.5, through the Anthropic API with your key: better
+/// diagrams, but what you describe leaves this computer.
+pub const HAIKU: &str = "claude-haiku-5-5";
+
 impl Config {
+    /// Diagrams are drawn by Claude Haiku (your API key).
+    pub fn haiku_diagrams(&self) -> bool {
+        self.diagram_model == HAIKU
+    }
+
     /// Diagrams are drawn (the setting isn't off).
     pub fn diagrams(&self) -> bool {
         self.diagram_model != "off"
@@ -52,8 +61,31 @@ impl Config {
         }
     }
 
-    /// Diagrams are on and their model is here (downloaded and complete).
+    /// A diagram can be drawn: the chosen model is ready, or (Haiku without
+    /// a key) a diagram model on this computer is.
+    pub fn can_draw(&self) -> bool {
+        self.diagram_model_installed() || (self.haiku_diagrams() && self.local_diagram_model().is_some())
+    }
+
+    /// What to do so that diagrams can be drawn, for the pill.
+    pub fn diagram_setup(&self) -> &'static str {
+        if self.haiku_diagrams() { "Diagrams: add your API key in Settings" } else { "Diagrams: get the model in Settings" }
+    }
+
+    /// The first diagram model on this computer: what draws when Haiku can't.
+    pub fn local_diagram_model(&self) -> Option<Config> {
+        MODELS
+            .iter()
+            .map(|m| Config { diagram_model: m.id.into(), ..self.clone() })
+            .find(Config::diagram_model_installed)
+    }
+
+    /// Diagrams can be drawn: their model is here (downloaded and complete),
+    /// or for Claude Haiku, there's an API key.
     pub fn diagram_model_installed(&self) -> bool {
+        if self.haiku_diagrams() {
+            return self.anthropic_key.is_some();
+        }
         let path = self.diagram_model_file();
         self.diagrams()
             && match self.diagram_download() {
@@ -205,6 +237,15 @@ pub fn prompt(request: &Request) -> String {
 pub struct Diagram {
     pub kind: Kind,
     pub mermaid: String,
+    /// Why the model in the settings didn't draw it, when another did
+    /// (Claude couldn't be reached, so a model on this computer drew it).
+    pub fallback: Option<String>,
+}
+
+impl Diagram {
+    pub fn new(kind: Kind, mermaid: String) -> Diagram {
+        Diagram { kind, mermaid, fallback: None }
+    }
 }
 
 /// A label for Mermaid: in quotes, so its punctuation is only text.
@@ -223,17 +264,50 @@ static NUMBERED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:\d+[.)]|[-*
 static MESSAGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([A-Za-z][A-Za-z0-9_]*)(->>|-->>)([A-Za-z][A-Za-z0-9_]*): (.+)$").unwrap());
 
+/// A flowchart node's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Shape {
+    Step,
+    Decision,
+    /// Where it starts or ends.
+    Terminal,
+}
+
+/// Write a flowchart: the nodes still in use (all of them when there are no
+/// edges), numbered in their order, with quoted labels. None when fewer than
+/// two are left.
+pub(crate) fn flowchart(direction: &str, labels: &[(String, Shape)], edges: &[(usize, Option<String>, usize)]) -> Option<String> {
+    let used: HashSet<usize> = edges.iter().flat_map(|&(a, _, b)| [a, b]).collect();
+    let keep: Vec<usize> = (0..labels.len()).filter(|n| used.contains(n) || edges.is_empty()).collect();
+    if keep.len() < 2 {
+        return None;
+    }
+    let id = |n: usize| format!("N{}", keep.iter().position(|&k| k == n).unwrap() + 1);
+    let mut out = format!("flowchart {direction}\n");
+    for &n in &keep {
+        let (label, shape) = &labels[n];
+        let label = quoted(label);
+        out += &match shape {
+            Shape::Step => format!("    {}[{label}]\n", id(n)),
+            Shape::Decision => format!("    {}{{{label}}}\n", id(n)),
+            Shape::Terminal => format!("    {}([{label}])\n", id(n)),
+        };
+    }
+    for (a, label, b) in edges {
+        match label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+            // (Labels never hold a |; quotes here would be drawn.)
+            Some(l) => out += &format!("    {} -->|{l}| {}\n", id(*a), id(*b)),
+            None => out += &format!("    {} --> {}\n", id(*a), id(*b)),
+        }
+    }
+    Some(out)
+}
+
 /// The flowchart the model meant: each step once (a label written again is
 /// the same step), an id given a second label keeps its first, and the
 /// drawing stops where it starts going round (an edge drawn again, a step
 /// pointing at itself) or adds steps that are only loose ends.
 fn tidy_flowchart(lines: &[&str], direction: &str) -> Option<String> {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Shape {
-        Step,
-        Decision,
-        Terminal,
-    }
     let mut labels: Vec<(String, Shape)> = vec![]; // by node number
     let mut by_id: HashMap<String, usize> = HashMap::new();
     let mut by_label: HashMap<String, usize> = HashMap::new();
@@ -279,31 +353,7 @@ fn tidy_flowchart(lines: &[&str], direction: &str) -> Option<String> {
             break;
         }
     }
-    // Only the nodes still in use, in their order.
-    let used: HashSet<usize> = edges.iter().flat_map(|&(a, _, b)| [a, b]).collect();
-    let keep: Vec<usize> = (0..labels.len()).filter(|n| used.contains(n) || edges.is_empty()).collect();
-    if keep.len() < 2 {
-        return None;
-    }
-    let id = |n: usize| format!("N{}", keep.iter().position(|&k| k == n).unwrap() + 1);
-    let mut out = format!("flowchart {direction}\n");
-    for &n in &keep {
-        let (label, shape) = &labels[n];
-        let label = quoted(label);
-        out += &match shape {
-            Shape::Step => format!("    {}[{label}]\n", id(n)),
-            Shape::Decision => format!("    {}{{{label}}}\n", id(n)),
-            Shape::Terminal => format!("    {}([{label}])\n", id(n)),
-        };
-    }
-    for (a, label, b) in &edges {
-        match label {
-            // (The grammar keeps | out of labels; quotes here would be drawn.)
-            Some(l) => out += &format!("    {} -->|{}| {}\n", id(*a), l.trim(), id(*b)),
-            None => out += &format!("    {} --> {}\n", id(*a), id(*b)),
-        }
-    }
-    Some(out)
+    flowchart(direction, &labels, &edges)
 }
 
 /// The mind map, up to the first topic said again (where it goes round).
@@ -355,15 +405,15 @@ pub fn tidy(answer: &str) -> Option<Diagram> {
     let rest: Vec<&str> = lines.collect();
     if let Some(direction) = head.strip_prefix("flowchart ") {
         let direction = if direction.trim() == "LR" { "LR" } else { "TD" };
-        return tidy_flowchart(&rest, direction).map(|mermaid| Diagram { kind: Kind::Flowchart, mermaid });
+        return tidy_flowchart(&rest, direction).map(|mermaid| Diagram::new(Kind::Flowchart, mermaid));
     }
     if head == "mindmap" {
         let (root, branches) = rest.split_first()?;
         let root = root.trim().strip_prefix("root((")?.strip_suffix("))")?;
-        return tidy_mindmap(root, branches).map(|mermaid| Diagram { kind: Kind::Mindmap, mermaid });
+        return tidy_mindmap(root, branches).map(|mermaid| Diagram::new(Kind::Mindmap, mermaid));
     }
     if head == "sequenceDiagram" {
-        return tidy_sequence(&rest).map(|mermaid| Diagram { kind: Kind::Sequence, mermaid });
+        return tidy_sequence(&rest).map(|mermaid| Diagram::new(Kind::Sequence, mermaid));
     }
     None
 }
@@ -371,7 +421,20 @@ pub fn tidy(answer: &str) -> Option<Diagram> {
 impl Localflow {
     /// Draw what a dictation asked for, with the diagram model from the
     /// settings. The cleanup model, loaded while you spoke, makes room for it.
+    /// With Claude Haiku, a diagram model on this computer draws when the API
+    /// can't be reached.
     pub fn diagram(&self, request: &Request) -> Result<Diagram> {
+        if self.cfg.haiku_diagrams() {
+            let haiku = self.haiku_diagram(request);
+            return match (haiku, self.cfg.local_diagram_model()) {
+                (Err(e), Some(local)) => {
+                    *self.engine.lock().unwrap() = None; // room for the local one
+                    let drawn = Localflow::new(local).diagram(request).map_err(|l| Error(format!("{e}; on this computer: {l}")))?;
+                    Ok(Diagram { fallback: Some(e.0), ..drawn })
+                }
+                (result, _) => result,
+            };
+        }
         if !self.cfg.diagram_model_installed() {
             return err("the diagram model isn't downloaded yet");
         }

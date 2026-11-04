@@ -110,3 +110,33 @@ fn diagram_model_setting() {
     let request = localflow_core::diagram::Request { kind: None, visualize: true, about: "wake up then work".into() };
     assert!(lf.diagram(&request).unwrap_err().0.contains("isn't downloaded"));
 }
+
+#[test]
+fn haiku_diagrams_need_a_key() {
+    let dir = temp_dir("haiku");
+    let cfg = config(&[("LOCALFLOW_DIAGRAM_MODEL", "claude-haiku-5-5")], dir.clone());
+    assert!(cfg.haiku_diagrams() && cfg.anthropic_key.is_none() && !cfg.diagram_model_installed());
+    // Without a key, Haiku says so (and there's no local model here to draw instead).
+    let request = localflow_core::diagram::Request { kind: None, visualize: true, about: "wake up then work".into() };
+    let lf = Localflow::new(cfg);
+    if lf.cfg.local_diagram_model().is_none() {
+        assert!(lf.diagram(&request).unwrap_err().0.contains("API key"));
+    }
+    // The key: LOCALFLOW_ANTHROPIC_API_KEY, else ANTHROPIC_API_KEY, else the saved file.
+    localflow_core::save_anthropic_key(&dir, " sk-ant-file \n").unwrap();
+    let key = |vars: &[(&str, &str)]| config(vars, dir.clone()).anthropic_key.map(|k| k.0);
+    assert_eq!(key(&[]), Some("sk-ant-file".into()));
+    assert_eq!(key(&[("ANTHROPIC_API_KEY", "sk-ant-env")]), Some("sk-ant-env".into()));
+    assert_eq!(key(&[("ANTHROPIC_API_KEY", "sk-ant-env"), ("LOCALFLOW_ANTHROPIC_API_KEY", "sk-ant-ours")]), Some("sk-ant-ours".into()));
+    let cfg = config(&[("LOCALFLOW_DIAGRAM_MODEL", "claude-haiku-5-5")], dir.clone());
+    assert!(cfg.diagram_model_installed());
+    assert!(!format!("{cfg:?}").contains("sk-ant"), "the key shows in debug output");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("anthropic_api_key")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    localflow_core::save_anthropic_key(&dir, "").unwrap();
+    assert_eq!(key(&[]), None);
+}

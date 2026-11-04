@@ -101,7 +101,7 @@ mod tests {
             (Kind::Mindmap, "mindmap\n  root((Trip))\n    Tokyo\n      Shibuya\n    Kyoto\n"),
             (Kind::Sequence, "sequenceDiagram\n    App->>API: Get user\n    API-->>App: User\n"),
         ] {
-            let drawn = save_in(&dir, &Diagram { kind, mermaid: mermaid.into() }).unwrap();
+            let drawn = save_in(&dir, &Diagram::new(kind, mermaid.into())).unwrap();
             let png = std::fs::read(&drawn.png).unwrap();
             assert_eq!(&png[1..4], b"PNG");
             let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
