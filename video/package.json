@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "remotion studio",
     "render": "remotion render Dictation out/dictation.mp4",
-    "lint": "tsc"
+    "lint": "tsc",
+    "render:visualize": "remotion render Visualize out/visualize.mp4"
   },
   "dependencies": {
     "@remotion/cli": "4.0.536",

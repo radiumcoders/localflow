@@ -21,7 +21,8 @@ use std::sync::OnceLock;
 static PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/llm.zst"));
 
 type Load = unsafe extern "C" fn(*const c_char, c_int, c_int, *mut *mut c_char) -> *mut c_void;
-type Complete = unsafe extern "C" fn(*mut c_void, *const c_char, c_int, *mut c_int, *mut *mut c_char) -> *mut c_char;
+type Complete =
+    unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, c_int, *mut c_int, *mut *mut c_char) -> *mut c_char;
 type FreeString = unsafe extern "C" fn(*mut c_char);
 type Free = unsafe extern "C" fn(*mut c_void);
 
@@ -145,10 +146,18 @@ impl Model {
     /// The greedy continuation of `prompt` (special tokens are parsed), up to
     /// the end of the turn; true when it stopped at `max_tokens` instead.
     pub fn complete(&mut self, prompt: &str, max_tokens: usize) -> Result<(String, bool), String> {
+        self.complete_with(prompt, None, max_tokens)
+    }
+
+    /// `complete`, held to a GBNF `grammar` (its start rule is "root"): only
+    /// text the grammar allows comes out, and it ends where the grammar can.
+    pub fn complete_with(&mut self, prompt: &str, grammar: Option<&str>, max_tokens: usize) -> Result<(String, bool), String> {
         let c_prompt = CString::new(prompt).map_err(|e| e.to_string())?;
+        let c_grammar = grammar.map(CString::new).transpose().map_err(|e| e.to_string())?;
+        let grammar_ptr = c_grammar.as_ref().map_or(std::ptr::null(), |g| g.as_ptr());
         let (mut cut_off, mut error) = (0, std::ptr::null_mut());
         let max = max_tokens.min(c_int::MAX as usize) as c_int;
-        let out = unsafe { (self.lib.complete)(self.ptr, c_prompt.as_ptr(), max, &mut cut_off, &mut error) };
+        let out = unsafe { (self.lib.complete)(self.ptr, c_prompt.as_ptr(), grammar_ptr, max, &mut cut_off, &mut error) };
         if out.is_null() {
             return Err(take(self.lib, error));
         }

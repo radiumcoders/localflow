@@ -1,19 +1,21 @@
 //! The settings window: the speech model (downloaded here) and microphone,
-//! the cleanup model (localflow-clean, on this computer), dictation, and the
-//! keys to dictate with. Saves to the env file the rest of localflow reads
+//! the cleanup model (localflow-clean, on this computer), the diagram model
+//! ("visualize …"), dictation, and the keys to dictate with. Saves to the env file the rest of localflow reads
 //! (`localflow_core::Config`).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::select::{SearchableVec, Select, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::theme::Theme;
 use gpui_kit::component::{IndexPath, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use localflow_core::diagram::{self, Request};
 use localflow_core::local::MODEL;
-use localflow_core::{Config, Localflow, save_settings};
+use localflow_core::{Config, Localflow, Secret, save_anthropic_key, save_settings};
 use localflow_speech::{Microphone, microphones, models};
 
 use super::look::{self, Palette};
@@ -109,6 +111,15 @@ pub struct SettingsView {
     /// The cleanup model's download.
     fetch: Job,
     check: Job,
+    /// What draws diagrams: an id from diagram::MODELS, a .gguf file, or "off".
+    diagram_model: String,
+    /// Drawing a test diagram.
+    drawn: Job,
+    /// Your Anthropic API key, for drawing with Claude Haiku: typed here,
+    /// saved to a file of its own.
+    anthropic_key: Entity<InputState>,
+    /// A key is saved (or set in the environment).
+    has_key: bool,
     submit: &'static str,
     history: bool,
     saved: Job,
@@ -121,6 +132,7 @@ pub struct SettingsView {
 enum Section {
     Speech,
     Cleanup,
+    Visualize,
     Dictation,
     Keys,
 }
@@ -167,6 +179,13 @@ impl SettingsView {
             local_model,
             fetch: Job::Idle,
             check: Job::Idle,
+            diagram_model: cfg.diagram_model.clone(),
+            drawn: Job::Idle,
+            anthropic_key: cx.new(|cx| {
+                let hint = if cfg.anthropic_key.is_some() { "saved (type to replace)" } else { "sk-ant-…" };
+                InputState::new(window, cx).placeholder(hint).masked(true)
+            }),
+            has_key: cfg.anthropic_key.is_some(),
             submit: pick(SUBMIT, submit),
             history: cfg.history,
             saved: Job::Idle,
@@ -198,6 +217,7 @@ impl SettingsView {
             ("LOCALFLOW_CLEANUP_GPU", (!self.gpu).then(|| "off".into())),
             ("LOCALFLOW_SUBMIT", (self.submit != "said").then(|| self.submit.into())),
             ("LOCALFLOW_HISTORY", (!self.history).then(|| "off".into())),
+            ("LOCALFLOW_DIAGRAM_MODEL", (self.diagram_model != diagram::MODELS[0].id).then(|| self.diagram_model.clone())),
             // Settings localflow no longer has: drop them from an older env file.
             ("LOCALFLOW_API_URL", None),
             ("LOCALFLOW_API_KEY", None),
@@ -218,7 +238,16 @@ impl SettingsView {
                 None => env_var(k),
             }
         };
-        Localflow::new(Config::from_vars(&get, dir))
+        let mut cfg = Config::from_vars(&get, dir);
+        if let Some(key) = self.typed_key(cx) {
+            cfg.anthropic_key = Some(Secret(key));
+        }
+        Localflow::new(cfg)
+    }
+
+    /// The API key typed in the field, if any.
+    fn typed_key(&self, cx: &App) -> Option<String> {
+        Some(self.anthropic_key.read(cx).value().trim().to_string()).filter(|k| !k.is_empty())
     }
 
     /// The local model is here (downloaded, or your .gguf file exists).
@@ -290,6 +319,45 @@ impl SettingsView {
         );
     }
 
+    /// Download a diagram model.
+    fn download_diagram(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.downloads.retain(|(d, _, _)| *d != id);
+        self.downloads.push((id, Job::Idle, cancel.clone()));
+        let cfg = Config { diagram_model: id.into(), ..self.cfg.clone() };
+        self.job(
+            cx,
+            move |progress| crate::cleanup_model::get_diagram_ready(&cfg, progress, &cancel),
+            move |this, job| {
+                if let Some(d) = this.downloads.iter_mut().find(|(d, _, _)| *d == id) {
+                    d.1 = job;
+                }
+            },
+            |_| "Downloaded".into(),
+        );
+    }
+
+    /// Draw a small diagram with the diagram model as chosen here.
+    fn draw_test(&mut self, cx: &mut Context<Self>) {
+        let lf = self.engine(cx);
+        self.job(
+            cx,
+            move |_| {
+                let start = std::time::Instant::now();
+                let request = Request {
+                    kind: Some(diagram::Kind::Flowchart),
+                    visualize: true,
+                    about: "wake up, if it's raining take the bus, otherwise walk to work".into(),
+                };
+                let d = lf.diagram(&request).map_err(|e| e.0)?;
+                localflow_desktop::diagram::svg(&d.mermaid)?;
+                Ok(format!("Works: drew a {} in {:.1} s", d.kind.name(), start.elapsed().as_secs_f32()))
+            },
+            |this, job| this.drawn = job,
+            |ok| ok,
+        );
+    }
+
     /// Download the cleanup model.
     fn fetch(&mut self, cx: &mut Context<Self>) {
         let cfg = Config { model: self.local_model.clone(), ..self.cfg.clone() };
@@ -319,7 +387,12 @@ impl SettingsView {
         let changes = self.changes(cx);
         let dir = self.cfg.config_dir.clone();
         let pairs: Vec<(&str, Option<&str>)> = changes.iter().map(|(k, v)| (*k, v.as_deref())).collect();
-        self.saved = match save_settings(&dir, &pairs).map_err(|e| e.to_string()).and_then(|_| after_save()) {
+        let key = self.typed_key(cx);
+        let saved = save_settings(&dir, &pairs)
+            .and_then(|_| key.as_deref().map_or(Ok(()), |k| save_anthropic_key(&dir, k)))
+            .map_err(|e| e.to_string());
+        self.has_key |= key.is_some() && saved.is_ok();
+        self.saved = match saved.and_then(|_| after_save()) {
             Ok(()) => Job::Done("Saved".into()),
             Err(e) => Job::Failed(format!("Couldn't save: {e}")),
         };
@@ -612,6 +685,187 @@ impl SettingsView {
             .children(status(&self.fetch, p))
     }
 
+    fn visualize(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let about = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap(px(6.))
+            .px(px(24.))
+            .py(px(16.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).child("Visualize"))
+                    .child(
+                        div()
+                            .px(px(7.))
+                            .py(px(1.))
+                            .rounded_full()
+                            .bg(p.tint)
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(p.primary)
+                            .child("Beta"),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(17.))
+                    .text_color(p.dim)
+                    .child("Start a dictation with “visualize”, “draw a flowchart of” or “make a mind map of”, then describe it. \
+                            Chats and documents get a picture; editors and terminals get Mermaid."),
+            )
+            .into_any_element();
+        let hover = p.hover;
+        let choices = std::iter::once(("off", "Off", 0, "A dictation that asks for a diagram is pasted as text"))
+            .chain(diagram::MODELS.iter().map(|m| {
+                let note = if m.id == diagram::MODELS[0].id {
+                    "Good diagrams, quickly: under a second on a graphics card"
+                } else {
+                    "Better diagrams, for twice the memory and time"
+                };
+                (m.id, m.name, m.size_mb(), note)
+            }))
+            .chain(std::iter::once((
+                diagram::HAIKU,
+                "Claude Haiku 5.5",
+                0,
+                "The best diagrams, with your Anthropic API key. What you describe is sent to Anthropic",
+            )));
+        let items = choices
+            .enumerate()
+            .map(|(i, (id, name, size, note))| {
+                let selected = self.diagram_model == id;
+                let (model, api) = (id != "off", id == diagram::HAIKU);
+                let here = !model || api || Config { diagram_model: id.into(), ..self.cfg.clone() }.diagram_model_installed();
+                let job = self.downloads.iter().find(|(d, _, _)| *d == id).map(|(_, j, _)| j.clone());
+                let action: AnyElement = if !model {
+                    div().into_any_element()
+                } else if api {
+                    mono(if self.has_key { "Key saved" } else { "Needs a key" }, p).into_any_element()
+                } else if here {
+                    mono("Downloaded", p).into_any_element()
+                } else if let Some(job @ Job::Running(_)) = &job {
+                    status(job, p).map_or_else(|| div().into_any_element(), |d| d.into_any_element())
+                } else {
+                    look::secondary_button(SharedString::from(format!("get-{id}")), "Download", true, p)
+                        .on_click(cx.listener(move |this, _, _, cx| this.download_diagram(id, cx)))
+                        .into_any_element()
+                };
+                div()
+                    .id(SharedString::from(format!("diagram-{id}")))
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.))
+                    .px(px(24.))
+                    .py(px(10.))
+                    .cursor_pointer()
+                    .when(selected, |d| d.bg(p.tint))
+                    .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                    .child(look::chosen_line(("diagram-chosen", i), selected, p))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_baseline()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(if selected { p.fg } else { p.fg.opacity(0.75) })
+                                            .child(name),
+                                    )
+                                    .when(model, |d| d.child(mono(if api { "API".to_string() } else { format!("{size} MB") }, p))),
+                            )
+                            .child(div().text_size(px(12.)).text_color(p.dim).child(note))
+                            .children(if let Some(Job::Failed(e)) = &job { Some(div().text_size(px(12.)).text_color(p.record).child(e.clone())) } else { None }),
+                    )
+                    .child(action)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.diagram_model = id.into();
+                        let busy = this.downloads.iter().any(|(d, j, _)| *d == id && matches!(j, Job::Running(_)));
+                        if model && !api && !here && !busy {
+                            this.download_diagram(id, cx);
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        // A .gguf file of your own, from the env file.
+        let haiku = self.diagram_model == diagram::HAIKU;
+        let custom = (self.diagram_model != "off" && !haiku && !diagram::MODELS.iter().any(|m| m.id == self.diagram_model))
+            .then(|| mono(format!("Using {}", self.diagram_model), p));
+        let key = haiku.then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(16.))
+                        .child(div().w(px(64.)).flex_none().text_size(px(13.)).text_color(p.dim).child("API key"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h(px(36.))
+                                .flex()
+                                .items_center()
+                                .px(px(16.))
+                                .rounded_full()
+                                .bg(p.muted)
+                                .text_size(px(14.))
+                                .child(Input::new(&self.anthropic_key).appearance(false).mask_toggle()),
+                        ),
+                )
+                .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.dim).child(
+                    "From console.anthropic.com, kept on this computer, readable only by you. Only a dictation that asks \
+                     for a diagram is sent; without a connection, a model downloaded here draws it.",
+                ))
+        });
+        let ready = if haiku {
+            self.has_key || self.typed_key(cx).is_some() || self.cfg.local_diagram_model().is_some()
+        } else {
+            Config { diagram_model: self.diagram_model.clone(), ..self.cfg.clone() }.diagram_model_installed()
+        };
+        let busy = matches!(self.drawn, Job::Running(_));
+        let test = div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                look::secondary_button("draw-test", if busy { "Drawing…" } else { "Test" }, ready && !busy, p)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if ready && !busy {
+                            this.draw_test(cx);
+                        }
+                    })),
+            )
+            .children(status(&self.drawn, p));
+        div()
+            .flex()
+            .flex_col()
+            .pt(px(20.))
+            .child(look::band(vec![about], p))
+            .child(div().pt(px(20.)).child(rows(items, p)))
+            .child(div().flex().flex_col().gap(px(14.)).px(px(24.)).pt(px(18.)).pb(px(24.)).children(custom).children(key).child(test))
+    }
+
     fn dictation(&self, p: &Palette, window: &Window, cx: &mut Context<Self>) -> Div {
         let this = cx.entity();
         let submit_options: Vec<(&'static str, SharedString)> =
@@ -746,6 +1000,7 @@ impl Render for SettingsView {
             &[
                 (Section::Speech, "Speech".into()),
                 (Section::Cleanup, "Cleanup".into()),
+                (Section::Visualize, "Visualize".into()),
                 (Section::Dictation, "Dictation".into()),
                 (Section::Keys, "Keys".into()),
             ],
@@ -762,6 +1017,7 @@ impl Render for SettingsView {
         let content = match self.tab {
             Section::Speech => self.speech(&p, cx),
             Section::Cleanup => self.cleanup(&p, cx),
+            Section::Visualize => self.visualize(&p, cx),
             Section::Dictation => self.dictation(&p, window, cx),
             Section::Keys => self.keys(&p, cx),
         };

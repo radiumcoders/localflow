@@ -15,6 +15,8 @@
 pub mod agent;
 mod cleanup;
 mod config;
+pub mod diagram;
+mod haiku;
 pub mod difflib;
 pub mod eval;
 pub mod local;
@@ -25,7 +27,7 @@ use std::fmt;
 use std::sync::Mutex;
 
 pub use cleanup::{Cleaned, Part, file_refs, markdown_headings, plausible, user_turn};
-pub use config::{Config, config_dir, home, save_settings};
+pub use config::{Config, Secret, config_dir, home, save_anthropic_key, save_settings};
 pub use vocab::{Hint, corrections, edited_region};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,10 +55,13 @@ pub struct Localflow {
     pub cfg: Config,
     /// The local model, once loaded; freed with this Localflow.
     engine: Mutex<Option<localflow_llm::Model>>,
+    /// The diagram model, loaded (in the cleanup model's place) for a
+    /// dictation that asks for a diagram.
+    diagram_engine: Mutex<Option<localflow_llm::Model>>,
 }
 
 impl Localflow {
     pub fn new(cfg: Config) -> Localflow {
-        Localflow { cfg, engine: Mutex::new(None) }
+        Localflow { cfg, engine: Mutex::new(None), diagram_engine: Mutex::new(None) }
     }
 }

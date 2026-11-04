@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use localflow_core::local::MODEL;
+use localflow_core::diagram::{self, Request};
 use localflow_core::{Config, Localflow, NO_FILES, eval};
 use localflow_desktop::history;
 use localflow_desktop::paths::utc;
@@ -25,6 +26,8 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow history --last         # just the last text that went out
     localflow history --clear
     localflow snippets               # your snippets: what each trigger pastes
+    localflow visualize TEXT|-       # draw a diagram of TEXT (\"a flowchart of ...\"): Mermaid on
+                                     # stdout, the PNG's path on stderr
     localflow models [download ID]   # speech and cleanup models: list, or download one
     localflow mics                   # the microphones, with the ids LOCALFLOW_MIC takes
     localflow listen [SECONDS]       # record (default 5 s), transcribe, clean up, print
@@ -58,6 +61,7 @@ pub fn run(args: &[String]) -> ExitCode {
         "mics" => return mics_command(&lf.cfg),
         "history" => return history_command(&lf.cfg, &args[1..]),
         "snippets" => snippets_command(&lf),
+        "visualize" | "visualise" => return visualize_command(&lf, &args[1..]),
         "listen" => {
             let seconds = arg(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
             return match record(lf.cfg.mic.as_deref(), seconds) {
@@ -124,6 +128,19 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
             let mark = if cfg.local_model_installed() { "✓" } else { " " };
             let chosen = if cfg.model == MODEL.id { "  (in use)" } else { "" };
             println!("\ncleanup:\n{mark} {:<24} {:>5} MB  {}{chosen}", MODEL.id, MODEL.size_mb(), MODEL.name);
+            println!("\ndiagrams (\"visualize ...\"):");
+            for m in &diagram::MODELS {
+                let here = Config { diagram_model: m.id.into(), ..cfg.clone() }.diagram_model_installed();
+                let mark = if here { "✓" } else { " " };
+                let chosen = if cfg.diagram_model == m.id { "  (in use)" } else { "" };
+                println!("{mark} {:<24} {:>5} MB  {}{chosen}", m.id, m.size_mb(), m.name);
+            }
+            let key = if cfg.anthropic_key.is_some() { "✓" } else { " " };
+            let chosen = if cfg.haiku_diagrams() { "  (in use)" } else { "" };
+            println!("{key} {:<24} {:>8}  Claude Haiku 5.5, your Anthropic API key (beta){chosen}", diagram::HAIKU, "API");
+            if !cfg.diagrams() {
+                println!("  (off: LOCALFLOW_DIAGRAM_MODEL=off)");
+            }
             println!("\nin {}", models::models_dir().display());
         }
         Some("download") if args.get(1).map(String::as_str) == Some(MODEL.id) => {
@@ -138,6 +155,21 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
             let cfg = Config { model: MODEL.id.into(), ..cfg.clone() };
             match crate::cleanup_model::get_ready(&cfg, &mut progress, &AtomicBool::new(false)) {
                 Ok(()) => eprintln!("\n  {}", cfg.model_file().display()),
+                Err(e) => return fail(e),
+            }
+        }
+        Some("download") if diagram::MODELS.iter().any(|m| Some(m.id) == args.get(1).map(String::as_str)) => {
+            let cfg = Config { diagram_model: args[1].clone(), ..cfg.clone() };
+            let mut last = u64::MAX;
+            let mut progress = |done: u64, total: u64| {
+                let pct = (done * 100).checked_div(total).unwrap_or(0);
+                if pct != last {
+                    last = pct;
+                    eprint!("\r  {}: {pct}% of {} MB", cfg.diagram_model, total / 1_000_000);
+                }
+            };
+            match crate::cleanup_model::get_diagram_ready(&cfg, &mut progress, &AtomicBool::new(false)) {
+                Ok(()) => eprintln!("\n  {}", cfg.diagram_model_file().display()),
                 Err(e) => return fail(e),
             }
         }
@@ -223,6 +255,44 @@ fn history_command(cfg: &Config, args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// Draw what the arguments (or stdin, for "-") describe, as a dictation
+/// would: "a flowchart of …" picks the kind, anything else lets the model.
+fn visualize_command(lf: &Localflow, args: &[String]) -> ExitCode {
+    let mut said = args.join(" ");
+    if said.trim() == "-" {
+        said.clear();
+        if std::io::stdin().read_to_string(&mut said).is_err() {
+            return fail("stdin isn't text");
+        }
+    }
+    let request = diagram::request(&said)
+        .or_else(|| diagram::request(&format!("visualize {said}")))
+        .unwrap_or(Request { kind: None, visualize: true, about: said.trim().to_string() });
+    if request.about.is_empty() {
+        return usage();
+    }
+    let start = Instant::now();
+    let drawn = lf.diagram(&request).map_err(|e| e.0).and_then(|d| localflow_desktop::diagram::save(&d).map(|p| (d, p)));
+    match drawn {
+        Ok((d, drawn)) => {
+            if let Some(why) = &d.fallback {
+                eprintln!("  {} didn't draw it ({why}): a model on this computer did", lf.cfg.diagram_model);
+            }
+            println!("{}", d.mermaid.trim_end());
+            eprintln!("  a {} in {} ms: {}", d.kind.name(), start.elapsed().as_millis(), drawn.png.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            let hint = match (lf.cfg.can_draw(), lf.cfg.haiku_diagrams()) {
+                (true, _) => "",
+                (false, true) => "", // the error says where the key goes
+                (false, false) => " (localflow models download qwen3.5-2b)",
+            };
+            fail(format!("{e}{hint}"))
+        }
+    }
 }
 
 /// Each snippet as it's read: the trigger, then the text pasted for it.

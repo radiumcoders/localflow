@@ -39,6 +39,7 @@ pub fn run(seconds: f32) -> ExitCode {
         pass(format!("{}{}", cfg.model, if cfg.local_model_installed() { "" } else { " (not downloaded)" }))
     });
     check("speech model", &speech_model);
+    check("drawing a diagram", &diagram);
     check("focused app and project", &|| {
         let w = focused_window();
         let t = Target::new(&w);
@@ -64,6 +65,26 @@ pub fn run(seconds: f32) -> ExitCode {
     // Last, and it prints the summary itself: on macOS, closing the overlay's
     // app ends the process, so nothing after it would run.
     overlay(seconds, failed)
+}
+
+/// A diagram's Mermaid laid out and drawn as a PNG, with this computer's
+/// fonts (no model needed); the diagram model's state.
+fn diagram() -> Check {
+    use localflow_desktop::diagram::{png, svg};
+    let svg = svg("flowchart TD\n    N1([\"Wake up\"])\n    N2{\"Raining?\"}\n    N3[\"Take the bus\"]\n    \
+                   N1 --> N2\n    N2 -->|Yes| N3\n")?;
+    let png = png(&svg, 2.0)?;
+    let width = png.get(16..20).map_or(0, |b| u32::from_be_bytes(b.try_into().unwrap()));
+    if !svg.contains("Take the bus") || width < 100 {
+        return Err(format!("drew a {width} px wide picture without the labels"));
+    }
+    let cfg = Config::from_env();
+    let model = match (cfg.diagrams(), cfg.diagram_model_installed()) {
+        (false, _) => "diagrams off".to_string(),
+        (true, true) => cfg.diagram_model.clone(),
+        (true, false) => format!("{} (not downloaded)", cfg.diagram_model),
+    };
+    pass(format!("{width} px wide PNG; {model}"))
 }
 
 /// Print a check's line; 1 if it failed.

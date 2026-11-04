@@ -53,6 +53,7 @@ impl Phase {
 fn message_icon(text: &str) -> Option<&'static str> {
     match text {
         "Pasted" | "Done" => Some("check"),
+        t if t.starts_with("Pasted a ") => Some("check"),
         "Sent" => Some("corner-down-left"),
         t if t.starts_with("Copied") => Some("clipboard"),
         _ => None,

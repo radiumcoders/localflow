@@ -13,6 +13,11 @@
 //!                         with "send it", the default), always, or never
 //! LOCALFLOW_HISTORY       off to keep no history of what you dictated (default: the last 200,
 //!                         for `localflow history`)
+//! LOCALFLOW_DIAGRAM_MODEL what draws a diagram you ask for ("visualize …"): qwen3.5-2b (the
+//!                         default), qwen3.5-4b, claude-haiku-5-5 (with your Anthropic API
+//!                         key), a .gguf file, or off
+//! LOCALFLOW_ANTHROPIC_API_KEY  the key for claude-haiku-5-5 (else ANTHROPIC_API_KEY, else the
+//!                         anthropic_api_key file the settings save, readable only by you)
 //! ```
 
 use std::collections::HashMap;
@@ -37,6 +42,12 @@ pub struct Config {
     pub submit: Submit,
     /// Keep what you said and what went out, for `localflow history`.
     pub history: bool,
+    /// The model that draws diagrams: an id from `diagram::MODELS`,
+    /// `diagram::HAIKU`, a .gguf file, or "off" (a dictation that asks for one
+    /// is a dictation).
+    pub diagram_model: String,
+    /// Your Anthropic API key, for drawing with Claude Haiku.
+    pub anthropic_key: Option<Secret>,
     /// Where the env file, your learned words.txt and your snippets.txt live.
     pub config_dir: PathBuf,
 }
@@ -103,7 +114,18 @@ impl Config {
             mic: var("LOCALFLOW_MIC").map(|m| m.trim().to_string()).filter(|m| !m.is_empty()),
             submit: Submit::parse(var("LOCALFLOW_SUBMIT").as_deref()),
             history: !off(var("LOCALFLOW_HISTORY")),
+            diagram_model: match var("LOCALFLOW_DIAGRAM_MODEL").map(|m| m.trim().to_string()) {
+                Some(m) if off(Some(m.clone())) => "off".into(),
+                Some(m) if m.ends_with(".gguf") || m == crate::diagram::HAIKU || crate::diagram::MODELS.iter().any(|d| d.id == m) => m,
+                _ => crate::diagram::MODELS[0].id.into(),
+            },
             model: model.unwrap_or_else(|| MODEL.id.into()),
+            anthropic_key: var("LOCALFLOW_ANTHROPIC_API_KEY")
+                .or_else(|| get("ANTHROPIC_API_KEY"))
+                .or_else(|| std::fs::read_to_string(dir.join(KEY_FILE)).ok())
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty())
+                .map(Secret),
             config_dir: dir,
         }
     }
@@ -122,6 +144,37 @@ impl Config {
     pub fn model_file(&self) -> PathBuf {
         if self.model == MODEL.id { models_dir().join(MODEL.file) } else { PathBuf::from(&self.model) }
     }
+}
+
+/// A secret: shown as such in logs and debug output, never its value.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
+}
+
+/// Where the settings keep your Anthropic API key, next to the env file.
+const KEY_FILE: &str = "anthropic_api_key";
+
+/// Save your Anthropic API key where Config reads it, readable only by you.
+/// An empty key removes it.
+pub fn save_anthropic_key(dir: &Path, key: &str) -> std::io::Result<()> {
+    let path = dir.join(KEY_FILE);
+    if key.trim().is_empty() {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    std::fs::create_dir_all(dir)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(&path)?, format!("{}\n", key.trim()).as_bytes())
 }
 
 /// Change settings in the env file in `dir`: each (VAR, Some(value)) is set,

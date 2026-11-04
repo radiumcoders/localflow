@@ -27,11 +27,12 @@ pub struct Entry {
     pub agent: Option<String>,
     /// The transcript, as heard.
     pub heard: String,
-    /// What went out: the cleaned text, a snippet's text, or the keys a
-    /// command pressed.
+    /// What went out: the cleaned text, a snippet's text, a diagram's
+    /// Mermaid, or the keys a command pressed.
     pub text: String,
-    /// "pasted", "sent", "copied" (left on the clipboard), "command" or
-    /// "snippet" (a snippet's text, pasted).
+    /// "pasted", "sent", "copied" (left on the clipboard), "command",
+    /// "snippet" (a snippet's text, pasted) or "diagram" (a drawn diagram,
+    /// pasted; `text` is its Mermaid).
     pub outcome: String,
 }
 

@@ -33,5 +33,24 @@
  "n_after": {
   "voice": "YTpq7expH9539ERJ",
   "text": "No ums. <break time=\"0.2s\" /> And Friday, not Thursday."
+ },
+ "n_viz_hook": {
+  "voice": "YTpq7expH9539ERJ",
+  "text": "Say it. <break time=\"0.25s\" /> See it."
+ },
+ "d_viz": {
+  "voice": "9QHzSiOYUD-RzEzM",
+  "config": {
+   "temp": 0.7
+  },
+  "text": "Visualize how we deploy. <break time=\"0.3s\" /> We open a pull request, and CI runs the tests. <break time=\"0.2s\" /> If they pass, someone reviews it and we merge. <break time=\"0.2s\" /> If not, we fix it and push again."
+ },
+ "n_viz_editor": {
+  "voice": "YTpq7expH9539ERJ",
+  "text": "In your editor or a coding agent, you get Mermaid."
+ },
+ "n_viz_outro": {
+  "voice": "YTpq7expH9539ERJ",
+  "text": "Talk, and get the diagram. <break time=\"0.3s\" /> Now in beta."
  }
 }

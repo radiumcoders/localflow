@@ -25,7 +25,9 @@ export const Dictation: React.FC<{
   app: (pasted: number) => React.ReactNode;
   /** A line said over the result. */
   after?: string;
-}> = ({ clip, marks, title, app, after }) => {
+  /** What the pill says after "Transcribing" ("Cleaning up", or "Drawing a flowchart"). */
+  working?: string;
+}> = ({ clip, marks, title, app, after, working = "Cleaning up" }) => {
   const frame = useCurrentFrame();
   const talk = clipFrames(clip);
   const up = LEAD + talk;
@@ -42,7 +44,7 @@ export const Dictation: React.FC<{
   const state =
     frame < up
       ? { kind: "rec" as const, levels: levelsAt(clip, frame - LEAD), seconds: Math.max(0, frame - LEAD) / 30 }
-      : { kind: "work" as const, text: frame < cleaning ? "Transcribing" : "Cleaning up" };
+      : { kind: "work" as const, text: frame < cleaning ? "Transcribing" : working };
   return (
     <AbsoluteFill style={{ fontFamily: SANS }}>
       <Sequence from={LEAD} layout="none">
