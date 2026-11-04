@@ -15,6 +15,7 @@
 //!     localflow learn                  # learn from the dictation you just fixed
 //!
 //! Tools:
+//!     localflow snippets               # your snippets: what each trigger pastes
 //!     localflow models [download ID]   # speech and cleanup models: list, or download one
 //!     localflow listen [SECONDS]       # record, transcribe, clean up, print
 //!     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
