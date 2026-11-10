@@ -4,7 +4,8 @@ Talk, and get clean text where you type. A native dictation app for macOS,
 Windows and Linux, written in Rust: its own speech engine (whisper.cpp,
 in-process), its own small language model, `localflow-clean`, that turns what
 you said into what you meant, and a pill at the bottom of the screen while you
-talk. Nothing leaves your machine. English only.
+talk. Nothing leaves your machine, unless you choose Claude Haiku 5.5 for the
+cleanup with your own API key. English only.
 
 | You say | You get |
 | --- | --- |
@@ -170,10 +171,14 @@ of ~6 MB waits for the hotkey and starts it; on Linux your key bindings do.
 2. **Cleanup**: localflow's own model, `localflow-clean`, cleans and formats
    the transcript, with the spellings in your `words.txt`. It learned the
    rules from examples, so it gets no long prompt: it loads while you speak
-   and answers in ~0.06 s on a GPU.
+   and answers in ~0.06 s on a GPU. Or, in Settings > Cleanup, Claude Haiku
+   5.5 with your Anthropic API key: better, at ~1 s and the transcript sent to
+   Anthropic. When Claude can't be reached, localflow-clean steps in.
 
-If the cleanup model can't run or answers with something much longer than you
-said, you get the transcript as heard. You never lose a dictation.
+If the cleanup model can't run, answers with something much longer than you
+said, adds words you never said ("root 2" becoming "1.5") or leaves out a
+stretch of what you said with no correction near it, you get the transcript as
+heard. You never lose a dictation: the log says why (`cleanup: unfaithful: …`).
 
 ## Asides: talking to yourself
 
@@ -187,8 +192,10 @@ meant for the text, and localflow leaves it out:
 - **Said to yourself or someone else**: the cleanup recognises thinking aloud,
   remarks to people around you and comments about the dictation ("is this
   recording") and leaves them out. When unsure, it keeps your words.
-- If a dictation was nothing but an aside, nothing is pasted ("Left out an
-  aside").
+- If a short dictation (10 words or fewer, not counting muttering) was nothing
+  but an aside, nothing is pasted ("Left out an aside"); `localflow history`
+  still has it. A longer one is pasted as heard: a model that calls half a
+  minute of speech an aside is wrong.
 
 ## Requirements & resource use
 
@@ -250,7 +257,7 @@ cleanup together peak at ~460 MB.
 | localflow-clean, GPU (RX 9070 XT) | ~0.06 s | ~0.34 s | 32/41 | ~530 MB GPU, freed after |
 | localflow-clean, CPU only | ~0.25 s | ~1.8 s | 32/41 | ~510 MB, freed after |
 | (before: qwen3.5:4b in Ollama, GPU) | ~0.33 s | ~1.8 s | 35/41 | ~4.3 GB GPU, kept loaded |
-| (before: Claude Haiku with your API key) | ~1.0–1.3 s | ~2 s | 41/41 | – |
+| Claude Haiku 5.5, your API key | ~1.0–1.3 s | ~2 s | 41/41 | – |
 
 On 142 held-out examples written to the rules, localflow-clean matched the
 expected text exactly in 51% (qwen3.5:4b: 27%).
@@ -429,12 +436,13 @@ and cleanup models and puts the app in place.
 | `LOCALFLOW_SPEECH_MODEL` | `tiny.en`, `base.en`, `small.en`, `large-v3-turbo` (see `localflow models`). Setup picks `large-v3-turbo` with a graphics card, else `small.en` |
 | `LOCALFLOW_SPEECH_GPU` | `off` to transcribe on the CPU (`on` to try the GPU on an Intel Mac, where the CPU is the default) |
 | `LOCALFLOW_MIC` | the microphone to record, as `localflow mics` lists it: on Linux with PipeWire a source's node name (recorded through PipeWire), elsewhere the device's name; the system default when unset, or when it isn't connected |
-| `LOCALFLOW_MODEL` | the cleanup model: `localflow-clean` (default) or a `.gguf` file |
+| `LOCALFLOW_CLEANUP` | what cleans up: `local` (default) or `claude-haiku-5-5` (your API key; localflow-clean steps in when Claude can't be reached) |
+| `LOCALFLOW_MODEL` | the local cleanup model: `localflow-clean` (default) or a `.gguf` file |
 | `LOCALFLOW_CLEANUP_GPU` | `off` to clean up on the CPU (the default on an Intel Mac) |
 | `LOCALFLOW_SUBMIT` | in a coding agent, press Enter after pasting: `said` (when you end with "send it", default), `always`, `never` |
 | `LOCALFLOW_HISTORY` | `off` to keep no history of your dictations |
 | `LOCALFLOW_DIAGRAM_MODEL` | what draws diagrams: `qwen3.5-2b` (default), `qwen3.5-4b`, `claude-haiku-5-5` (your API key), a `.gguf` file, or `off` (see [Visualize](#visualize-diagrams-from-speech-beta)) |
-| `LOCALFLOW_ANTHROPIC_API_KEY` | the key for `claude-haiku-5-5` (else `ANTHROPIC_API_KEY`, else the one saved in the settings) |
+| `LOCALFLOW_ANTHROPIC_API_KEY` | the key for `claude-haiku-5-5`, cleanup and diagrams (else `ANTHROPIC_API_KEY`, else the one saved in the settings) |
 
 Logs (never your words; those are in the [history](#history)) go to `~/.local/state/localflow/dictate.log`,
 `~/Library/Logs/localflow/dictate.log` or `%LOCALAPPDATA%\localflow\dictate.log`.
@@ -500,7 +508,7 @@ what `localflow --selftest` checks on yours.
 
 | Path | What |
 | --- | --- |
-| `crates/core` | the cleanup with localflow's own model; your vocabulary, snippets and learning |
+| `crates/core` | the cleanup with localflow's own model (or Claude Haiku 5.5); your vocabulary, snippets and learning |
 | `crates/llm` | llama.cpp in a library of its own, embedded in the binary, that runs the cleanup model |
 | `crates/speech` | the microphone, the speech engine (whisper.cpp), its models, quiet segments |
 | `crates/desktop` | where you're dictating, paste and clipboard, hotkeys, the learn key |
