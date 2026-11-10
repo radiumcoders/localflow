@@ -4,7 +4,8 @@
 //! comes out: self-corrections applied, filler dropped, punctuation, lists and
 //! headings, names spelled the way the speaker's vocabulary says. Runs
 //! localflow's own model, localflow-clean, on this computer (in this process,
-//! see local.rs): nothing is sent anywhere.
+//! see local.rs): nothing is sent anywhere. Or, when you choose it, Claude
+//! Haiku 5.5 with your Anthropic API key.
 //!
 //! ```no_run
 //! let lf = localflow_core::Localflow::new(localflow_core::Config::from_env());
@@ -20,13 +21,14 @@ mod haiku;
 pub mod difflib;
 pub mod eval;
 pub mod local;
+mod prompts;
 pub mod snippets;
 mod vocab;
 
 use std::fmt;
 use std::sync::Mutex;
 
-pub use cleanup::{Cleaned, Part, file_refs, markdown_headings, plausible, user_turn};
+pub use cleanup::{Cleaned, Part, as_heard, believable_aside, file_refs, markdown_headings, plausible, unfaithful, user_turn};
 pub use config::{Config, Secret, config_dir, home, save_anthropic_key, save_settings};
 pub use vocab::{Hint, corrections, edited_region};
 

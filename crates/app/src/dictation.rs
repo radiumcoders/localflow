@@ -255,8 +255,14 @@ impl Dictation {
         } else {
             self.ui.send(UiMsg::Working("Cleaning up".into()));
             offered = target.as_ref().map(|t| file_candidates(&heard.text, &t.files, 12)).unwrap_or_default();
-            match self.lf.clean(&input, &offered) {
-                Ok(text) => text,
+            match self.lf.clean_detailed(&input, &offered) {
+                Ok(cleaned) => {
+                    if !matches!(cleaned.verdict.as_str(), "ok" | "aside") {
+                        // Pasted as heard, or cleaned on this computer instead of by Claude: say why.
+                        warn(format_args!("cleanup: {}", cleaned.verdict));
+                    }
+                    cleaned.text
+                }
                 Err(e) => {
                     // Never lose a dictation: the transcript as heard.
                     warn(format_args!("cleanup failed, pasting the raw transcript: {e}"));
@@ -266,6 +272,8 @@ impl Dictation {
             }
         };
         if text.trim().is_empty() {
+            // Kept, so `localflow history` has it if it wasn't an aside after all.
+            keep("", "aside");
             info(format_args!("{secs:.1}s of audio, only an aside"));
             return message("Left out an aside", 1600);
         }

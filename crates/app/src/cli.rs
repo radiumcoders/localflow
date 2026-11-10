@@ -232,7 +232,7 @@ fn history_command(cfg: &Config, args: &[String]) -> ExitCode {
             }
             println!("history cleared");
         }
-        Some("--last") => match history::recent(usize::MAX).into_iter().rev().find(|e| e.outcome != "command") {
+        Some("--last") => match history::recent(usize::MAX).into_iter().rev().find(|e| !matches!(e.outcome.as_str(), "command" | "aside")) {
             Some(e) => println!("{}", e.text),
             None => return fail("no dictations yet"),
         },

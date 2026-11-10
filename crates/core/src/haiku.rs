@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::diagram::{Diagram, HAIKU, Kind, Request, Shape, flowchart};
-use crate::{Error, Localflow, Result, err};
+use crate::{Error, Localflow, Result, Secret, err};
 
 const URL: &str = "https://api.anthropic.com/v1/messages";
 
@@ -197,6 +197,30 @@ fn sequence_from(answer: &Value) -> Option<String> {
     Some(out + &lines.concat())
 }
 
+/// One Messages API request with your key: Claude's answer, or why there's
+/// none.
+pub(crate) fn post(key: &Secret, body: &Value, timeout: Duration) -> Result<Value> {
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let response = agent.post(URL).set("x-api-key", &key.0).set("anthropic-version", "2026-10-21").send_json(body);
+    match response {
+        Ok(r) => r.into_json().map_err(|e| Error(format!("Claude's answer didn't read: {e}"))),
+        Err(ureq::Error::Status(code, r)) => {
+            let detail: Value = r.into_json().unwrap_or_default();
+            let why = detail["error"]["message"].as_str().unwrap_or("no detail");
+            err(match code {
+                401 => "the Anthropic API key was refused".to_string(),
+                _ => format!("Claude answered HTTP {code}: {}", why.chars().take(200).collect::<String>()),
+            })
+        }
+        Err(e) => err(format!("couldn't reach Claude: {e}")),
+    }
+}
+
+/// The text of Claude's answer.
+pub(crate) fn answer_text(answer: &Value) -> String {
+    items(answer, "content").iter().filter(|b| b["type"] == "text").map(|b| text(b, "text")).collect()
+}
+
 impl Localflow {
     /// Draw with Claude Haiku 5.5: an error when there's no key, the API
     /// can't be reached, or it declines.
@@ -204,31 +228,13 @@ impl Localflow {
         let Some(key) = &self.cfg.anthropic_key else {
             return err("no Anthropic API key (Settings > Visualize)");
         };
-        let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
-        let response = agent
-            .post(URL)
-            .set("x-api-key", &key.0)
-            .set("anthropic-version", "2026-10-21")
-            .send_json(body(request));
-        let answer: Value = match response {
-            Ok(r) => r.into_json().map_err(|e| Error(format!("Claude's answer didn't read: {e}")))?,
-            Err(ureq::Error::Status(code, r)) => {
-                let detail: Value = r.into_json().unwrap_or_default();
-                let why = detail["error"]["message"].as_str().unwrap_or("no detail");
-                return err(match code {
-                    401 => "the Anthropic API key was refused".to_string(),
-                    _ => format!("Claude answered HTTP {code}: {}", why.chars().take(200).collect::<String>()),
-                });
-            }
-            Err(e) => return err(format!("couldn't reach Claude: {e}")),
-        };
+        let answer = post(key, &body(request), Duration::from_secs(30))?;
         match answer["stop_reason"].as_str() {
             Some("refusal") => return err("Claude declined to draw that"),
             Some("max_tokens") => return err("Claude's diagram was cut off"),
             _ => {}
         }
-        let json: String = items(&answer, "content").iter().filter(|b| b["type"] == "text").map(|b| text(b, "text")).collect();
-        let parts: Value = serde_json::from_str(&json).map_err(|e| Error(format!("Claude's diagram didn't read: {e}")))?;
+        let parts: Value = serde_json::from_str(&answer_text(&answer)).map_err(|e| Error(format!("Claude's diagram didn't read: {e}")))?;
         diagram(&parts).ok_or_else(|| Error("couldn't draw that".into()))
     }
 }

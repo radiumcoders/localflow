@@ -1,5 +1,5 @@
 //! The settings window: the speech model (downloaded here) and microphone,
-//! the cleanup model (localflow-clean, on this computer), the diagram model
+//! the cleanup (localflow-clean on this computer, or Claude Haiku 5.5 with your API key), the diagram model
 //! ("visualize …"), dictation, and the keys to dictate with. Saves to the env file the rest of localflow reads
 //! (`localflow_core::Config`).
 
@@ -106,6 +106,8 @@ pub struct SettingsView {
     mic: Choice,
     /// The microphone select's rows, as (label, LOCALFLOW_MIC).
     mics: Vec<(SharedString, Option<String>)>,
+    /// Clean up with Claude Haiku 5.5 instead of on this computer.
+    cleanup_haiku: bool,
     /// localflow-clean, or the .gguf file the env file names.
     local_model: String,
     /// The cleanup model's download.
@@ -115,8 +117,8 @@ pub struct SettingsView {
     diagram_model: String,
     /// Drawing a test diagram.
     drawn: Job,
-    /// Your Anthropic API key, for drawing with Claude Haiku: typed here,
-    /// saved to a file of its own.
+    /// Your Anthropic API key, for cleaning up and drawing with Claude Haiku:
+    /// typed here, saved to a file of its own.
     anthropic_key: Entity<InputState>,
     /// A key is saved (or set in the environment).
     has_key: bool,
@@ -176,6 +178,7 @@ impl SettingsView {
             gpu: cfg.speech_gpu,
             mic: cx.new(|cx| SelectState::new(SearchableVec::new(labels), Some(IndexPath::new(mic)), window, cx)),
             mics,
+            cleanup_haiku: cfg.cleanup_haiku,
             local_model,
             fetch: Job::Idle,
             check: Job::Idle,
@@ -210,6 +213,7 @@ impl SettingsView {
     /// The settings as chosen in the window, as env-file changes.
     fn changes(&self, cx: &App) -> Vec<(&'static str, Option<String>)> {
         vec![
+            ("LOCALFLOW_CLEANUP", self.cleanup_haiku.then(|| diagram::HAIKU.into())),
             ("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())),
             ("LOCALFLOW_SPEECH_MODEL", Some(self.speech_model.to_string())),
             ("LOCALFLOW_SPEECH_GPU", (!self.gpu).then(|| "off".into())),
@@ -374,9 +378,14 @@ impl SettingsView {
         self.job(
             cx,
             move |_| {
-                lf.clean("um testing one two three", localflow_core::NO_FILES)
-                    .map(|_| format!("Works: {}", lf.cfg.model))
-                    .map_err(|e| e.0)
+                let start = std::time::Instant::now();
+                let cleaned = lf.clean_detailed("um so testing one two three", localflow_core::NO_FILES).map_err(|e| e.0)?;
+                // Claude couldn't clean up: say why, not "works".
+                match cleaned.verdict.split_once("Claude Haiku: ") {
+                    Some((_, why)) => Err(why.split("; ").next().unwrap_or(why).to_string()),
+                    None if lf.cfg.cleanup_haiku => Ok(format!("Works: Claude Haiku 5.5 in {:.1} s", start.elapsed().as_secs_f32())),
+                    None => Ok(format!("Works: {}", lf.cfg.model)),
+                }
             },
             |this, job| this.check = job,
             |ok| ok,
@@ -614,38 +623,128 @@ impl SettingsView {
     }
 
     fn cleanup(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
-        let about = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .gap(px(6.))
-            .px(px(24.))
-            .py(px(16.))
-            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).child(MODEL.id))
-            .child(
+        let hover = p.hover;
+        let choices = [
+            (false, MODEL.id, format!("{} MB", MODEL.size_mb()), "localflow's own model. It runs on this computer: nothing leaves your machine"),
+            (true, "Claude Haiku 5.5", "API".to_string(), "The best cleanup, with your Anthropic API key. What you say is sent to Anthropic"),
+        ];
+        let items = choices
+            .into_iter()
+            .enumerate()
+            .map(|(i, (haiku, name, size, note))| {
+                let selected = self.cleanup_haiku == haiku;
+                let action = haiku.then(|| mono(if self.has_key { "Key saved" } else { "Needs a key" }, p));
                 div()
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .text_color(p.dim)
-                    .child("localflow's own model, made for cleaning up dictation. It runs on this computer: nothing leaves your machine."),
+                    .id(("cleanup", i))
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.))
+                    .px(px(24.))
+                    .py(px(10.))
+                    .cursor_pointer()
+                    .when(selected, |d| d.bg(p.tint))
+                    .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                    .child(look::chosen_line(("cleanup-chosen", i), selected, p))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_baseline()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(if selected { p.fg } else { p.fg.opacity(0.75) })
+                                            .child(name),
+                                    )
+                                    .child(mono(size, p)),
+                            )
+                            .child(div().text_size(px(12.)).text_color(p.dim).child(note)),
+                    )
+                    .children(action)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cleanup_haiku = haiku;
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let key = self.cleanup_haiku.then(|| {
+            self.key_field(
+                "From console.anthropic.com, kept on this computer, readable only by you. Each dictation's transcript \
+                 is sent to Anthropic; without a connection, localflow's model cleans it up here.",
+                p,
             )
-            .into_any_element();
-        let detail = self.local_settings(p, cx);
+        });
+        let ready = !self.cleanup_haiku || self.has_key || self.typed_key(cx).is_some();
+        let busy = matches!(self.check, Job::Running(_));
         let test = div()
             .flex()
             .items_center()
             .gap(px(12.))
             .child(
-                look::secondary_button("test", if matches!(self.check, Job::Running(_)) { "Testing…" } else { "Test" }, !matches!(self.check, Job::Running(_)), p)
-                    .on_click(cx.listener(|this, _, _, cx| this.test(cx))),
+                look::secondary_button("test", if busy { "Testing…" } else { "Test" }, ready && !busy, p)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if ready && !busy {
+                            this.test(cx);
+                        }
+                    })),
             )
             .children(status(&self.check, p));
         div()
             .flex()
             .flex_col()
             .pt(px(20.))
-            .child(look::band(vec![about], p))
-            .child(div().flex().flex_col().gap(px(14.)).px(px(24.)).pt(px(18.)).child(detail).child(test))
+            .child(rows(items, p))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .px(px(24.))
+                    .pt(px(18.))
+                    .pb(px(24.))
+                    .children(key)
+                    .child(self.local_settings(p, cx))
+                    .child(test),
+            )
+    }
+
+    /// The Anthropic API key's field, with a note on what it's used for.
+    fn key_field(&self, note: &'static str, p: &Palette) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.))
+                    .child(div().w(px(64.)).flex_none().text_size(px(13.)).text_color(p.dim).child("API key"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(36.))
+                            .flex()
+                            .items_center()
+                            .px(px(16.))
+                            .rounded_full()
+                            .bg(p.muted)
+                            .text_size(px(14.))
+                            .child(Input::new(&self.anthropic_key).appearance(false).mask_toggle()),
+                    ),
+            )
+            .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.dim).child(note))
     }
 
     fn local_settings(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
@@ -809,34 +908,11 @@ impl SettingsView {
         let custom = (self.diagram_model != "off" && !haiku && !diagram::MODELS.iter().any(|m| m.id == self.diagram_model))
             .then(|| mono(format!("Using {}", self.diagram_model), p));
         let key = haiku.then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(16.))
-                        .child(div().w(px(64.)).flex_none().text_size(px(13.)).text_color(p.dim).child("API key"))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .h(px(36.))
-                                .flex()
-                                .items_center()
-                                .px(px(16.))
-                                .rounded_full()
-                                .bg(p.muted)
-                                .text_size(px(14.))
-                                .child(Input::new(&self.anthropic_key).appearance(false).mask_toggle()),
-                        ),
-                )
-                .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.dim).child(
-                    "From console.anthropic.com, kept on this computer, readable only by you. Only a dictation that asks \
-                     for a diagram is sent; without a connection, a model downloaded here draws it.",
-                ))
+            self.key_field(
+                "From console.anthropic.com, kept on this computer, readable only by you. Only a dictation that asks \
+                 for a diagram is sent; without a connection, a model downloaded here draws it.",
+                p,
+            )
         });
         let ready = if haiku {
             self.has_key || self.typed_key(cx).is_some() || self.cfg.local_diagram_model().is_some()

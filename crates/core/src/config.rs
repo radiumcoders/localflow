@@ -3,7 +3,10 @@
 //! VAR=value per line). A variable set in the environment wins.
 //!
 //! ```text
-//! LOCALFLOW_MODEL         the cleanup model: localflow-clean (the default) or a .gguf file
+//! LOCALFLOW_CLEANUP       what cleans up: local (localflow's model on this computer, the
+//!                         default) or claude-haiku-5-5 (with your Anthropic API key; the local
+//!                         model steps in when Claude can't be reached)
+//! LOCALFLOW_MODEL         the local cleanup model: localflow-clean (the default) or a .gguf file
 //! LOCALFLOW_CLEANUP_GPU   off to clean up on the CPU (default: the GPU when there is one)
 //! LOCALFLOW_SPEECH_MODEL  speech model id (see `localflow models`; default: the recommended one)
 //! LOCALFLOW_SPEECH_GPU    off to transcribe on the CPU (default: the GPU when there is one)
@@ -16,7 +19,7 @@
 //! LOCALFLOW_DIAGRAM_MODEL what draws a diagram you ask for ("visualize …"): qwen3.5-2b (the
 //!                         default), qwen3.5-4b, claude-haiku-5-5 (with your Anthropic API
 //!                         key), a .gguf file, or off
-//! LOCALFLOW_ANTHROPIC_API_KEY  the key for claude-haiku-5-5 (else ANTHROPIC_API_KEY, else the
+//! LOCALFLOW_ANTHROPIC_API_KEY  the key for claude-haiku-5-5, cleanup and diagrams (else ANTHROPIC_API_KEY, else the
 //!                         anthropic_api_key file the settings save, readable only by you)
 //! ```
 
@@ -28,7 +31,9 @@ use crate::local::{MODEL, models_dir};
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// localflow-clean or a .gguf file.
+    /// Clean up with Claude Haiku 5.5 (your API key) instead of on this computer.
+    pub cleanup_haiku: bool,
+    /// The local cleanup model: localflow-clean or a .gguf file.
     pub model: String,
     /// Run the cleanup model on the GPU when there is one.
     pub cleanup_gpu: bool,
@@ -46,7 +51,7 @@ pub struct Config {
     /// `diagram::HAIKU`, a .gguf file, or "off" (a dictation that asks for one
     /// is a dictation).
     pub diagram_model: String,
-    /// Your Anthropic API key, for drawing with Claude Haiku.
+    /// Your Anthropic API key, for cleaning up and drawing with Claude Haiku.
     pub anthropic_key: Option<Secret>,
     /// Where the env file, your learned words.txt and your snippets.txt live.
     pub config_dir: PathBuf,
@@ -108,6 +113,7 @@ impl Config {
         // An Ollama model name from before localflow ran its own model means ours.
         let model = var("LOCALFLOW_MODEL").map(|m| m.trim().to_string()).filter(|m| m.ends_with(".gguf"));
         Config {
+            cleanup_haiku: var("LOCALFLOW_CLEANUP").is_some_and(|c| c.trim() == crate::diagram::HAIKU),
             cleanup_gpu: gpu(var("LOCALFLOW_CLEANUP_GPU")),
             speech_model: var("LOCALFLOW_SPEECH_MODEL").filter(|m| !m.is_empty()),
             speech_gpu: gpu(var("LOCALFLOW_SPEECH_GPU")),
