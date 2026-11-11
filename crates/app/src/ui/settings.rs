@@ -354,6 +354,10 @@ impl SettingsView {
                     about: "wake up, if it's raining take the bus, otherwise walk to work".into(),
                 };
                 let d = lf.diagram(&request).map_err(|e| e.0)?;
+                // Claude couldn't draw it and a local model did: say why, not "works".
+                if let Some(why) = &d.fallback {
+                    return Err(why.split("; ").next().unwrap_or(why).to_string());
+                }
                 localflow_desktop::diagram::svg(&d.mermaid)?;
                 Ok(format!("Works: drew a {} in {:.1} s", d.kind.name(), start.elapsed().as_secs_f32()))
             },
