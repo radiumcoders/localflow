@@ -303,7 +303,7 @@ fn spoken_numbers(said: &[String]) -> HashMap<String, Vec<(usize, usize)>> {
         let mut i = start;
         while i < said.len().min(start + RUN) {
             // "four oh four": a zero between numbers, not the "oh" of "five, oh, and three more".
-            let oh = || i > start && zero(word(i)) && (i + 1..said.len()).find(|j| !zero(word(*j))).is_some_and(|j| number(word(j)).is_some());
+            let oh = || i > start && zero(word(i)) && (i + 1..said.len().min(start + RUN)).find(|j| !zero(word(*j))).is_some_and(|j| number(word(j)).is_some());
             let (n, nth) = match (cardinal(word(i)), ordinal(word(i))) {
                 (Some(n), _) => (n, false),
                 (None, Some(n)) => (n, true),
@@ -945,7 +945,7 @@ mod tests {
         let said = format!("{} billion dollars", "hundred ".repeat(30));
         assert!(unfaithful(&said, &format!("{said}.")).is_none());
         // Nor take long, nor panic, when a speech model is stuck on one.
-        for stuck in ["nine ", "ninety nine thousand ", "one hundred and ", "two point ", "half past quarter to ", "twentieth oh "] {
+        for stuck in ["nine ", "ninety nine thousand ", "one hundred and ", "two point ", "half past quarter to ", "twentieth oh ", "four oh oh oh ", "oh ", "no "] {
             let said = stuck.repeat(300);
             assert!(unfaithful(&said, &said).is_none());
             assert!(unfaithful(&said, "9999999999999999999999999999999999999999 and 18446744073709551616.").is_some());
