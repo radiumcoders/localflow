@@ -388,6 +388,25 @@ fn small(word: &str) -> bool {
     FILLER.split(' ').chain(GRAMMAR.split(' ')).any(|w| w == word)
 }
 
+/// A word without what's after its apostrophe: "it's" is "it".
+fn bare(word: &str) -> &str {
+    word.split('\'').next().unwrap_or_default()
+}
+
+/// Whether the "no" at said[i] is filler ("yeah no I think it's fine", "um
+/// no so the plan is"): the dictation starts with it, after nothing but
+/// filler, and it isn't none of something ("no errors so far").
+fn filler_no(said: &[String], i: usize) -> bool {
+    let filler = |w: &String| FILLER.split(' ').any(|f| f == w);
+    let next = said[i + 1..].iter().find(|w| !filler(w));
+    said[i] == "no" && said[..i].iter().all(filler) && next.is_some_and(|w| small(bare(w)) || negation(w))
+}
+
+/// Whether said[i] turns what's said around.
+fn negates(said: &[String], i: usize) -> bool {
+    negation(&said[i]) && !filler_no(said, i)
+}
+
 /// How many words either side of a change count as near it.
 const NEAR: usize = 3;
 
@@ -545,7 +564,7 @@ pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String
         if matches!(op.tag, Tag::Replace | Tag::Insert) {
             // As many negations as the speaker said here ("do not" -> "don't"): one more is made up,
             // however near another is ("I can't believe it works" -> "... it doesn't work").
-            let said_here = said[op.i1..op.i2].iter().filter(|w| negation(w)).count();
+            let said_here = (op.i1..op.i2).filter(|i| negates(&said, *i)).count();
             let negations: Vec<usize> = (op.j1..op.j2).filter(|j| negation(&wrote[*j])).collect();
             // One word said, written as two or three ("nextjs" -> Next.js, "cannot" -> can not).
             let split = |j: usize| {
@@ -588,18 +607,17 @@ pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String
 /// three, no, four").
 fn flipped<'a>(said: &'a [String], i1: usize, i2: usize, new: &[String]) -> Option<&'a str> {
     let gone = &said[i1..i2];
-    let negations = |words: &[String]| words.iter().filter(|w| negation(w)).count();
     let (before, after) = (&said[..i1], &said[i2..]);
     let repeated = after.starts_with(gone)
         || before.ends_with(gone)
         || gone.iter().all(|w| after.first() == Some(w) || before.last() == Some(w));
-    if negations(gone) <= negations(new) || repeated {
+    if (i1..i2).filter(|&i| negates(said, i)).count() <= new.iter().filter(|w| negation(w)).count() || repeated {
         return None;
     }
     let near = &said[i1.saturating_sub(NEAR)..(i2 + NEAR).min(said.len())];
     let taken_back = near.iter().any(|w| TAKE_BACK.contains(&w.as_str()));
     let content = |w: &String| !small(w) && !negation(w);
-    (0..gone.len()).filter(|&k| negation(&gone[k])).map(|k| (k, gone[k].as_str())).find_map(|(k, not)| {
+    (0..gone.len()).filter(|&k| negates(said, i1 + k)).map(|k| (k, gone[k].as_str())).find_map(|(k, not)| {
         let went_with_it = gone[k + 1..].iter().any(content);
         let takes_back = not == "no" && (taken_back || gone[..k].iter().any(content));
         (!went_with_it && !takes_back).then_some(not)
@@ -979,6 +997,11 @@ mod tests {
             ("I dont know what happened", "I know what happened."),
             ("it wont start", "It will start."),
             ("I want to merge it", "I don't want to merge it."),
+            // None of something isn't filler, nor is a filler "no" a negation to write somewhere else.
+            ("no errors so far", "Errors so far."),
+            ("um no bugs in the build", "Bugs in the build."),
+            ("yeah no it's fine", "It isn't fine."),
+            ("um no so the plan is to ship", "The plan is not to ship."),
         ] {
             assert!(unfaithful(said, out).is_some(), "{said}");
         }
@@ -1003,6 +1026,11 @@ mod tests {
             ("I don't I don't know", "I don't know."),
             ("no no no that's wrong", "No, that's wrong."),
             ("the retry logic never backs off", "The retry logic never backs off."),
+            // "No" as filler, where the dictation starts.
+            ("yeah no I think it's fine", "I think it's fine."),
+            ("um no so the plan is to ship", "The plan is to ship."),
+            ("no wait it's on Tuesday", "It's on Tuesday."),
+            ("oh no I don't want that", "I don't want that."),
             // The same negation, however it was spelled or split.
             ("I dont know what happened", "I don't know what happened."),
             ("I cant make it on Friday", "I can't make it on Friday."),
