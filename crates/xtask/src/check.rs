@@ -114,7 +114,8 @@ fn app(exe: &Path, args: &[&str], env: &[(&str, String)]) -> Result<String, Stri
 /// The sentence as 16 kHz mono 16-bit speech, from the OS's text-to-speech.
 fn speak(dir: &Path) -> Result<(PathBuf, f32), String> {
     let wav = dir.join("speech.wav");
-    let seconds = |wav: &Path| std::fs::read(wav).map_or(0.0, |b| b.len().saturating_sub(44) as f32 / 32000.0);
+    // Stale speech from an earlier run in the same directory mustn't count.
+    let _ = std::fs::remove_file(&wav);
     if cfg!(target_os = "macos") {
         // The default voice can be one that isn't downloaded (the Apple
         // Silicon runners' since November 2026): `say` then writes a near-empty
@@ -127,6 +128,7 @@ fn speak(dir: &Path) -> Result<(PathBuf, f32), String> {
             }
             args.push(SENTENCE.to_string());
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let _ = std::fs::remove_file(&wav);
             if run("say", &args).is_err() {
                 continue;
             }
@@ -155,6 +157,26 @@ fn speak(dir: &Path) -> Result<(PathBuf, f32), String> {
         return Err(format!("text-to-speech made only {secs:.1}s of speech"));
     }
     Ok((wav, secs))
+}
+
+/// How long a WAV file's audio is, from its `fmt ` and `data` chunks (afconvert
+/// adds a padding chunk, so the file's size overstates it); 0 when unreadable.
+fn seconds(wav: &Path) -> f32 {
+    let Ok(b) = std::fs::read(wav) else { return 0.0 };
+    if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return 0.0;
+    }
+    let (mut at, mut byte_rate, mut data) = (12, 0u32, 0u32);
+    while at + 8 <= b.len() {
+        let len = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap());
+        match &b[at..at + 4] {
+            b"fmt " if at + 20 <= b.len() => byte_rate = u32::from_le_bytes(b[at + 16..at + 20].try_into().unwrap()),
+            b"data" => data = len.min((b.len() - at - 8) as u32),
+            _ => {}
+        }
+        at += 8 + len as usize + (len as usize & 1);
+    }
+    if byte_rate == 0 { 0.0 } else { data as f32 / byte_rate as f32 }
 }
 
 fn setup(exe: &Path, start: bool) -> Result<String, String> {
@@ -472,4 +494,33 @@ fn linux(steps: &mut Steps, appimage: &Path, dir: &Path) {
         Ok(out?.trim().to_string())
     });
     common(steps, &exe, dir);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn wav_seconds_from_the_data_chunk() {
+        let dir = std::env::temp_dir().join(format!("xtask-wav-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("a.wav");
+        // 16 kHz mono 16-bit: 32000 bytes a second; half a second of data,
+        // then 8000 bytes of padding chunk that mustn't count.
+        let mut b = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+        b.extend(16u32.to_le_bytes());
+        b.extend([1, 0, 1, 0]);
+        b.extend(16000u32.to_le_bytes());
+        b.extend(32000u32.to_le_bytes());
+        b.extend([2, 0, 16, 0]);
+        b.extend(b"FLLR");
+        b.extend(8000u32.to_le_bytes());
+        b.extend(vec![0; 8000]);
+        b.extend(b"data");
+        b.extend(16000u32.to_le_bytes());
+        b.extend(vec![0; 16000]);
+        std::fs::write(&wav, &b).unwrap();
+        assert_eq!(super::seconds(&wav), 0.5);
+        std::fs::write(&wav, b"not a wav").unwrap();
+        assert_eq!(super::seconds(&wav), 0.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
