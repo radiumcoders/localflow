@@ -35,9 +35,14 @@ pub(crate) fn term(line: &str) -> Hint {
     (term.trim().to_string(), heard.unwrap_or_default())
 }
 
+/// The vocabulary localflow ships with (words.txt).
+pub(crate) fn shipped() -> Vec<String> {
+    entries(WORDS).collect()
+}
+
 impl Localflow {
     pub fn vocabulary(&self) -> Vec<String> {
-        let mut words: Vec<String> = entries(WORDS).collect();
+        let mut words = shipped();
         if let Ok(mine) = std::fs::read_to_string(self.cfg.user_words()) {
             words.extend(entries(&mine));
         }

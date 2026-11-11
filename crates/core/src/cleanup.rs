@@ -432,6 +432,10 @@ fn alike(a: &str, b: &str) -> f64 {
     2.0 * same as f64 / (a.len() + b.len()).max(1) as f64
 }
 
+/// How alike a word said is to a one-word term of the vocabulary written in
+/// its place, to be that term misheard: "cloud" is Claude (0.73), "them" isn't.
+const SOUNDS_LIKE: f64 = 0.7;
+
 /// A name or term in the speaker's vocabulary, as words, and the ways it's
 /// misheard (words.txt: 'Kubernetes: often heard as "cube and eighties"').
 struct Term {
@@ -447,12 +451,15 @@ fn terms(vocabulary: &[String]) -> Vec<Term> {
 impl Term {
     /// Whether `word` is this term's and the term was said in `near`: as one
     /// of the ways it's misheard, or itself, spelled or spaced another way
-    /// ("next JS" -> Next.js). The vocabulary makes a small model write its
-    /// terms where nothing like them was said, so being in it isn't enough.
-    fn explains(&self, word: &str, near: &[String]) -> bool {
+    /// ("next JS" -> Next.js). Or `here`, in the word's place, as a word
+    /// that sounds like it though nobody listed it ("cloud" -> Claude). The
+    /// vocabulary makes a small model write its terms where nothing like
+    /// them was said, so being in it isn't enough.
+    fn explains(&self, word: &str, near: &[String], here: &[String]) -> bool {
         let said_as = |heard: &Vec<String>| near.windows(heard.len()).any(|said| said == heard.as_slice());
         let respelled = || (1..=4).any(|k| near.windows(k).any(|said| alike(&self.words.concat(), &said.concat()) >= 0.75));
-        self.words.iter().any(|w| w == word) && (self.heard.iter().any(said_as) || respelled())
+        let sounds_like = || self.words.len() == 1 && here.iter().any(|said| alike(word, said) >= SOUNDS_LIKE);
+        self.words.iter().any(|w| w == word) && (self.heard.iter().any(said_as) || respelled() || sounds_like())
     }
 
     /// Where in `said` this term was misheard, when the cleanup wrote the term: (from, to).
@@ -523,12 +530,13 @@ fn respelled(a: &str, b: &str) -> bool {
 /// form of it. In `near`, the words around where it was written: the word
 /// respelled ("colour" -> color), words said apart ("post gress" ->
 /// Postgres), casual speech written out ("gonna" -> going to), one that
-/// sounds the same ("their" -> they're), or a term of their vocabulary. A
-/// small word for grammar always. A number has to be one they said (in
-/// words, `numbers`, or digits). Looking a bit like some word they said
-/// somewhere isn't enough ("then" doesn't explain "Python").
-fn explained(word: &str, said: &[String], near: &[String], numbers: &HashMap<String, Vec<(usize, usize)>>, terms: &[Term]) -> bool {
-    if small(word) || said.iter().any(|w| w == word) || terms.iter().any(|t| t.explains(word, near)) {
+/// sounds the same ("their" -> they're), or a term of their vocabulary
+/// (which may be what was said `here`, in its place, misheard). A small word
+/// for grammar always. A number has to be one they said (in words,
+/// `numbers`, or digits). Looking a bit like some word they said somewhere
+/// isn't enough ("then" doesn't explain "Python").
+fn explained(word: &str, said: &[String], (near, here): (&[String], &[String]), numbers: &HashMap<String, Vec<(usize, usize)>>, terms: &[Term]) -> bool {
+    if small(word) || said.iter().any(|w| w == word) || terms.iter().any(|t| t.explains(word, near, here)) {
         return true;
     }
     if word.starts_with(|c: char| c.is_ascii_digit()) {
@@ -573,7 +581,7 @@ pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String
             };
             let made_up = |j: &usize| match negations.iter().position(|n| n == j) {
                 Some(nth) => nth >= said_here,
-                None => !explained(&wrote[*j], &said, near, &numbers, &terms) && !split(*j),
+                None => !explained(&wrote[*j], &said, (near, &said[op.i1..op.i2]), &numbers, &terms) && !split(*j),
             };
             let added: Vec<&str> = (op.j1..op.j2).filter(made_up).map(|j| wrote[j].as_str()).collect();
             if !added.is_empty() {
@@ -839,6 +847,35 @@ mod tests {
         let said = "a cube and eighties poster is on the wall and then we deploy it to the staging box at the end of the day";
         let out = "A cube and eighties poster is on the wall and then we deploy it to Kubernetes at the end of the day.";
         assert!(super::unfaithful(said, out, &vocabulary).is_some());
+    }
+
+    #[test]
+    fn a_term_misheard_as_a_word_like_it_passes() {
+        // With the vocabulary localflow ships: nobody listed "cloud" for Claude.
+        let vocabulary = crate::vocab::shipped();
+        for (said, out) in [
+            ("ask cloud to fix the bug", "Ask Claude to fix the bug."),
+            ("ask claud to fix the bug", "Ask Claude to fix the bug."),
+            ("ask Claw to fix the bug", "Ask Claude to fix the bug."),
+            ("open it in cloud code", "Open it in Claude Code."),
+            ("I'm learning javanese on duo lingo", "I'm learning Japanese on Duolingo."),
+        ] {
+            assert_eq!(super::unfaithful(said, out, &vocabulary), None, "{said}");
+        }
+        for (said, out) in [
+            // Not in the term's place, nor like it, nor a term of more than one word.
+            ("ask them to fix the cloud bug", "Ask Claude to fix the cloud bug."),
+            ("ask the bot to fix the bug", "Ask Claude to fix the bug."),
+            ("ask called to fix the bug", "Ask Claude to fix the bug."),
+            ("and then I will code that thing into a Py script", "And then I will code that thing into a Python script."),
+            ("the music is loud", "The music is Claude."),
+            ("write the code", "Write the Claude Code."),
+            // And only the vocabulary's terms: any other word has to be the one said.
+            ("the computer is slow", "The company is slow."),
+        ] {
+            assert!(super::unfaithful(said, out, &vocabulary).is_some(), "{said}");
+        }
+        assert_eq!(unfaithful("ask cloud to fix the bug", "Ask Claude to fix the bug."), Some("added \"claude\"".into()));
     }
 
     #[test]
