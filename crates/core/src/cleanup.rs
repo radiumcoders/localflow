@@ -83,6 +83,41 @@ pub fn as_heard(text: &str) -> String {
 }
 
 const NUMBERS: [&str; 11] = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+/// Number words above ten, by value, which the cleanup may write as digits
+/// ("thirty percent" -> 30%, "two thousand" -> 2000).
+const BIG_NUMBERS: &[(&str, u64)] = &[
+    ("eleven", 11), ("twelve", 12), ("thirteen", 13), ("fourteen", 14), ("fifteen", 15), ("sixteen", 16),
+    ("seventeen", 17), ("eighteen", 18), ("nineteen", 19), ("twenty", 20), ("thirty", 30), ("forty", 40),
+    ("fifty", 50), ("sixty", 60), ("seventy", 70), ("eighty", 80), ("ninety", 90), ("dozen", 12),
+];
+const SCALES: &[(&str, u64)] = &[("hundred", 100), ("thousand", 1_000), ("million", 1_000_000), ("billion", 1_000_000_000)];
+
+/// The numbers said in words, as digits: every run of number words, and each
+/// part of it ("five thirty" is 5, 30 and 35, for "5:30").
+fn spoken_numbers(said: &[String]) -> HashSet<String> {
+    let value = |w: &str| -> Option<(u64, bool)> {
+        // (value, is a scale); words() has already made zero to ten digits.
+        match w.parse::<u64>() {
+            Ok(n) if n <= 10 => Some((n, false)),
+            _ => BIG_NUMBERS.iter().chain(SCALES).find(|(name, _)| *name == w).map(|&(_, n)| (n, SCALES.iter().any(|(s, _)| *s == w))),
+        }
+    };
+    let mut found = HashSet::new();
+    for start in 0..said.len() {
+        let (mut total, mut current) = (0u64, 0u64);
+        for word in &said[start..] {
+            let Some((n, scale)) = value(word) else { break };
+            match (scale, n) {
+                (false, _) => current += n,
+                (true, 100) => current = current.max(1) * 100,
+                (true, _) => (total, current) = (total + current.max(1) * n, 0),
+            }
+            found.insert((total + current).to_string());
+        }
+    }
+    found
+}
+
 /// Filler, counting words and correction phrases: the cleanup drops these.
 const FILLER: &str = "um uh er ah hmm like so okay ok yeah you know mean actually wait no sorry oh well just basically \
                       right alright first second third fourth next then finally thing last";
@@ -113,13 +148,14 @@ fn alike(a: &str, b: &str) -> f64 {
 
 /// A word in the cleanup that the speaker said, near enough: the same word
 /// respelled ("post gress" -> Postgres, "Claw" -> Claude), another form of it,
-/// or a small word for grammar. A number has to be one they said.
-fn explained(word: &str, said: &[String]) -> bool {
+/// or a small word for grammar. A number has to be one they said (in words,
+/// `numbers`, or digits).
+fn explained(word: &str, said: &[String], numbers: &HashSet<String>) -> bool {
     if FILLER.split(' ').chain(GRAMMAR.split(' ')).any(|w| w == word) {
         return true;
     }
     if word.starts_with(|c: char| c.is_ascii_digit()) {
-        return said.iter().any(|w| w == word);
+        return said.iter().any(|w| w == word) || numbers.contains(word);
     }
     let stem = |w: &str| w.chars().take(4).collect::<String>();
     (0..said.len()).any(|i| {
@@ -137,10 +173,11 @@ fn explained(word: &str, said: &[String]) -> bool {
 pub fn unfaithful(text: &str, out: &str) -> Option<String> {
     let (said, wrote) = (words(text), words(out));
     let kept: HashSet<&String> = wrote.iter().collect();
+    let numbers = spoken_numbers(&said);
     let small = |w: &String| FILLER.split(' ').chain(GRAMMAR.split(' ')).any(|f| f == w);
     for op in SequenceMatcher::new(&said, &wrote).opcodes() {
         if matches!(op.tag, Tag::Replace | Tag::Insert) {
-            let new: Vec<&str> = wrote[op.j1..op.j2].iter().filter(|w| !explained(w, &said)).map(String::as_str).collect();
+            let new: Vec<&str> = wrote[op.j1..op.j2].iter().filter(|w| !explained(w, &said, &numbers)).map(String::as_str).collect();
             if !new.is_empty() {
                 return Some(format!("added {:?}", new.join(" ")));
             }
@@ -327,6 +364,7 @@ mod tests {
         assert!(unfaithful(said, "Create some cool random shaders with Claude Code and use some random seeds.").is_some());
         let said = "a liquid of refractive index of root 2 up to a height of 30 cm";
         assert!(unfaithful(said, "A liquid of refractive index of 1.5 up to a height of 30 cm.").is_some());
+        assert!(unfaithful("about thirty percent faster", "About 40% faster.").is_some());
     }
 
     #[test]
@@ -354,6 +392,8 @@ mod tests {
             ("it costs twenty dollars no wait 25 dollars and we need three chairs", "It costs 25 dollars and we need 3 chairs."),
             ("okay let me think the main goal for this sprint is shipping the billing page", "The main goal for this sprint is shipping the billing page."),
             ("can you refer to the settings file and check why it crashes", "Can you refer to @src/settings.py and check why it crashes?"),
+            ("the API is about thirty percent faster now", "The API is about 30% faster now."),
+            ("we need twenty five chairs and two thousand plates by five thirty", "We need 25 chairs and 2000 plates by 5:30."),
             ("the dots are pretty similar to react bits", "The dots are pretty similar to ReactBits."),
             ("please review the contract by Monday <quiet>yeah yeah I'll be there in a minute</quiet> and send me your notes", "Please review the contract by Monday and send me your notes."),
         ] {
