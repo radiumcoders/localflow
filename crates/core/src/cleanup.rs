@@ -98,10 +98,11 @@ fn reply(text: &str) -> bool {
         && (said.iter().all(|w| REPLIES.split_whitespace().any(|r| r == *w)) || REPLY_PHRASES.contains(&said.join(" ").as_str()))
 }
 
-/// A reply as a sentence, for when the model wouldn't write it: "yes" -> "Yes."
+/// A reply as a sentence, for when the model wouldn't write it: "yes" ->
+/// "Yes.", without what was muttered around it, and "OK," -> "OK."
 fn reply_sentence(text: &str) -> String {
-    let said = as_heard(text);
-    let mut chars = said.chars();
+    let said = as_heard(&QUIET.replace_all(text, " "));
+    let mut chars = said.trim_end_matches([',', ';', ':', '-', ' ']).chars();
     let first = chars.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default();
     let mut sentence = first + chars.as_str();
     if sentence.get(..2).is_some_and(|ok| ok.eq_ignore_ascii_case("ok")) && !sentence[2..].starts_with(char::is_alphanumeric) {
@@ -1171,7 +1172,21 @@ mod tests {
         for said in ["hmm let me think", "hmm", "um okay", "one sec", "<quiet>yes</quiet>", "yes I think so", "wait"] {
             assert!(!reply(said) && believable_aside(said), "{said}");
         }
-        for (said, written) in [("yes", "Yes."), ("ok", "OK."), ("okay", "Okay."), ("Yes.", "Yes."), ("ok thanks", "OK thanks."), ("sure!", "Sure!")] {
+        for (said, written) in [
+            ("yes", "Yes."),
+            ("ok", "OK."),
+            ("okay", "Okay."),
+            ("Yes.", "Yes."),
+            ("ok thanks", "OK thanks."),
+            ("sure!", "Sure!"),
+            // Not what was muttered around it, nor a comma before the full stop.
+            ("<quiet>one sec</quiet> yes", "Yes."),
+            ("yes <quiet>hang on</quiet>", "Yes."),
+            ("OK,", "OK."),
+            ("ok, <quiet>one sec</quiet>", "OK."),
+            ("yes, thanks", "Yes, thanks."),
+        ] {
+            assert!(reply(said), "{said}");
             assert_eq!(reply_sentence(said), written);
         }
     }
