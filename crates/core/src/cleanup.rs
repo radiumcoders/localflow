@@ -128,17 +128,19 @@ const BIG_NUMBERS: &[(&str, u64)] = &[
 ];
 const SCALES: &[(&str, u64)] = &[("hundred", 100), ("thousand", 1_000), ("million", 1_000_000), ("billion", 1_000_000_000)];
 
-/// The value of a number word: under a hundred, or a scale. Ordinals count
-/// ("thirty first" -> 31st), and so do the digits the speech model wrote itself.
-fn number(word: &str) -> Option<u64> {
+/// The value of a number word: under a hundred, or a scale. The digits the
+/// speech model wrote itself count too.
+fn cardinal(word: &str) -> Option<u64> {
     if let Ok(n) = word.parse::<u64>() {
         return (n < 100).then_some(n); // words() has made zero to ten digits
     }
-    let cardinal = |w: &str| {
-        let small = NUMBERS.iter().position(|n| *n == w).map(|n| n as u64);
-        small.or_else(|| BIG_NUMBERS.iter().chain(SCALES).find(|(name, _)| *name == w).map(|&(_, n)| n))
-    };
-    cardinal(word).or_else(|| match word {
+    let small = NUMBERS.iter().position(|n| *n == word).map(|n| n as u64);
+    small.or_else(|| BIG_NUMBERS.iter().chain(SCALES).find(|(name, _)| *name == word).map(|&(_, n)| n))
+}
+
+/// The value of an ordinal ("thirty first" -> 31st).
+fn ordinal(word: &str) -> Option<u64> {
+    match word {
         "first" => Some(1),
         "second" => Some(2),
         "third" => Some(3),
@@ -148,11 +150,86 @@ fn number(word: &str) -> Option<u64> {
         "twelfth" => Some(12),
         // "twentieth", "sixth", "hundredth"
         _ => word.strip_suffix("ieth").and_then(|w| cardinal(&format!("{w}y"))).or_else(|| cardinal(word.strip_suffix("th")?)),
-    })
+    }
+}
+
+fn number(word: &str) -> Option<u64> {
+    cardinal(word).or_else(|| ordinal(word))
+}
+
+/// What a number said as one ends in so far, for what may come next: a unit
+/// after "twenty" or "hundred", not after another unit.
+#[derive(Clone, Copy, PartialEq)]
+enum Last {
+    Nothing,
+    Unit,
+    /// Ten to nineteen, or digits: nothing under a hundred comes next.
+    Whole,
+    Tens,
+    Hundred,
+    Scale,
+    /// An ordinal or a zero: the number is over.
+    Over,
+}
+
+/// Number words said as one number, added up: "one hundred and twenty" is
+/// 120, "two thousand five" 2005, "thirty first" 31.
+struct Sum {
+    total: u64,
+    current: u64,
+    last: Last,
+    /// The smallest scale so far: "two thousand three million" is no number.
+    scale: u64,
+}
+
+impl Sum {
+    fn new() -> Self {
+        Sum { total: 0, current: 0, last: Last::Nothing, scale: u64::MAX }
+    }
+
+    fn value(&self) -> u64 {
+        self.total.saturating_add(self.current)
+    }
+
+    /// False, and nothing added, for a word that doesn't go on the number so
+    /// far: "one two three" is no 6, "one second" no 3, "twenty thirty" no 50.
+    fn push(&mut self, n: u64, ordinal: bool) -> bool {
+        use Last::*;
+        let fits = match n {
+            0 => self.last == Nothing,
+            1..=9 => matches!(self.last, Nothing | Tens | Hundred | Scale),
+            10..=99 => matches!(self.last, Nothing | Hundred | Scale),
+            // "nineteen hundred", "twenty five hundred"
+            100 => matches!(self.last, Nothing | Unit | Whole | Tens) && self.current < 100,
+            _ => matches!(self.last, Nothing | Unit | Whole | Tens | Hundred) && n < self.scale,
+        };
+        if !fits {
+            return false;
+        }
+        match n {
+            100 => self.current = self.current.max(1).saturating_mul(100),
+            n if n > 100 => {
+                (self.total, self.current) = (self.total.saturating_add(self.current.max(1).saturating_mul(n)), 0);
+                self.scale = n;
+            }
+            n => self.current = self.current.saturating_add(n),
+        }
+        self.last = match n {
+            _ if ordinal => Over,
+            0 => Over,
+            1..=9 => Unit,
+            10..=99 if n >= 20 && n.is_multiple_of(10) => Tens,
+            10..=99 => Whole,
+            100 => Hundred,
+            _ => Scale,
+        };
+        true
+    }
 }
 
 /// Number words read out in a row, a unit joining the tens before it: "four
-/// oh four" is 404, "twenty twenty six" 2026, "five thirty" 530.
+/// oh four" is 404, "twenty twenty six" 2026, "five thirty" 530, "one two
+/// three" 123.
 #[derive(Default)]
 struct Row {
     digits: String,
@@ -182,10 +259,11 @@ impl Row {
 const RUN: usize = 20;
 
 /// What the numbers said in words may be written as, each with the words it
-/// stands for (from, to): every run of number words and each part of it,
-/// added up ("one hundred and twenty" is 120) and read out in a row ("five
-/// thirty" is 5, 30, 35 and 530, for "5:30"), a decimal ("two point five" is
-/// 2.5), and the minutes of "half past nine" (30).
+/// stands for (from, to): every run of number words and each part of it, as
+/// one number added up ("one hundred and twenty" is 120) and read out in a
+/// row ("five thirty" is 5, 30 and 530, for "5:30"; never 35), a decimal on
+/// the whole number before it ("two point five" is 2.5), and the minutes of
+/// "half past nine" (30).
 fn spoken_numbers(said: &[String]) -> HashMap<String, Vec<(usize, usize)>> {
     let mut found: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
     let mut add = |written: String, from: usize, to: usize| {
@@ -209,47 +287,65 @@ fn spoken_numbers(said: &[String]) -> HashMap<String, Vec<(usize, usize)>> {
             ("o'clock", _) => add("00".into(), start, start + 1),
             _ => {}
         }
-        let (mut total, mut current) = (0u64, 0u64);
-        let mut row = Some(Row::default());
+        // Midway through a longer number, where no decimal starts: "ninety
+        // nine point nine" is 99.9, never 9.9 or 0.9.
+        let midway = start > 0 && {
+            let joins = start > 1 && (zero(word(start - 1)) || (word(start - 1) == "and" && number(word(start - 2)).is_some_and(|n| n >= 100)));
+            number(word(start - 1)).is_some() || (joins && number(word(start - 2)).is_some())
+        };
+        // The words so far, as one number added up and as numbers read out in a row.
+        let (mut sum, mut row) = (Some(Sum::new()), Some(Row::default()));
+        let wholes = |sum: &Option<Sum>, row: &Option<Row>| {
+            let read_out = row.iter().map(|row| row.digits.clone()).filter(|digits| !digits.is_empty());
+            sum.iter().map(|sum| sum.value().to_string()).chain(read_out).collect::<Vec<String>>()
+        };
         let mut i = start;
         while i < said.len().min(start + RUN) {
-            let n = match number(word(i)) {
-                Some(n) => n,
-                None if i > start && zero(word(i)) => 0,
+            // "four oh four": a zero between numbers, not the "oh" of "five, oh, and three more".
+            let oh = || i > start && zero(word(i)) && (i + 1..said.len()).find(|j| !zero(word(*j))).is_some_and(|j| number(word(j)).is_some());
+            let (n, nth) = match (cardinal(word(i)), ordinal(word(i))) {
+                (Some(n), _) => (n, false),
+                (None, Some(n)) => (n, true),
+                (None, None) if oh() => (0, false),
                 // "one hundred and twenty"
-                None if i > start && word(i) == "and" && number(word(i - 1)).is_some_and(|n| n >= 100) && number(word(i + 1)).is_some_and(|n| n < 100) => {
+                (None, None)
+                    if word(i) == "and"
+                        && sum.as_ref().is_some_and(|sum| matches!(sum.last, Last::Hundred | Last::Scale))
+                        && number(word(i + 1)).is_some_and(|n| n < 100) =>
+                {
                     i += 1;
                     continue;
                 }
                 // "one and a half"
-                None if i > start && (word(i), word(i + 1), word(i + 2)) == ("and", "a", "half") => {
-                    add(format!("{}.5", total.saturating_add(current)), start, i + 3);
+                (None, None) if i > start && (word(i), word(i + 1), word(i + 2)) == ("and", "a", "half") => {
+                    for whole in wholes(&sum, &row).into_iter().filter(|_| !midway) {
+                        add(format!("{whole}.5"), start, i + 3);
+                    }
                     break;
                 }
                 // "two point five", "point five": the whole of what follows, not "3.1" of "three point one four"
-                None if matches!(word(i), "point" | "dot") => {
+                (None, None) if matches!(word(i), "point" | "dot") => {
                     let (mut decimals, mut end) = (Row::default(), i + 1);
-                    while end < said.len().min(start + RUN) && number(word(end)).or(zero(word(end)).then_some(0)).is_some_and(|n| decimals.push(n)) {
+                    while end < said.len().min(start + RUN) && cardinal(word(end)).or(zero(word(end)).then_some(0)).is_some_and(|n| decimals.push(n)) {
                         end += 1;
                     }
-                    if end > i + 1 {
-                        add(format!("{}.{}", total.saturating_add(current), decimals.digits), start, end);
+                    for whole in wholes(&sum, &row).into_iter().filter(|_| end > i + 1 && !midway) {
+                        add(format!("{whole}.{}", decimals.digits), start, end);
                     }
                     break;
                 }
-                None => break,
+                (None, None) => break,
             };
-            match n {
-                // A speech model stuck repeating "hundred" mustn't overflow.
-                100 => current = current.max(1).saturating_mul(100),
-                n if n > 100 => (total, current) = (total.saturating_add(current.max(1).saturating_mul(n)), 0),
-                n => current = current.saturating_add(n),
+            sum = sum.and_then(|mut sum| sum.push(n, nth).then_some(sum));
+            // An ordinal is read out only as the unit of its tens: "twenty first", not "one second".
+            row = row.and_then(|mut row| ((!nth || (row.tens && (1..=9).contains(&n))) && row.push(n)).then_some(row));
+            if sum.is_none() && row.is_none() {
+                break;
             }
-            add(total.saturating_add(current).to_string(), start, i + 1);
-            row = row.filter(|_| n < 100).and_then(|mut row| row.push(n).then_some(row));
-            if let Some(row) = &row {
-                add(row.digits.clone(), start, i + 1);
+            for whole in wholes(&sum, &row) {
+                add(whole, start, i + 1);
             }
+            row = row.filter(|_| !nth); // and ends it
             i += 1;
         }
     }
@@ -798,6 +894,15 @@ mod tests {
             ("let's meet at half past nine", "Let's meet at 9:30."),
             ("see you at quarter to nine", "See you at 8:45."),
             ("see you at nine o'clock", "See you at 9:00."),
+            ("count one two three", "Count 1, 2, 3."),
+            ("the code is one two three", "The code is 123."),
+            ("give me one second", "Give me 1 second."),
+            ("a thirty second delay", "A 30-second delay."),
+            ("in nineteen hundred", "In 1900."),
+            ("twenty five hundred dollars", "$2,500."),
+            ("two thousand five hundred and one", "2,501."),
+            ("four oh four point five", "404.5."),
+            ("the third of March", "The 3rd of March."),
             // The scale after a decimal is no part of it.
             ("it grew by one point five million", "It grew by 1.5 million."),
             ("about two point five thousand users", "About 2.5 thousand users."),
@@ -817,6 +922,18 @@ mod tests {
             ("the deadline is in twenty twenty six", "The deadline is in 2025."),
             ("let's meet at half past nine", "Let's meet at 9:15."),
             ("open ports eighty and four four three and eight thousand", "Open ports 80."),
+            // Numbers in a row aren't added up, a duration is no ordinal, a
+            // decimal is on the whole number, and "oh" isn't always a zero.
+            ("count one two three", "Count 6."),
+            ("give me one second", "Give me 3."),
+            ("give me one second", "Give me 12."),
+            ("ninety nine point nine percent", "9.9%."),
+            ("ninety nine point nine percent", "0.9%."),
+            ("one hundred and five point two", "5.2."),
+            ("twenty one and a half", "1.5."),
+            ("I need five oh and three more", "I need 50 and 3 more."),
+            ("twenty thirty", "50."),
+            ("two dozen eggs", "14 eggs."),
         ] {
             assert!(unfaithful(said, out).is_some(), "{said}");
         }
