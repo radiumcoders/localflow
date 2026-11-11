@@ -284,7 +284,7 @@ static ACROSS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(?:left[\s-]+to[\s-]+right|horizontal(?:ly)?)\b").unwrap());
 
 /// The dictation asks for a flowchart that goes from left to right.
-pub fn left_to_right(about: &str) -> bool {
+fn left_to_right(about: &str) -> bool {
     ACROSS.is_match(about)
 }
 
@@ -366,9 +366,15 @@ fn tidy_flowchart(lines: &[&str], direction: &str) -> Option<(String, Vec<String
             .or(c.get(3).map(|m| (m.as_str(), Shape::Step)))
             .or(c.get(4).map(|m| (m.as_str(), Shape::Decision)));
         if let Some(&n) = by_id.get(&id) {
-            // A new label on a known id is the model losing track: keep the first.
-            if let Some((label, _)) = given.filter(|(l, _)| key(l) != key(&labels[n].0)) {
-                left_out.push(format!("\"{}\": {id} is already \"{}\"", label.trim(), labels[n].0));
+            match given.filter(|(l, _)| key(l) != key(&labels[n].0)) {
+                // Pointed at before it was named ("A --> B", then "B[Boil water]"): its label.
+                Some((label, shape)) if labels[n].0 == id => {
+                    by_label.entry((key(label), shape == Shape::Decision)).or_insert(n);
+                    labels[n] = (label.trim().to_string(), shape);
+                }
+                // A new label on a named id is the model losing track: keep the first.
+                Some((label, _)) => left_out.push(format!("\"{}\": {id} is already \"{}\"", label.trim(), labels[n].0)),
+                None => {}
             }
             return Some(n);
         }
@@ -514,7 +520,7 @@ impl Localflow {
         if engine.is_none() {
             *engine = Some(load_model(&self.cfg.diagram_model_file(), self.cfg.cleanup_gpu)?);
         }
-        // Cut off at the limit is fine: tidy keeps what came before the circles.
+        // Cut off at the limit is fine: tidy draws what the circles repeat once.
         let (answer, _) =
             engine.as_mut().unwrap().complete_with(&prompt(request), Some(&grammar(request.kind)), 900).map_err(Error)?;
         tidy(&answer).map(|d| d.laid_out_for(request)).ok_or_else(|| Error("couldn't draw that".into()))
@@ -601,6 +607,11 @@ mod tests {
                                N7{\"Add milk?\"}\n    N8[\"Add milk\"]\n    N9[\"Done\"]\n    N1 --> N2\n    N2 --> N3\n    \
                                N3 -->|Yes| N4\n    N4 --> N5\n    N5 --> N6\n    N6 --> N7\n    N7 -->|Yes| N8\n    \
                                N7 -->|No| N9\n    N8 --> N9\n");
+        assert_eq!(d.left_out, [] as [&str; 0]);
+        // A step pointed at before it's named gets its label, not its id.
+        let d = tidy("flowchart TD\n    A[Boil water] --> B\n    B{Milk?} -->|Yes| C[Add milk]\n").unwrap();
+        assert_eq!(d.mermaid, "flowchart TD\n    N1[\"Boil water\"]\n    N2{\"Milk?\"}\n    N3[\"Add milk\"]\n    \
+                               N1 --> N2\n    N2 -->|Yes| N3\n");
         assert_eq!(d.left_out, [] as [&str; 0]);
         // The same step under a new id is still one step (punctuation and case aside).
         let d = tidy("flowchart TD\n    A[Boil water] --> B[Add milk]\n    C[boil water.] --> D[Stir]\n").unwrap();
