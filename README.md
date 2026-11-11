@@ -154,7 +154,7 @@ terminals (Ghostty, kitty, Alacritty, foot...) and Shift+Insert in VS
 Code-family editors (their chat panels ignore a synthetic Ctrl+V), restoring
 your clipboard after. Where the paste keys can't be sent
 (GNOME's Wayland session doesn't allow `wtype`), the text stays on the
-clipboard and the pill says so: press Ctrl+V.
+clipboard and the pill says so: press Ctrl+V (Ctrl+Shift+V in a terminal).
 
 ## How it works
 

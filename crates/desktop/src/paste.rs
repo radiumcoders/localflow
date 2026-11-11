@@ -88,11 +88,21 @@ fn is_editor(class: &str) -> bool {
     ["cursor", "code", "code-oss", "codium", "vscodium", "windsurf"].contains(&class.to_lowercase().as_str())
 }
 
+/// Terminal window classes on Linux (Wayland app ids and X11 classes), matched
+/// whole so an app that merely contains "term" or "warp" isn't one.
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
+static TERMINAL_CLASS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)^(?:[\w-]+\.)*(?:ghostty|kitty|alacritty|foot|footclient|wezterm|wezterm-gui|konsole|tilix|terminator|xterm|urxvt|rxvt|st|st-256color|kgx|ptyxis|blackbox|terminology|(?:[\w]+-)?terminal(?:-server)?)$|^org\.gnome\.console$|^dev\.warp\.warp$",
+    )
+    .unwrap()
+});
+
 /// A terminal, by its class or Hyprland's "terminal" tag (dynamic tags carry
 /// a trailing "*").
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 fn is_terminal(class: &str, tags: &[String]) -> bool {
-    crate::target::TERMINALS.is_match(class) || tags.iter().any(|t| t.trim_end_matches('*') == "terminal")
+    TERMINAL_CLASS.is_match(class) || tags.iter().any(|t| t.trim_end_matches('*') == "terminal")
 }
 
 /// wtype's arguments for the paste keys on Wayland: Ctrl+Shift+V in
@@ -101,10 +111,12 @@ fn is_terminal(class: &str, tags: &[String]) -> bool {
 /// with it unless their config says otherwise, so the dictation was lost.
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 pub(crate) fn wayland_keys(class: &str, tags: &[String]) -> &'static [&'static str] {
-    if is_terminal(class, tags) {
-        &["-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
-    } else if is_editor(class) {
+    // An editor's own key first, even if a window rule tags it a terminal:
+    // Ctrl+Shift+V opens VS Code's Markdown preview.
+    if is_editor(class) {
         &["-M", "shift", "-k", "Insert", "-m", "shift"]
+    } else if is_terminal(class, tags) {
+        &["-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
     } else {
         &["-M", "ctrl", "-k", "v", "-m", "ctrl"]
     }
@@ -113,10 +125,10 @@ pub(crate) fn wayland_keys(class: &str, tags: &[String]) -> &'static [&'static s
 /// xdotool's paste key on X11: Ctrl+Shift+V in terminals.
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 pub(crate) fn x11_key(class: &str) -> &'static str {
-    if is_terminal(class, &[]) {
-        "ctrl+shift+v"
-    } else if is_editor(class) {
+    if is_editor(class) {
         "shift+Insert"
+    } else if is_terminal(class, &[]) {
+        "ctrl+shift+v"
     } else {
         "ctrl+v"
     }
@@ -346,6 +358,17 @@ mod tests {
         assert_eq!(wayland_keys("Cursor", &[])[3], "Insert");
         assert_eq!(wayland_keys("cursor-notes", &tags(&["terminals-not"]))[3], "v");
         assert_eq!(x11_key("com.mitchellh.ghostty"), "ctrl+shift+v");
+        // Editors keep their key even when tagged a terminal.
+        assert_eq!(wayland_keys("code", &tags(&["terminal*"]))[3], "Insert");
+        // Terminals by their whole class, not a word inside another app's.
+        for t in ["Alacritty", "foot", "org.wezfurlong.wezterm", "org.gnome.Terminal", "gnome-terminal-server",
+                  "xfce4-terminal", "org.kde.konsole", "org.gnome.Console", "org.gnome.Ptyxis", "dev.warp.Warp",
+                  "XTerm", "URxvt", "st-256color", "com.gexperts.Tilix"] {
+            assert_eq!(x11_key(t), "ctrl+shift+v", "{t}");
+        }
+        for app in ["app.drey.Warp", "Thermald-gui", "determination", "org.gnome.TextEditor", "steam"] {
+            assert_eq!(wayland_keys(app, &[])[3], "v", "{app}");
+        }
         assert_eq!(x11_key("Alacritty"), "ctrl+shift+v");
         assert_eq!(x11_key("Code"), "shift+Insert");
         assert_eq!(x11_key("firefox"), "ctrl+v");

@@ -82,7 +82,7 @@ pub fn foreground() -> Option<String> {
     }
 }
 
-pub(crate) static TERMINALS: LazyLock<Regex> = LazyLock::new(|| {
+static TERMINALS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)term|kitty|alacritty|ghostty|konsole|tilix|wezterm|foot|iterm|warp|tabby|^cmd\.exe$|powershell|pwsh|mintty")
         .unwrap()
 });
