@@ -107,7 +107,11 @@ impl Localflow {
         let mut engine = self.engine.lock().unwrap();
         if engine.is_none() {
             if !self.cfg.local_model_installed() {
-                return err(format!("{} isn't downloaded yet", MODEL.name));
+                // A .gguf file of your own isn't a download.
+                return err(match self.cfg.model == MODEL.id {
+                    true => format!("{} isn't downloaded yet", MODEL.name),
+                    false => format!("the cleanup model's file wasn't found: {}", self.cfg.model),
+                });
             }
             *engine = Some(load_model(&self.cfg.model_file(), self.cfg.cleanup_gpu)?);
         }
@@ -126,13 +130,18 @@ impl Localflow {
     }
 
     /// Load the model while the speaker is still talking, so it's ready when
-    /// the dictation arrives. Also how the settings check the model works.
-    /// Nothing to load when Claude Haiku cleans up (the local model loads
-    /// only when Claude can't be reached).
+    /// the dictation arrives. Nothing to load when Claude Haiku cleans up
+    /// (the local model loads only when Claude can't be reached).
     pub fn warm(&self) -> Result<()> {
         if self.cfg.cleanup_haiku && self.cfg.anthropic_key.is_some() {
             return Ok(());
         }
+        self.load_local()
+    }
+
+    /// Does the cleanup model on this computer load? For `localflow --check`,
+    /// also when Claude Haiku cleans up: it's what steps in when Claude can't.
+    pub fn check_local(&self) -> Result<()> {
         self.load_local()
     }
 }

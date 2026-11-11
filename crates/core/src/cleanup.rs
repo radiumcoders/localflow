@@ -300,6 +300,12 @@ impl Localflow {
         }
     }
 
+    /// One tiny cleanup by Claude Haiku 5.5, for `localflow --check`: Ok when
+    /// it answers, else why it can't (no key, the key refused, no network).
+    pub fn check_haiku(&self) -> Result<()> {
+        self.haiku_clean("um testing one two three", crate::NO_FILES, 64).map(|_| ())
+    }
+
     /// The cleanup, with how it went. `files`: paths in the project you're
     /// dictating into, which the text may refer to; the cleanup writes those
     /// references as @path.

@@ -21,6 +21,10 @@ ureq = "2.12"
 # Round caps on the logo's strokes (the same lyon GPUI tessellates with).
 lyon = "1.0"
 
+# SIGPIPE, for the terminal commands (see platform::quiet_on_closed_pipe).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 raw-window-handle = "0.6"
 

@@ -3670,6 +3670,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "gpui-kit",
+ "libc",
  "localflow-core",
  "localflow-desktop",
  "localflow-speech",

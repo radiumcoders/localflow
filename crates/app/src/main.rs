@@ -15,15 +15,20 @@
 //!     localflow learn                  # learn from the dictation you just fixed
 //!
 //! Tools:
+//!     localflow history [N]            # the last N dictations: what was heard, what went out
+//!     localflow history --last | --clear
 //!     localflow snippets               # your snippets: what each trigger pastes
-//!     localflow models [download ID]   # speech and cleanup models: list, or download one
+//!     localflow visualize TEXT|-       # draw a diagram of TEXT: Mermaid on stdout, the PNG's path on stderr
+//!     localflow models [download ID]   # speech, cleanup and diagram models: list, or download one
+//!     localflow mics                   # the microphones, with the ids LOCALFLOW_MIC takes
 //!     localflow listen [SECONDS]       # record, transcribe, clean up, print
 //!     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
 //!     localflow record SECONDS FILE.wav
 //!     echo "meet at 3 wait at 2" | localflow -
-//!     localflow --check                # one tiny request: is the cleanup model reachable?
-//!     localflow --eval [MODEL [REVIEW_MODEL|off]]   # run cases.txt
+//!     localflow --check                # does the cleanup work: the model loads, Claude Haiku answers
+//!     localflow --eval                 # run cases.txt through the cleanup
 //!     localflow --selftest             # check each piece that doesn't need a person
+//!     localflow --version
 //!
 //! Settings: LOCALFLOW_* variables or the env file the settings window writes
 //! (see `localflow_core::Config`).
@@ -58,7 +63,10 @@ fn main() -> ExitCode {
         Some("settings") => session::settings(),
         Some("onboarding") => session::onboarding(),
         Some("quit") => session::quit(),
-        Some("setup") => setup::run(&args[1..]),
+        Some("setup") => {
+            platform::quiet_on_closed_pipe();
+            setup::run(&args[1..])
+        }
         Some("--background") => session::background(),
         Some("start") => session::start(raw),
         Some("stop") => session::signal("stop"),
@@ -68,6 +76,9 @@ fn main() -> ExitCode {
         Some("_session") => session::run_session(raw),
         Some("_message") => session::run_message(&args[1..]),
         Some("--selftest") => selftest::run(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(3.0)),
-        Some(_) => cli::run(&args),
+        Some(_) => {
+            platform::quiet_on_closed_pipe();
+            cli::run(&args)
+        }
     }
 }

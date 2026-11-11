@@ -30,7 +30,11 @@ pub fn transcribe(lf: &Localflow, samples: &[i16]) -> Result<Transcript, String>
         .map(|w| w.split(':').next().unwrap_or(w).trim().to_string())
         .filter(|w| !w.is_empty())
         .collect();
-    localflow_speech::transcribe(samples, &speech_config(&lf.cfg, words)).map_err(|e| e.to_string())
+    let cfg = speech_config(&lf.cfg, words);
+    if let Some((name, used)) = cfg.unknown_model() {
+        warn(format_args!("LOCALFLOW_SPEECH_MODEL is {name}, which isn't a speech model (see `localflow models`): using {}", used.id));
+    }
+    localflow_speech::transcribe(samples, &cfg).map_err(|e| e.to_string())
 }
 
 fn speech_config(cfg: &Config, vocabulary: Vec<String>) -> localflow_speech::SpeechConfig {
@@ -219,6 +223,9 @@ impl Dictation {
                     Ok((diagram, drawn)) => {
                         if let Some(why) = &diagram.fallback {
                             warn(format_args!("{} didn't draw it ({why}): a model on this computer did", self.lf.cfg.diagram_model));
+                        }
+                        for what in &diagram.left_out {
+                            warn(format_args!("not drawn: {what}"));
                         }
                         self.ui.send(UiMsg::Hide);
                         std::thread::sleep(Duration::from_millis(100));

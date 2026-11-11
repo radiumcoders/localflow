@@ -87,6 +87,13 @@ impl SpeechConfig {
         (model.path(), Some(model))
     }
 
+    /// A model setting that names none (a typo, another app's id), and the
+    /// model used in its place: said, so the default isn't a surprise.
+    pub fn unknown_model(&self) -> Option<(&str, &'static Model)> {
+        let name = models::unknown(self.model.as_deref())?;
+        self.model_file().1.map(|used| (name, used))
+    }
+
     pub fn options(&self) -> Options {
         Options { vocabulary: self.vocabulary.clone(), threads: self.threads, full_window: None }
     }
@@ -442,6 +449,10 @@ mod tests {
         assert_eq!(c.model.as_deref(), Some("base.en"));
         assert!(!c.use_gpu);
         assert_eq!(c.model_file().1.unwrap().id, "base.en");
+        assert_eq!(c.unknown_model(), None);
+        // A name that's no model: the default, and the name to say so with.
+        let c = SpeechConfig::from_vars(&vars(&[("LOCALFLOW_SPEECH_MODEL", "bogus")]));
+        assert_eq!(c.unknown_model().map(|(name, used)| (name, used.id)), Some(("bogus", models::DEFAULT)));
     }
 
     #[test]

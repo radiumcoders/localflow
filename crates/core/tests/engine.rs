@@ -33,11 +33,26 @@ fn local_default() {
 }
 
 #[test]
-fn local_model_not_downloaded_says_so() {
+fn local_model_missing_says_so() {
+    // A .gguf file of your own that isn't there: not found (it isn't a download).
     let lf = Localflow::new(config(&[("LOCALFLOW_MODEL", "/nowhere/missing.gguf")], temp_dir("local-missing")));
     assert!(!lf.cfg.local_model_installed());
     let e = lf.clean("um hi", NO_FILES).unwrap_err();
-    assert!(e.0.contains("isn't downloaded"), "{e}");
+    assert_eq!(e.0, "the cleanup model's file wasn't found: /nowhere/missing.gguf");
+    // localflow's own model, not downloaded.
+    let lf = Localflow::new(config(&[], temp_dir("local-ours")));
+    if !lf.cfg.local_model_installed() {
+        assert_eq!(lf.check_local().unwrap_err().0, "localflow's cleanup model isn't downloaded yet");
+    }
+}
+
+#[test]
+fn check_asks_claude_when_haiku_cleans_up() {
+    // `localflow --check` with Claude Haiku chosen: Claude is asked (here
+    // there's no key, and it says so) instead of the local model answering "ok".
+    let lf = Localflow::new(config(&[("LOCALFLOW_CLEANUP", "claude-haiku-5-5")], temp_dir("check-haiku")));
+    assert!(lf.cfg.cleanup_haiku && lf.cfg.anthropic_key.is_none());
+    assert_eq!(lf.check_haiku().unwrap_err().0, "no Anthropic API key (Settings > Cleanup)");
 }
 
 #[test]
@@ -105,10 +120,16 @@ fn diagram_model_setting() {
     }
     let off = config(&[("LOCALFLOW_DIAGRAM_MODEL", "off")], temp_dir("diagram-off"));
     assert!(!off.diagrams() && !off.diagram_model_installed());
-    // Not downloaded: drawing says so instead of failing to load.
-    let lf = Localflow::new(config(&[("LOCALFLOW_DIAGRAM_MODEL", "/nowhere/draw.gguf")], temp_dir("diagram-missing")));
+    // Off, a file that isn't there, a model not downloaded: drawing says which
+    // (instead of failing to load, or asking for a download that wouldn't help).
     let request = localflow_core::diagram::Request { kind: None, visualize: true, about: "wake up then work".into() };
-    assert!(lf.diagram(&request).unwrap_err().0.contains("isn't downloaded"));
+    let why = |cfg: Config| Localflow::new(cfg).diagram(&request).unwrap_err().0;
+    assert_eq!(why(off), "diagrams are off (Settings > Visualize, or LOCALFLOW_DIAGRAM_MODEL)");
+    let missing = config(&[("LOCALFLOW_DIAGRAM_MODEL", "/nowhere/draw.gguf")], temp_dir("diagram-missing"));
+    assert_eq!(why(missing), "the diagram model's file wasn't found: /nowhere/draw.gguf");
+    if !cfg.diagram_model_installed() {
+        assert_eq!(why(cfg), "the diagram model isn't downloaded yet");
+    }
 }
 
 #[test]

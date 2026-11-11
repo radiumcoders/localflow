@@ -235,7 +235,7 @@ impl Localflow {
             _ => {}
         }
         let parts: Value = serde_json::from_str(&answer_text(&answer)).map_err(|e| Error(format!("Claude's diagram didn't read: {e}")))?;
-        diagram(&parts).ok_or_else(|| Error("couldn't draw that".into()))
+        diagram(&parts).map(|d| d.laid_out_for(request)).ok_or_else(|| Error("couldn't draw that".into()))
     }
 }
 

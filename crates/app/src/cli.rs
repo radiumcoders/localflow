@@ -34,7 +34,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
     localflow record SECONDS FILE.wav
     echo \"meet at 3 wait at 2\" | localflow -
-    localflow --check                # does the cleanup model load?
+    localflow --check                # does the cleanup work: the model loads, Claude Haiku answers
     localflow --eval                 # run cases.txt through the cleanup model
     localflow --selftest             # check each piece that doesn't need a person
     localflow --version";
@@ -48,10 +48,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let lf = Localflow::new(Config::from_env());
     let arg = |i: usize| args.get(i).map(String::as_str);
     match arg(0).unwrap_or_default() {
-        "--check" => match lf.warm() {
-            Ok(()) => println!("ok: {}", lf.cfg.model),
-            Err(e) => return fail(format!("{}: {e}", lf.cfg.model)),
-        },
+        "--check" => return check_command(&lf),
         "--eval" => {
             if let Err(e) = eval::run(&lf) {
                 return fail(e);
@@ -116,6 +113,39 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Does the cleanup work? What's chosen is tried: Claude Haiku with one tiny
+/// request, the model on this computer by loading it. With Haiku, the local
+/// model is checked too: it cleans up when Claude can't be reached. The exit
+/// status is the chosen one's.
+fn check_command(lf: &Localflow) -> ExitCode {
+    // Why the local model doesn't load, after its name unless that's in it.
+    let local = lf.check_local().map_err(|e| match e.0.contains(&lf.cfg.model) {
+        true => e.0,
+        false => format!("{}: {e}", lf.cfg.model),
+    });
+    if !lf.cfg.cleanup_haiku {
+        return match local {
+            Ok(()) => {
+                println!("ok: {}", lf.cfg.model);
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(e),
+        };
+    }
+    let haiku = lf.check_haiku();
+    match &haiku {
+        Ok(()) => println!("ok: {}", diagram::HAIKU),
+        Err(e) => eprintln!("localflow: {}: {e}", diagram::HAIKU),
+    }
+    let role = if haiku.is_ok() { "steps in when Claude can't be reached" } else { "cleans up instead" };
+    match local {
+        Ok(()) => println!("ok: {} ({role})", lf.cfg.model),
+        Err(e) if haiku.is_ok() => eprintln!("localflow: {e} (nothing steps in when Claude can't be reached)"),
+        Err(e) => eprintln!("localflow: {e}"),
+    }
+    if haiku.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
 fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         None | Some("list") => {
@@ -125,9 +155,23 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
                 let chosen = if m.id == current { "  (in use)" } else { "" };
                 println!("{mark} {:<24} {:>5} MB  {}{chosen}\n    {}", m.id, m.size_mb(), m.name, m.note);
             }
-            let mark = if cfg.local_model_installed() { "✓" } else { " " };
-            let chosen = if cfg.model == MODEL.id { "  (in use)" } else { "" };
+            let speech = localflow_speech::SpeechConfig { model: cfg.speech_model.clone(), ..Default::default() };
+            if let Some((name, used)) = speech.unknown_model() {
+                println!("\nLOCALFLOW_SPEECH_MODEL is {name}, which isn't one of these: {} is used", used.id);
+            }
+            // With Claude Haiku, the local model is what steps in when Claude can't.
+            let local = if cfg.cleanup_haiku { "  (when Claude can't be reached)" } else { "  (in use)" };
+            let ours = Config { model: MODEL.id.into(), ..cfg.clone() };
+            let mark = if ours.local_model_installed() { "✓" } else { " " };
+            let chosen = if cfg.model == MODEL.id { local } else { "" };
             println!("\ncleanup:\n{mark} {:<24} {:>5} MB  {}{chosen}", MODEL.id, MODEL.size_mb(), MODEL.name);
+            if cfg.model != MODEL.id {
+                let mark = if cfg.local_model_installed() { "✓" } else { " " };
+                println!("{mark} {}  your file{local}", cfg.model);
+            }
+            let key = if cfg.anthropic_key.is_some() { "✓" } else { " " };
+            let chosen = if cfg.cleanup_haiku { "  (in use)" } else { "" };
+            println!("{key} {:<24} {:>8}  Claude Haiku 5.5, your Anthropic API key{chosen}", diagram::HAIKU, "API");
             println!("\ndiagrams (\"visualize ...\"):");
             for m in &diagram::MODELS {
                 let here = Config { diagram_model: m.id.into(), ..cfg.clone() }.diagram_model_installed();
@@ -280,15 +324,19 @@ fn visualize_command(lf: &Localflow, args: &[String]) -> ExitCode {
             if let Some(why) = &d.fallback {
                 eprintln!("  {} didn't draw it ({why}): a model on this computer did", lf.cfg.diagram_model);
             }
+            for what in &d.left_out {
+                eprintln!("  not drawn: {what}");
+            }
             println!("{}", d.mermaid.trim_end());
             eprintln!("  a {} in {} ms: {}", d.kind.name(), start.elapsed().as_millis(), drawn.png.display());
             ExitCode::SUCCESS
         }
         Err(e) => {
-            let hint = match (lf.cfg.can_draw(), lf.cfg.haiku_diagrams()) {
-                (true, _) => "",
-                (false, true) => "", // the error says where the key goes
-                (false, false) => " (localflow models download qwen3.5-2b)",
+            // A model of ours that isn't here: how to get it. (Off, a missing
+            // file, Haiku without a key: the error says what to do.)
+            let hint = match lf.cfg.diagram_download().filter(|_| !lf.cfg.can_draw()) {
+                Some(m) => format!(" (localflow models download {})", m.id),
+                None => String::new(),
             };
             fail(format!("{e}{hint}"))
         }
