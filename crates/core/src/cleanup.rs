@@ -303,12 +303,45 @@ fn alike(a: &str, b: &str) -> f64 {
     2.0 * same as f64 / (a.len() + b.len()).max(1) as f64
 }
 
+/// A name or term in the speaker's vocabulary, as words, and the ways it's
+/// misheard (words.txt: 'Kubernetes: often heard as "cube and eighties"').
+struct Term {
+    words: Vec<String>,
+    heard: Vec<Vec<String>>,
+}
+
+fn terms(vocabulary: &[String]) -> Vec<Term> {
+    let terms = vocabulary.iter().map(|line| crate::vocab::term(line));
+    terms.map(|(term, heard)| Term { words: words(&term), heard: heard.iter().map(|h| words(h)).filter(|h| !h.is_empty()).collect() }).collect()
+}
+
+impl Term {
+    /// Whether `word` is this term's and the term was said in `near`: as one
+    /// of the ways it's misheard, or itself, spelled or spaced another way
+    /// ("next JS" -> Next.js). The vocabulary makes a small model write its
+    /// terms where nothing like them was said, so being in it isn't enough.
+    fn explains(&self, word: &str, near: &[String]) -> bool {
+        let said_as = |heard: &Vec<String>| near.windows(heard.len()).any(|said| said == heard.as_slice());
+        let respelled = || (1..=4).any(|k| near.windows(k).any(|said| alike(&self.words.concat(), &said.concat()) >= 0.75));
+        self.words.iter().any(|w| w == word) && (self.heard.iter().any(said_as) || respelled())
+    }
+
+    /// Where in `said` this term was misheard, when the cleanup wrote the term: (from, to).
+    fn misheard<'a>(&'a self, said: &'a [String], kept: &'a HashSet<&String>) -> impl Iterator<Item = (usize, usize)> + 'a {
+        let written = self.words.iter().all(|w| kept.contains(w));
+        let places = move |heard: &'a Vec<String>| {
+            (0..said.len()).filter(move |i| said[*i..].starts_with(heard)).map(move |i| (i, i + heard.len()))
+        };
+        self.heard.iter().filter(move |_| written).flat_map(places)
+    }
+}
+
 /// A word in the cleanup that the speaker said, near enough: the same word
 /// respelled ("post gress" -> Postgres, "Claw" -> Claude), another form of it,
-/// or a small word for grammar. A number has to be one they said (in words,
-/// `numbers`, or digits).
-fn explained(word: &str, said: &[String], numbers: &HashMap<String, Vec<(usize, usize)>>) -> bool {
-    if small(word) {
+/// a small word for grammar, or a term of their vocabulary said in `near`. A
+/// number has to be one they said (in words, `numbers`, or digits).
+fn explained(word: &str, said: &[String], near: &[String], numbers: &HashMap<String, Vec<(usize, usize)>>, terms: &[Term]) -> bool {
+    if small(word) || terms.iter().any(|t| t.explains(word, near)) {
         return true;
     }
     if word.starts_with(|c: char| c.is_ascii_digit()) {
@@ -329,10 +362,14 @@ fn explained(word: &str, said: &[String], numbers: &HashMap<String, Vec<(usize, 
 /// heard is better than either.
 /// A negation left out, or put in, turns the sentence around however little
 /// else changed ("the test is not passing" -> "The test is passing.").
-pub fn unfaithful(text: &str, out: &str) -> Option<String> {
+/// `vocabulary`: the speaker's names and terms (words.txt lines), which
+/// explain a word that sounds nothing like what was heard.
+pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String> {
     let (said, wrote) = (words(text), words(out));
     let kept: HashSet<&String> = wrote.iter().collect();
     let numbers = spoken_numbers(&said);
+    let terms = terms(vocabulary);
+    let misheard: Vec<(usize, usize)> = terms.iter().flat_map(|t| t.misheard(&said, &kept)).collect();
     let times = |words: &[String], word: &String| words.iter().filter(|w| *w == word).count();
     for op in SequenceMatcher::new(&said, &wrote).opcodes() {
         let new = &wrote[op.j1..op.j2];
@@ -341,7 +378,7 @@ pub fn unfaithful(text: &str, out: &str) -> Option<String> {
             let made_up = |w: &&String| match negation(w) {
                 // Only one the speaker said, here ("do not" -> "don't") or as often elsewhere.
                 true => !near.iter().any(|n| negation(n)) && times(&wrote, w) > times(&said, w),
-                false => !explained(w, &said, &numbers),
+                false => !explained(w, &said, near, &numbers, &terms),
             };
             let added: Vec<&str> = new.iter().filter(made_up).map(String::as_str).collect();
             if !added.is_empty() {
@@ -352,11 +389,12 @@ pub fn unfaithful(text: &str, out: &str) -> Option<String> {
             if let Some(not) = flipped(&said, op.i1, op.i2, new) {
                 return Some(format!("dropped {not:?}"));
             }
-            // Number words the cleanup wrote as digits aren't lost.
-            let digits: Vec<(usize, usize)> = new.iter().filter_map(|w| numbers.get(w)).flatten().copied().collect();
+            // Number words the cleanup wrote as digits aren't lost, nor a misheard term it wrote right.
+            let digits = new.iter().filter_map(|w| numbers.get(w)).flatten();
+            let written: Vec<&(usize, usize)> = digits.chain(&misheard).collect();
             let lost: Vec<&str> = (op.i1..op.i2)
                 .filter(|i| !small(&said[*i]) && !SYMBOLS.contains(&said[*i].as_str()) && !kept.contains(&said[*i]))
-                .filter(|i| !digits.iter().any(|(from, to)| (*from..*to).contains(i)))
+                .filter(|i| !written.iter().any(|(from, to)| (*from..*to).contains(i)))
                 .map(|i| said[i].as_str())
                 .collect();
             if lost.len() >= 3 && !near.iter().any(|w| cue(w)) {
@@ -536,7 +574,7 @@ impl Localflow {
                 result.text = reply_sentence(text); // "yes" is no aside: "Yes."
             }
             "implausible".into() // keep what the speaker said
-        } else if let Some(why) = (!by_haiku).then(|| unfaithful(text, &out)).flatten() {
+        } else if let Some(why) = (!by_haiku).then(|| unfaithful(text, &out, &self.vocabulary())).flatten() {
             // Claude Haiku fixes misheard words the check can't tell from made-up ones.
             format!("unfaithful: {why}")
         } else {
@@ -557,6 +595,42 @@ impl Localflow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With no vocabulary of the speaker's.
+    fn unfaithful(text: &str, out: &str) -> Option<String> {
+        super::unfaithful(text, out, &[])
+    }
+
+    #[test]
+    fn the_vocabulary_explains_what_it_says_is_misheard() {
+        let vocabulary: Vec<String> = [
+            "Kubernetes: often heard as \"cube and eighties\"",
+            "Claude Code",
+            "Next.js",
+            "Pine Script: TradingView's scripting language, often heard as \"Py script\" or \"pie script\"",
+            "PostgreSQL: the database, often heard as \"post gress queue well\"",
+        ]
+        .map(String::from)
+        .to_vec();
+        let (said, out) = ("deploy it to cube and eighties tonight", "Deploy it to Kubernetes tonight.");
+        assert_eq!(unfaithful(said, out), Some("added \"kubernetes\"".into()));
+        for (said, out) in [
+            (said, out),
+            ("code that into a Py script so I can backtest it", "Code that into a Pine Script so I can backtest it."),
+            ("check the next JS docs", "Check the Next.js docs."),
+            // The words it was misheard as aren't dropped ones.
+            ("set up post gress queue well on the server tonight", "Set up PostgreSQL on the server tonight."),
+        ] {
+            assert_eq!(super::unfaithful(said, out, &vocabulary), None, "{said}");
+        }
+        // A term nothing like what was said is still made up, and so is one whose mishearing wasn't said here.
+        let said = "create some cool random shaders with slash got shaders skill and use some random seeds";
+        assert!(super::unfaithful(said, "Create some cool random shaders with Claude Code and use some random seeds.", &vocabulary).is_some());
+        assert!(super::unfaithful("deploy it to the staging box tonight", "Deploy it to Kubernetes tonight.", &vocabulary).is_some());
+        let said = "a cube and eighties poster is on the wall and then we deploy it to the staging box at the end of the day";
+        let out = "A cube and eighties poster is on the wall and then we deploy it to Kubernetes at the end of the day.";
+        assert!(super::unfaithful(said, out, &vocabulary).is_some());
+    }
 
     #[test]
     fn made_up_words_are_caught() {
