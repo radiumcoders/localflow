@@ -108,11 +108,12 @@ fn spoken_numbers(said: &[String]) -> HashSet<String> {
         for word in &said[start..] {
             let Some((n, scale)) = value(word) else { break };
             match (scale, n) {
-                (false, _) => current += n,
-                (true, 100) => current = current.max(1) * 100,
-                (true, _) => (total, current) = (total + current.max(1) * n, 0),
+                // A speech model stuck repeating "hundred" mustn't overflow.
+                (false, _) => current = current.saturating_add(n),
+                (true, 100) => current = current.max(1).saturating_mul(100),
+                (true, _) => (total, current) = (total.saturating_add(current.max(1).saturating_mul(n)), 0),
             }
-            found.insert((total + current).to_string());
+            found.insert(total.saturating_add(current).to_string());
         }
     }
     found
@@ -371,6 +372,12 @@ mod tests {
     fn sound_alikes_spelled_differently_count_as_made_up() {
         // The price of catching made-up words: the transcript as heard goes in.
         assert!(unfaithful("then deploy it to for sell", "Then deploy it to Vercel.").is_some());
+    }
+
+    #[test]
+    fn repeated_number_words_dont_overflow() {
+        let said = format!("{} billion dollars", "hundred ".repeat(30));
+        assert!(unfaithful(&said, &format!("{said}.")).is_none());
     }
 
     #[test]
