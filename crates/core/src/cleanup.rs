@@ -336,34 +336,92 @@ impl Term {
     }
 }
 
-/// A word in the cleanup that the speaker said, near enough: the same word
-/// respelled ("post gress" -> Postgres, "Claw" -> Claude), another form of it,
-/// a small word for grammar, or a term of their vocabulary said in `near`. A
-/// number has to be one they said (in words, `numbers`, or digits).
+/// Casual speech, and what the cleanup may write for it.
+const CASUAL: &[(&str, &str)] = &[
+    ("gonna", "going to"), ("wanna", "want to"), ("gotta", "got to"), ("kinda", "kind of"), ("sorta", "sort of"),
+    ("lemme", "let me"), ("gimme", "give me"), ("cuz", "because"), ("cause", "because"), ("yeah", "yes"), ("yep", "yes"),
+    ("ya", "you"), ("til", "until"),
+];
+
+/// Words that sound the same: writing the right one is grammar.
+const SOUND_ALIKE: &[&str] = &[
+    "there their they're", "your you're", "to too", "then than", "whose who's", "were we're where", "affect effect",
+    "accept except", "lose loose", "hear here", "weather whether",
+];
+
+/// What a word may be a form of: itself and what its ending is on, less a
+/// final e or y or doubled letter ("write", "writing" and "writes" are all
+/// "writ"; "shipping" is "ship", "studies" is "stud").
+fn stems(word: &str) -> Vec<String> {
+    let bare = |stem: &str| {
+        let mut stem: Vec<char> = stem.chars().collect();
+        if stem.len() > 3 && matches!(stem.last(), Some('e' | 'y')) {
+            stem.pop();
+        }
+        if stem.len() > 3 && stem[stem.len() - 1] == stem[stem.len() - 2] {
+            stem.pop();
+        }
+        stem.into_iter().collect::<String>()
+    };
+    let endings = ["'s", "s", "es", "ed", "d", "ing", "ies", "ied"];
+    let cut = endings.iter().filter_map(|ending| word.strip_suffix(ending)).filter(|stem| stem.chars().count() >= 3);
+    std::iter::once(word).chain(cut).map(bare).collect()
+}
+
+/// The same word in another form: "ship" and "shipping", not "dictation" and "diction".
+fn same_word(a: &str, b: &str) -> bool {
+    let b = stems(b);
+    stems(a).iter().any(|stem| b.contains(stem))
+}
+
+/// The same word spelled another way: a letter apart ("colour" / "color",
+/// "there" / "their", "its" / "it's"). A short word may only gain or lose
+/// one ("Jon" / "John"): "test" isn't "text", nor "now" "not".
+fn respelled(a: &str, b: &str) -> bool {
+    let letters = |w: &str| w.chars().filter(|c| *c != '\'').collect::<Vec<char>>();
+    let (a, b) = (letters(a), letters(b));
+    let same: usize = SequenceMatcher::new(&a, &b).matching_blocks().iter().map(|m| m.size).sum();
+    let (short, long) = (a.len().min(b.len()), a.len().max(b.len()));
+    match short {
+        0..=2 => a == b,
+        3..=4 => same == short && long - short <= 1,
+        _ => long - same <= 1,
+    }
+}
+
+/// A word in the cleanup that the speaker said, near enough. Anywhere in
+/// what they said: the word itself (a list may change its order) or another
+/// form of it. In `near`, the words around where it was written: the word
+/// respelled ("colour" -> color), words said apart ("post gress" ->
+/// Postgres), casual speech written out ("gonna" -> going to), one that
+/// sounds the same ("their" -> they're), or a term of their vocabulary. A
+/// small word for grammar always. A number has to be one they said (in
+/// words, `numbers`, or digits). Looking a bit like some word they said
+/// somewhere isn't enough ("then" doesn't explain "Python").
 fn explained(word: &str, said: &[String], near: &[String], numbers: &HashMap<String, Vec<(usize, usize)>>, terms: &[Term]) -> bool {
-    if small(word) || terms.iter().any(|t| t.explains(word, near)) {
+    if small(word) || said.iter().any(|w| w == word) || terms.iter().any(|t| t.explains(word, near)) {
         return true;
     }
     if word.starts_with(|c: char| c.is_ascii_digit()) {
-        return said.iter().any(|w| w == word) || numbers.contains_key(word);
+        return numbers.contains_key(word);
     }
-    let stem = |w: &str| w.chars().take(4).collect::<String>();
-    (0..said.len()).any(|i| {
-        alike(word, &said[i]) >= 0.6
-            || (word.chars().count() >= 4 && stem(word) == stem(&said[i]))
-            || (2..=3).any(|k| i + k <= said.len() && alike(word, &said[i..i + k].concat()) >= 0.75)
-    })
+    let same_sound = |group: &&str| group.split(' ').any(|w| w == word) && near.iter().any(|n| group.split(' ').any(|w| w == n));
+    near.iter().any(|w| respelled(word, w))
+        || (2..=3).any(|k| near.windows(k).any(|apart| alike(word, &apart.concat()) >= 0.75))
+        || CASUAL.iter().any(|(casual, full)| full.split(' ').any(|w| w == word) && near.iter().any(|w| w == casual))
+        || SOUND_ALIKE.iter().any(same_sound)
+        || said.iter().any(|w| same_word(word, w))
 }
 
 /// What the cleanup got wrong, if anything: words the speaker never said
 /// ("slash got shaders skill" -> "Claude Code", "root 2" -> "1.5"), or a
 /// stretch of what they said left out, with no correction near it ("Do it
 /// fast. I need it done fast." gone). Small models do both; the transcript as
-/// heard is better than either.
-/// A negation left out, or put in, turns the sentence around however little
-/// else changed ("the test is not passing" -> "The test is passing.").
-/// `vocabulary`: the speaker's names and terms (words.txt lines), which
-/// explain a word that sounds nothing like what was heard.
+/// heard is better than either. A negation left out, or put in, turns the
+/// sentence around however little else changed ("the test is not passing"
+/// -> "The test is passing."). `vocabulary`: the speaker's names and terms
+/// (words.txt lines), which explain a word that sounds nothing like what was
+/// heard.
 pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String> {
     let (said, wrote) = (words(text), words(out));
     let kept: HashSet<&String> = wrote.iter().collect();
@@ -371,16 +429,22 @@ pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String
     let terms = terms(vocabulary);
     let misheard: Vec<(usize, usize)> = terms.iter().flat_map(|t| t.misheard(&said, &kept)).collect();
     let times = |words: &[String], word: &String| words.iter().filter(|w| *w == word).count();
+    let written = wrote.as_slice();
     for op in SequenceMatcher::new(&said, &wrote).opcodes() {
         let new = &wrote[op.j1..op.j2];
         let near = &said[op.i1.saturating_sub(NEAR)..(op.i2 + NEAR).min(said.len())];
         if matches!(op.tag, Tag::Replace | Tag::Insert) {
-            let made_up = |w: &&String| match negation(w) {
-                // Only one the speaker said, here ("do not" -> "don't") or as often elsewhere.
-                true => !near.iter().any(|n| negation(n)) && times(&wrote, w) > times(&said, w),
-                false => !explained(w, &said, near, &numbers, &terms),
+            // One word said, written as two or three ("nextjs" -> Next.js, "cannot" -> can not).
+            let split = |j: usize| {
+                let around = |k: usize| (j.saturating_sub(k - 1)..=j).filter_map(move |from| written.get(from..from + k));
+                (2..=3).any(|k| around(k).any(|parts| near.contains(&parts.concat())))
             };
-            let added: Vec<&str> = new.iter().filter(made_up).map(String::as_str).collect();
+            let made_up = |j: &usize| match negation(&wrote[*j]) {
+                // Only one the speaker said, here ("do not" -> "don't") or as often elsewhere.
+                true => !near.iter().any(|n| negation(n)) && times(&wrote, &wrote[*j]) > times(&said, &wrote[*j]),
+                false => !explained(&wrote[*j], &said, near, &numbers, &terms) && !split(*j),
+            };
+            let added: Vec<&str> = (op.j1..op.j2).filter(made_up).map(|j| wrote[j].as_str()).collect();
             if !added.is_empty() {
                 return Some(format!("added {:?}", added.join(" ")));
             }
@@ -391,10 +455,10 @@ pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String
             }
             // Number words the cleanup wrote as digits aren't lost, nor a misheard term it wrote right.
             let digits = new.iter().filter_map(|w| numbers.get(w)).flatten();
-            let written: Vec<&(usize, usize)> = digits.chain(&misheard).collect();
+            let accounted: Vec<&(usize, usize)> = digits.chain(&misheard).collect();
             let lost: Vec<&str> = (op.i1..op.i2)
                 .filter(|i| !small(&said[*i]) && !SYMBOLS.contains(&said[*i].as_str()) && !kept.contains(&said[*i]))
-                .filter(|i| !written.iter().any(|(from, to)| (*from..*to).contains(i)))
+                .filter(|i| !accounted.iter().any(|(from, to)| (*from..*to).contains(i)))
                 .map(|i| said[i].as_str())
                 .collect();
             if lost.len() >= 3 && !near.iter().any(|w| cue(w)) {
@@ -649,6 +713,50 @@ mod tests {
     }
 
     #[test]
+    fn another_word_that_looks_alike_is_made_up() {
+        let python = ["Python".to_string()];
+        for (said, out) in [
+            ("Dictation", "Diction."),
+            // "Python" was explained by "then", a word nowhere near it.
+            ("and then I will code that thing into a Py script so that I can backtest it", "And then I will code that thing into a Python script so that I can backtest it."),
+            ("run the test again", "Run the text again."),
+            ("the computer is slow", "The company is slow."),
+            ("we had a long conversation", "We had a long conservation."),
+            ("the form is broken", "The from is broken."),
+            ("I'll walk you through it", "I'll talk you through it."),
+        ] {
+            assert!(unfaithful(said, out).is_some(), "{said}");
+            assert!(super::unfaithful(said, out, &python).is_some(), "{said}");
+        }
+    }
+
+    #[test]
+    fn the_same_word_respelled_or_in_another_form_passes() {
+        for (said, out) in [
+            ("i think we should ship it on monday", "I think we should ship it on Monday."),
+            ("I'm gonna ship it tomorrow", "I'm going to ship it tomorrow."),
+            ("I wanna try it cuz it's kinda faster", "I want to try it because it's kind of faster."),
+            ("the colour is off", "The color is off."),
+            ("I think there car is red", "I think their car is red."),
+            ("its working now and were done", "It's working now and we're done."),
+            ("I think their going to announce it", "I think they're going to announce it."),
+            ("it's better then the old one", "It's better than the old one."),
+            ("send it to Jon", "Send it to John."),
+            ("so first replying to the emails and second I need to be fixing the build", "1. Reply to the emails\n2. Fix the build"),
+            ("we use nextjs and the backend cannot keep up", "We use Next.js and the back end can not keep up."),
+            ("first I will buy groceries and then shoes oh wait first shoes", "1. Shoes\n2. Groceries"),
+        ] {
+            assert_eq!(unfaithful(said, out), None, "{said}");
+        }
+        for (a, b) in [("ship", "shipping"), ("ships", "shipped"), ("write", "writing"), ("study", "studies"), ("need", "needs"), ("pass", "passes"), ("reply", "replied"), ("client", "client's")] {
+            assert!(same_word(a, b) && same_word(b, a), "{a} {b}");
+        }
+        for (a, b) in [("dictation", "diction"), ("then", "they"), ("test", "text"), ("computer", "company"), ("conversation", "conservation")] {
+            assert!(!same_word(a, b) && !respelled(a, b), "{a} {b}");
+        }
+    }
+
+    #[test]
     fn repeated_number_words_dont_overflow() {
         let said = format!("{} billion dollars", "hundred ".repeat(30));
         assert!(unfaithful(&said, &format!("{said}.")).is_none());
@@ -778,7 +886,7 @@ mod tests {
         for (said, out) in [
             ("Let's meet at 5. Wait, no, at 6.", "Let's meet at 6."),
             ("Um, I think we should, uh, ship it on Monday.", "I think we should ship it on Monday."),
-            ("I'll set up the post gress database and ask Claw about it", "I'll set up the Postgres database and ask Claude about it."),
+            ("I'll set up the post gress database and ask Claude about it", "I'll set up the Postgres database and ask Claude about it."),
             ("my tasks today are first buy milk second call the bank third fix the login bug", "My tasks today are:\n1. Buy milk\n2. Call the bank\n3. Fix the login bug"),
             ("it costs twenty dollars no wait 25 dollars and we need three chairs", "It costs 25 dollars and we need 3 chairs."),
             ("okay let me think the main goal for this sprint is shipping the billing page", "The main goal for this sprint is shipping the billing page."),
