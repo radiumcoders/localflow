@@ -1,7 +1,8 @@
 //! The first-run window, in the look of localflow.radiumcoders.com: pick a
-//! speech model (it downloads while you go on), meet the cleanup model (it
-//! downloads too), allow what macOS asks for, bind the keys (Linux), try a
-//! dictation for real, done.
+//! speech model (it downloads while you go on), pick what cleans up (Claude
+//! Haiku 5.5 with your API key, the recommended one, or localflow's own model
+//! on this computer, which downloads either way), allow what macOS asks for,
+//! bind the keys (Linux), try a dictation for real, done.
 //!
 //! It opens instead of the settings until you finish it (`localflow
 //! onboarding` opens it again). Leaving the cleanup step saves the settings,
@@ -11,16 +12,16 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use localflow_core::local::MODEL;
-use localflow_core::{Config, config_dir, save_settings};
+use localflow_core::{Config, Localflow, Secret, config_dir, diagram};
 use localflow_speech::models;
 
 use super::jobs::{Job, Jobs};
 use super::look::{self, Palette, SOFT, SPRING, band, dashes, dot_grid, ghost_button, primary_button, secondary_button, spring};
-use super::settings::after_save;
+use super::settings::{after_save, check_cleanup, key_input, key_note, key_row, write_settings};
 
 const WINDOW: (f32, f32) = (760., 564.);
 /// The column between the dashed rails.
@@ -160,6 +161,8 @@ fn speech_key(id: &str) -> String {
 
 /// The cleanup model's download, in Jobs.
 const MODEL_KEY: &str = "cleanup-model";
+/// A cleanup with Claude Haiku and the key you typed, in Jobs.
+const TEST_KEY: &str = "cleanup-test";
 
 /// This build runs the models on a GPU (Metal, or Vulkan when built with it;
 /// the Windows build is CPU only for now).
@@ -190,6 +193,15 @@ pub struct Onboarding {
     /// 1 going forward, -1 going back: where the next step slides in from.
     direction: f32,
     speech: &'static str,
+    /// Clean up with Claude Haiku 5.5 (your API key) instead of on this computer.
+    haiku: bool,
+    /// Your Anthropic API key: typed here, saved to a file of its own.
+    anthropic_key: Entity<InputState>,
+    /// A key is saved (or set in the environment).
+    has_key: bool,
+    /// What the key field held when Test was last pressed: its result is
+    /// shown until you type another key.
+    tested: Option<String>,
     /// localflow-clean, or the .gguf file the env file names.
     local_model: String,
     mic: Mic,
@@ -211,6 +223,18 @@ impl Onboarding {
             Some(m) => models::resolve(Some(m)).id,
             None => models::recommended(cfg.speech_gpu).id,
         };
+        // A new install starts on the recommended cleanup, Claude Haiku 5.5:
+        // nothing is sent until you paste your key and go on.
+        let haiku = cfg.cleanup_haiku || !cfg.config_dir.join("env").exists();
+        let has_key = cfg.anthropic_key.is_some();
+        let anthropic_key = cx.new(|cx| key_input(has_key, window, cx));
+        cx.subscribe(&anthropic_key, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.error = None;
+                cx.notify();
+            }
+        })
+        .detach();
         let local_model = cfg.model.clone();
         let try_field = cx.new(|cx| TextareaState::new(window, cx).placeholder("Your words land here."));
         cx.subscribe(&try_field, |this, field, event: &InputEvent, cx| {
@@ -244,6 +268,10 @@ impl Onboarding {
             index: 0,
             direction: 1.,
             speech,
+            haiku,
+            anthropic_key,
+            has_key,
+            tested: None,
             local_model,
             mic: Mic::Unasked,
             accessibility: localflow_desktop::accessibility_allowed(),
@@ -295,9 +323,34 @@ impl Onboarding {
         cx.notify();
     }
 
+    /// What's typed in the API key's field.
+    fn typed(&self, cx: &App) -> String {
+        self.anthropic_key.read(cx).value().trim().to_string()
+    }
+
+    /// There's a key to clean up with: one saved, or one typed.
+    fn key_ready(&self, cx: &App) -> bool {
+        self.has_key || !self.typed(cx).is_empty()
+    }
+
+    /// Clean up a few words with Claude Haiku and the key as typed (else the
+    /// saved one), so a key that doesn't work shows here, not in a dictation.
+    fn test_key(&mut self, cx: &mut Context<Self>) {
+        let typed = self.typed(cx);
+        let mut cfg = Config { cleanup_haiku: true, model: self.local_model.clone(), ..self.cfg.clone() };
+        if !typed.is_empty() {
+            cfg.anthropic_key = Some(Secret(typed.clone()));
+        }
+        let lf = Localflow::new(cfg);
+        self.tested = Some(typed);
+        Jobs::start(TEST_KEY, cx, move |_| check_cleanup(&lf).map(|_| ()));
+        cx.notify();
+    }
+
     /// The settings as chosen, as env-file changes.
     fn changes(&self) -> Vec<(&'static str, Option<String>)> {
         vec![
+            ("LOCALFLOW_CLEANUP", self.haiku.then(|| diagram::HAIKU.into())),
             ("LOCALFLOW_MODEL", (self.local_model != MODEL.id).then(|| self.local_model.clone())),
             ("LOCALFLOW_SPEECH_MODEL", Some(self.pick().id.to_string())),
             // From before localflow ran only its own model.
@@ -306,12 +359,13 @@ impl Onboarding {
         ]
     }
 
-    /// Save what's chosen so far, and mark the onboarding as not finished.
-    fn save(&mut self) -> Result<(), String> {
-        let changes = self.changes();
+    /// Save what's chosen so far (and the key you typed, when Claude Haiku
+    /// cleans up), and mark the onboarding as not finished.
+    fn save(&mut self, cx: &App) -> Result<(), String> {
         let dir = self.cfg.config_dir.clone();
-        let pairs: Vec<(&str, Option<&str>)> = changes.iter().map(|(k, v)| (*k, v.as_deref())).collect();
-        save_settings(&dir, &pairs).map_err(|e| e.to_string())?;
+        let key = Some(self.typed(cx)).filter(|k| self.haiku && !k.is_empty());
+        write_settings(&dir, &self.changes(), key.as_deref())?;
+        self.has_key |= key.is_some();
         std::fs::write(dir.join(MARKER), "").map_err(|e| e.to_string())?;
         after_save()
     }
@@ -359,7 +413,12 @@ impl Onboarding {
                 }
             }
             Step::Cleanup => {
-                if let Err(e) = self.save() {
+                if self.haiku && !self.key_ready(cx) {
+                    self.error = Some(format!("Paste your Anthropic API key, or pick {}.", MODEL.id));
+                    cx.notify();
+                    return;
+                }
+                if let Err(e) = self.save(cx) {
                     self.error = Some(format!("Couldn't save the settings: {e}"));
                     cx.notify();
                     return;
@@ -376,7 +435,7 @@ impl Onboarding {
 
     /// Save once more (you may have gone back and changed something), and close.
     fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.save() {
+        match self.save(cx) {
             Ok(()) => {
                 let _ = std::fs::remove_file(self.cfg.config_dir.join(MARKER));
                 window.remove_window();
@@ -570,7 +629,7 @@ impl Onboarding {
                     .items_center()
                     .gap(px(20.))
                     .child(primary_button("start", "Get started", true, p).on_click(cx.listener(|this, _, window, cx| this.next(window, cx))))
-                    .child(note("lock", "Runs on your computer. Nothing leaves it.", p))
+                    .child(note("lock", "Runs on your computer. Nothing leaves it unless you choose Claude Haiku.", p))
                     .relative()
                     .with_animation("welcome-actions", Animation::new(Duration::from_millis(1000)).with_easing(ease_out_quint()), |el, t| {
                         let t = ((t - 0.55) / 0.45).clamp(0., 1.);
@@ -638,33 +697,100 @@ impl Onboarding {
     }
 
     fn cleanup(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
-        let about = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .gap(px(8.))
-            .px(px(24.))
-            .py(px(20.))
-            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).child(MODEL.id))
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .line_height(px(18.))
-                    .text_color(p.dim)
-                    .child("localflow's own model, made for cleaning up dictation. Private: nothing leaves your machine."),
-            )
-            .into_any_element();
+        let local_size = if self.local_ready() { "Downloaded".to_string() } else { format!("{} MB", MODEL.size_mb()) };
+        let choices = [
+            (
+                true,
+                "Claude Haiku 5.5",
+                "More accurate than the local model, with your Anthropic API key. What you say is sent to Anthropic to be cleaned up.",
+                (if self.has_key { "Key saved" } else { "Needs a key" }).to_string(),
+            ),
+            (false, MODEL.id, "localflow's own model. It runs on your computer; nothing leaves it.", local_size),
+        ];
+        let cells = choices
+            .into_iter()
+            .enumerate()
+            .map(|(i, (haiku, name, body, detail))| {
+                let checked = self.haiku == haiku;
+                self.option(
+                    ("cleanup", i),
+                    checked,
+                    vec![
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .justify_between()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(if checked { p.fg } else { p.fg.opacity(0.7) })
+                                    .child(name),
+                            )
+                            .when(haiku, |d| {
+                                d.child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.primary).child("Recommended"))
+                            })
+                            .into_any_element(),
+                        div().text_size(px(13.)).line_height(px(18.)).text_color(p.dim).child(body).into_any_element(),
+                        div().mt_auto().pt(px(4.)).child(mono(detail, p)).into_any_element(),
+                    ],
+                    move |this, _| {
+                        this.haiku = haiku;
+                        this.error = None;
+                    },
+                    p,
+                    cx,
+                )
+            })
+            .collect();
+        let detail = if self.haiku {
+            self.haiku_detail(p, cx)
+        } else {
+            div().flex().flex_col().items_center().gap(px(14.)).px(px(32.)).pt(px(22.)).child(self.local_detail(p, cx))
+        };
         div()
             .flex()
             .flex_col()
             .size_full()
             .child(head(
                 "How it cleans up",
-                "A small language model turns what you said into what you meant: no fillers, no changes of mind, proper punctuation.",
+                "A language model turns what you said into what you meant: no fillers, no changes of mind, proper punctuation.",
                 p,
             ))
-            .child(band(vec![about], p))
-            .child(div().flex().flex_col().items_center().gap(px(14.)).px(px(32.)).pt(px(22.)).child(self.local_detail(p, cx)))
+            .child(band(cells, p))
+            .child(detail)
+    }
+
+    /// Claude Haiku's side of the cleanup step: your API key, and a test of it.
+    fn haiku_detail(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        // The last test's result, while the field still holds what was tested.
+        let job = Jobs::get(TEST_KEY, cx).filter(|_| self.tested.as_deref() == Some(self.typed(cx).as_str()));
+        let busy = matches!(job, Some(Job::Running(..)));
+        let ready = self.key_ready(cx) && !busy;
+        let result = match job {
+            Some(Job::Done) => Some(div().flex().items_center().gap(px(6.)).text_color(p.primary).child(icon("check", 14., p.primary)).child("The key works")),
+            Some(Job::Failed(e)) => Some(div().text_color(p.record).child(format!("Didn't work: {e}"))),
+            _ => None,
+        };
+        let test = secondary_button("test-key", if busy { "Testing…" } else { "Test" }, ready, p).on_click(cx.listener(move |this, _, _, cx| {
+            if ready {
+                this.test_key(cx);
+            }
+        }));
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .px(px(24.))
+            .pt(px(18.))
+            .child(key_row(&self.anthropic_key, p).child(test))
+            .children(result.map(|r| r.text_size(px(13.)).line_height(px(18.))))
+            .child(key_note(
+                "From console.anthropic.com, kept on this computer, readable only by you. localflow's own model downloads \
+                 too, and cleans up here when Claude can't be reached.",
+                p,
+            ))
     }
 
     fn local_detail(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
@@ -910,9 +1036,10 @@ impl Onboarding {
             Platform::Windows => ("Ctrl Shift Space", "Hold or tap"),
             Platform::Linux => ("F9", "Super Ctrl X toggles"),
         };
+        let cleanup = if self.haiku { ("Claude Haiku 5.5".to_string(), "With your API key".to_string()) } else { (MODEL.id.to_string(), cleanup_note) };
         let cells = [
             ("Speech", pick.name.to_string(), speech_note),
-            ("Cleanup", MODEL.id.to_string(), cleanup_note),
+            ("Cleanup", cleanup.0, cleanup.1),
             ("Keys", keys.0.to_string(), keys.1.to_string()),
         ]
         .into_iter()
@@ -1016,7 +1143,8 @@ impl Onboarding {
         } else if step == Step::Done {
             None
         } else {
-            let cleanup = if step == Step::Cleanup { None } else { self.cleanup_job(cx) };
+            // The cleanup step shows the download itself, unless Claude Haiku is picked there.
+            let cleanup = if step == Step::Cleanup && !self.haiku { None } else { self.cleanup_job(cx) };
             match self.speech_job(cx) {
                 Some(Job::Done) | None if matches!(cleanup, Some(Job::Running(..))) => cleanup.map(|job| job_progress(&job, p)),
                 None if matches!(cleanup, Some(Job::Failed(_))) => Some(div().text_color(p.record).child("The cleanup model didn't download: go back to Cleanup to try again")),
