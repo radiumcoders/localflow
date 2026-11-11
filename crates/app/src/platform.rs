@@ -93,6 +93,22 @@ pub fn intel_build_on_apple_silicon() -> bool {
     }
 }
 
+/// A terminal command whose output goes to a pipe that closed (`localflow
+/// models | head -3`) ends there, quietly, as command-line tools do. Rust
+/// ignores SIGPIPE, so println! panicked instead ("failed printing to stdout:
+/// Broken pipe"), which a release build turns into an abort and a core dump.
+///
+/// Only for the commands that print and exit. The background app, a dictation
+/// and the self-test write to the clipboard tools' pipes (wl-copy, pbcopy),
+/// and must outlive one that has gone: they keep Rust's handling. (A program
+/// localflow starts gets the default either way: std resets it in the child.)
+pub fn quiet_on_closed_pipe() {
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 /// Windows: the app has no console of its own (it runs in the background),
 /// so commands run from a terminal print to that terminal.
 pub fn attach_console() {

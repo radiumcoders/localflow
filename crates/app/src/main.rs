@@ -58,7 +58,10 @@ fn main() -> ExitCode {
         Some("settings") => session::settings(),
         Some("onboarding") => session::onboarding(),
         Some("quit") => session::quit(),
-        Some("setup") => setup::run(&args[1..]),
+        Some("setup") => {
+            platform::quiet_on_closed_pipe();
+            setup::run(&args[1..])
+        }
         Some("--background") => session::background(),
         Some("start") => session::start(raw),
         Some("stop") => session::signal("stop"),
@@ -68,6 +71,9 @@ fn main() -> ExitCode {
         Some("_session") => session::run_session(raw),
         Some("_message") => session::run_message(&args[1..]),
         Some("--selftest") => selftest::run(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(3.0)),
-        Some(_) => cli::run(&args),
+        Some(_) => {
+            platform::quiet_on_closed_pipe();
+            cli::run(&args)
+        }
     }
 }
