@@ -175,11 +175,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.```
 
 ## Rust crates
 
-- Apache License 2.0 (459)
-- MIT License (146)
+- Apache License 2.0 (462)
+- MIT License (148)
 - ISC License (26)
 - Unicode License v3 (19)
-- BSD 3-Clause "New" or "Revised" License (13)
+- BSD 3-Clause "New" or "Revised" License (15)
 - Creative Commons Zero v1.0 Universal (3)
 - zlib License (3)
 - BSD Zero Clause License (2)
@@ -6202,6 +6202,7 @@ Used by:
 - [tempfile 3.27.0](https://github.com/Stebalien/tempfile)
 - [tendril 0.4.3](https://github.com/servo/tendril)
 - [ttf-parser 0.25.1](https://github.com/harfbuzz/ttf-parser)
+- [ucd-trie 0.1.7](https://github.com/BurntSushi/ucd-generate)
 - [unicase 2.10.0](https://github.com/seanmonstar/unicase)
 - [unicode-bidi-mirroring 0.4.0](https://github.com/RazrFalcon/unicode-bidi-mirroring)
 - [unicode-bidi 0.3.18](https://github.com/servo/unicode-bidi)
@@ -10364,6 +10365,7 @@ Used by:
 - [ref-cast 1.0.27](https://github.com/dtolnay/ref-cast)
 - [resvg 0.45.1](https://github.com/linebender/resvg)
 - [resvg 0.46.0](https://github.com/linebender/resvg)
+- [resvg 0.47.0](https://github.com/linebender/resvg)
 - [rustc-hash 2.1.3](https://github.com/rust-lang/rustc-hash)
 - [rustversion 1.0.23](https://github.com/dtolnay/rustversion)
 - [ryu 1.0.23](https://github.com/dtolnay/ryu)
@@ -10392,6 +10394,7 @@ Used by:
 - [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident)
 - [usvg 0.45.1](https://github.com/linebender/resvg)
 - [usvg 0.46.0](https://github.com/linebender/resvg)
+- [usvg 0.47.0](https://github.com/linebender/resvg)
 - [utf-8 0.7.6](https://github.com/SimonSapin/rust-utf8)
 - [wgpu-core-deps-apple 29.0.4](https://github.com/gfx-rs/wgpu)
 - [wgpu-core-deps-windows-linux-android 29.0.4](https://github.com/gfx-rs/wgpu)
@@ -11367,7 +11370,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Used by:
 
 - [tiny-skia-path 0.11.4](https://github.com/RazrFalcon/tiny-skia/tree/master/path)
+- [tiny-skia-path 0.12.0](https://github.com/linebender/tiny-skia/tree/master/path)
 - [tiny-skia 0.11.4](https://github.com/RazrFalcon/tiny-skia)
+- [tiny-skia 0.12.0](https://github.com/linebender/tiny-skia)
 
 ```
 Copyright (c) 2011 Google Inc. All rights reserved.
@@ -14676,6 +14681,37 @@ SOFTWARE.
 
 Used by:
 
+- [json5 1.3.7](https://github.com/callum-oakley/json5-rs)
+
+```
+MIT License
+
+Copyright (c) 2025 Callum Oakley
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License
+
+Used by:
+
 - [convert_case 0.10.0](https://github.com/rutrum/convert-case)
 
 ```
@@ -14700,6 +14736,37 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+### MIT License
+
+Used by:
+
+- [mermaid-rs-renderer 0.3.1](https://github.com/1jehuang/mermaid-rs-renderer)
+
+```
+MIT License
+
+Copyright (c) 2026 mermaid-rs-renderer contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
 
 ### MIT License

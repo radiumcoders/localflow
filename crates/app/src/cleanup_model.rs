@@ -22,3 +22,16 @@ pub fn get_ready(cfg: &Config, progress: &mut dyn FnMut(u64, u64), cancel: &Atom
 pub fn described() -> String {
     format!("{} ({} MB)", MODEL.name, MODEL.size_mb())
 }
+
+/// Get the diagram model `cfg` names, like the cleanup model: ours is
+/// downloaded unless it's here; a .gguf file of your own has to exist.
+pub fn get_diagram_ready(cfg: &Config, progress: &mut dyn FnMut(u64, u64), cancel: &AtomicBool) -> Result<(), String> {
+    let path = cfg.diagram_model_file();
+    match cfg.diagram_download() {
+        Some(m) => localflow_speech::models::download_file(m.name, m.url, m.size, m.sha256, &path, progress, cancel)
+            .map_err(|e| e.0),
+        None if !cfg.diagrams() => Err("diagrams are off (LOCALFLOW_DIAGRAM_MODEL=off)".into()),
+        None if path.exists() => Ok(()),
+        None => Err(format!("{} doesn't exist", path.display())),
+    }
+}

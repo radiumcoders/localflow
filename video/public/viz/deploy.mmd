@@ -1,0 +1,13 @@
+flowchart TD
+    N1(["Open a pull request"])
+    N2["CI runs the tests"]
+    N3{"Tests pass?"}
+    N4["Someone reviews it"]
+    N5(["Merge"])
+    N6["Fix and push again"]
+    N1 --> N2
+    N2 --> N3
+    N3 -->|Yes| N4
+    N3 -->|No| N6
+    N6 -->|Push again| N2
+    N4 --> N5
