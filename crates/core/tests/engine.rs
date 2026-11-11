@@ -105,10 +105,16 @@ fn diagram_model_setting() {
     }
     let off = config(&[("LOCALFLOW_DIAGRAM_MODEL", "off")], temp_dir("diagram-off"));
     assert!(!off.diagrams() && !off.diagram_model_installed());
-    // Not downloaded: drawing says so instead of failing to load.
-    let lf = Localflow::new(config(&[("LOCALFLOW_DIAGRAM_MODEL", "/nowhere/draw.gguf")], temp_dir("diagram-missing")));
+    // Off, a file that isn't there, a model not downloaded: drawing says which
+    // (instead of failing to load, or asking for a download that wouldn't help).
     let request = localflow_core::diagram::Request { kind: None, visualize: true, about: "wake up then work".into() };
-    assert!(lf.diagram(&request).unwrap_err().0.contains("isn't downloaded"));
+    let why = |cfg: Config| Localflow::new(cfg).diagram(&request).unwrap_err().0;
+    assert_eq!(why(off), "diagrams are off (Settings > Visualize, or LOCALFLOW_DIAGRAM_MODEL)");
+    let missing = config(&[("LOCALFLOW_DIAGRAM_MODEL", "/nowhere/draw.gguf")], temp_dir("diagram-missing"));
+    assert_eq!(why(missing), "the diagram model's file wasn't found: /nowhere/draw.gguf");
+    if !cfg.diagram_model_installed() {
+        assert_eq!(why(cfg), "the diagram model isn't downloaded yet");
+    }
 }
 
 #[test]

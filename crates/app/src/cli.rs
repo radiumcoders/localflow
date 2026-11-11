@@ -288,10 +288,11 @@ fn visualize_command(lf: &Localflow, args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            let hint = match (lf.cfg.can_draw(), lf.cfg.haiku_diagrams()) {
-                (true, _) => "",
-                (false, true) => "", // the error says where the key goes
-                (false, false) => " (localflow models download qwen3.5-2b)",
+            // A model of ours that isn't here: how to get it. (Off, a missing
+            // file, Haiku without a key: the error says what to do.)
+            let hint = match lf.cfg.diagram_download().filter(|_| !lf.cfg.can_draw()) {
+                Some(m) => format!(" (localflow models download {})", m.id),
+                None => String::new(),
             };
             fail(format!("{e}{hint}"))
         }

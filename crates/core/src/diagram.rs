@@ -478,8 +478,14 @@ impl Localflow {
                 (result, _) => result,
             };
         }
+        if !self.cfg.diagrams() {
+            return err("diagrams are off (Settings > Visualize, or LOCALFLOW_DIAGRAM_MODEL)");
+        }
         if !self.cfg.diagram_model_installed() {
-            return err("the diagram model isn't downloaded yet");
+            return err(match self.cfg.diagram_download() {
+                Some(_) => "the diagram model isn't downloaded yet".to_string(),
+                None => format!("the diagram model's file wasn't found: {}", self.cfg.diagram_model),
+            });
         }
         *self.engine.lock().unwrap() = None;
         let mut engine = self.diagram_engine.lock().unwrap();
