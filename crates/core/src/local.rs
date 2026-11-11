@@ -107,7 +107,11 @@ impl Localflow {
         let mut engine = self.engine.lock().unwrap();
         if engine.is_none() {
             if !self.cfg.local_model_installed() {
-                return err(format!("{} isn't downloaded yet", MODEL.name));
+                // A .gguf file of your own isn't a download.
+                return err(match self.cfg.model == MODEL.id {
+                    true => format!("{} isn't downloaded yet", MODEL.name),
+                    false => format!("the cleanup model's file wasn't found: {}", self.cfg.model),
+                });
             }
             *engine = Some(load_model(&self.cfg.model_file(), self.cfg.cleanup_gpu)?);
         }

@@ -118,14 +118,18 @@ fn usage() -> ExitCode {
 /// model is checked too: it cleans up when Claude can't be reached. The exit
 /// status is the chosen one's.
 fn check_command(lf: &Localflow) -> ExitCode {
-    let local = lf.check_local();
+    // Why the local model doesn't load, after its name unless that's in it.
+    let local = lf.check_local().map_err(|e| match e.0.contains(&lf.cfg.model) {
+        true => e.0,
+        false => format!("{}: {e}", lf.cfg.model),
+    });
     if !lf.cfg.cleanup_haiku {
         return match local {
             Ok(()) => {
                 println!("ok: {}", lf.cfg.model);
                 ExitCode::SUCCESS
             }
-            Err(e) => fail(format!("{}: {e}", lf.cfg.model)),
+            Err(e) => fail(e),
         };
     }
     let haiku = lf.check_haiku();
@@ -136,8 +140,8 @@ fn check_command(lf: &Localflow) -> ExitCode {
     let role = if haiku.is_ok() { "steps in when Claude can't be reached" } else { "cleans up instead" };
     match local {
         Ok(()) => println!("ok: {} ({role})", lf.cfg.model),
-        Err(e) if haiku.is_ok() => eprintln!("localflow: {}: {e} (nothing steps in when Claude can't be reached)", lf.cfg.model),
-        Err(e) => eprintln!("localflow: {}: {e}", lf.cfg.model),
+        Err(e) if haiku.is_ok() => eprintln!("localflow: {e} (nothing steps in when Claude can't be reached)"),
+        Err(e) => eprintln!("localflow: {e}"),
     }
     if haiku.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
