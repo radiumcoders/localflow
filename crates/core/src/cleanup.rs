@@ -581,7 +581,7 @@ pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String
             }
         }
         if matches!(op.tag, Tag::Replace | Tag::Delete) {
-            if let Some(not) = flipped(&said, op.i1, op.i2, new) {
+            if let Some(not) = flipped(&said, op.i1, op.i2, new, &wrote) {
                 return Some(format!("dropped {not:?}"));
             }
             // Number words the cleanup wrote as digits aren't lost, nor a misheard term it wrote right.
@@ -601,27 +601,42 @@ pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String
 }
 
 /// The negation the cleanup left out of said[i1..i2] (which it wrote as
-/// `new`), if that turns the sentence around. It doesn't when what was
-/// negated went with it ("it's not good, it's great" -> "It's great."), when
-/// it was said twice, or when "no" takes back what came before it ("at
-/// three, no, four").
-fn flipped<'a>(said: &'a [String], i1: usize, i2: usize, new: &[String]) -> Option<&'a str> {
+/// `new`, in `wrote`): that turns the sentence around, whatever else went
+/// with it ("the test is not currently passing" -> "The test is passing.").
+/// Unless the speaker took it back: it was said twice, a correction follows
+/// it ("I will not go, I mean, I will go"), "no" takes back what came before
+/// it ("at three, no, four"), or the sentence starts over without what was
+/// negated ("it's not good, it's great" -> "It's great.").
+fn flipped<'a>(said: &'a [String], i1: usize, i2: usize, new: &[String], wrote: &[String]) -> Option<&'a str> {
     let gone = &said[i1..i2];
     let (before, after) = (&said[..i1], &said[i2..]);
     let repeated = after.starts_with(gone)
         || before.ends_with(gone)
         || gone.iter().all(|w| after.first() == Some(w) || before.last() == Some(w));
-    if (i1..i2).filter(|&i| negates(said, i)).count() <= new.iter().filter(|w| negation(w)).count() || repeated {
+    if repeated {
         return None;
     }
-    let near = &said[i1.saturating_sub(NEAR)..(i2 + NEAR).min(said.len())];
-    let taken_back = near.iter().any(|w| TAKE_BACK.contains(&w.as_str()));
+    // A word that takes something back, which the cleanup took out with it ("don't wait" has none).
+    let cue = |w: &String| TAKE_BACK.contains(&w.as_str()) && w != "oh" && !wrote.contains(w);
     let content = |w: &String| !small(w) && !negation(w);
-    (0..gone.len()).filter(|&k| negates(said, i1 + k)).map(|k| (k, gone[k].as_str())).find_map(|(k, not)| {
-        let went_with_it = gone[k + 1..].iter().any(content);
-        let takes_back = not == "no" && (taken_back || gone[..k].iter().any(content));
-        (!went_with_it && !takes_back).then_some(not)
-    })
+    let taken_back = |k: usize| {
+        let not = said[k].as_str();
+        // After it: before it, a correction is of something else ("actually the test is not passing").
+        let corrected = said[k + 1..(i2 + NEAR).min(said.len())].iter().any(cue);
+        // "wait, no", "scratch that, no bananas", "three, no, four"
+        let takes_back = not == "no" && (said[k.saturating_sub(2)..k].iter().any(cue) || said[i1..k].iter().any(content));
+        // "it is not good it is great": the words before the negation come again after what it negated.
+        let rest = &said[k + 1..];
+        let subject: Vec<&str> = said[k.saturating_sub(2)..k].iter().map(|w| bare(w)).chain(not.strip_suffix("n't")).collect();
+        let again = rest.iter().skip(1).position(|w| !negation(w) && subject.contains(&bare(w))).map(|at| at + 1);
+        let started_over = again.is_some_and(|again| {
+            let mut negated = rest[..again].iter().filter(|w| content(w)).peekable();
+            negated.peek().is_some() && negated.all(|w| !wrote.iter().any(|kept| same_word(w, kept)))
+        });
+        corrected || takes_back || started_over
+    };
+    let left_out: Vec<&str> = (i1..i2).filter(|&k| negates(said, k) && !taken_back(k)).map(|k| said[k].as_str()).collect();
+    (left_out.len() > new.iter().filter(|w| negation(w)).count()).then(|| left_out[0])
 }
 
 /// Claude Haiku's request: the rules, the examples as turns (cached: they're
@@ -997,6 +1012,18 @@ mod tests {
             ("I dont know what happened", "I know what happened."),
             ("it wont start", "It will start."),
             ("I want to merge it", "I don't want to merge it."),
+            // Whatever else went with it, or stayed in another form.
+            ("it does not work", "It works."),
+            ("I did not merge it", "I merged it."),
+            ("the test is not currently passing", "The test is passing."),
+            ("do not ever merge this", "Merge this."),
+            ("I don't really want to merge it", "I want to merge it."),
+            ("it isn't ready it is urgent", "It is ready, it is urgent."),
+            ("oh there are no errors in the build", "Oh, there are errors in the build."),
+            ("oh there are no errors in the build", "There are errors in the build."),
+            ("actually there are no errors in the build", "There are errors in the build."),
+            ("it's not working oh and call mom", "It's working and call mom."),
+            ("actually it's not passing", "It's passing."),
             // None of something isn't filler, nor is a filler "no" a negation to write somewhere else.
             ("no errors so far", "Errors so far."),
             ("um no bugs in the build", "Bugs in the build."),
@@ -1006,6 +1033,10 @@ mod tests {
             assert!(unfaithful(said, out).is_some(), "{said}");
         }
         assert_eq!(unfaithful("do not merge this", "Merge this."), Some("dropped \"not\"".into()));
+        for said in ["it does not work", "I did not merge it", "the test is not currently passing", "do not ever merge this"] {
+            let out = said.replace(" does not work", " works").replace(" did not merge", " merged").replace("do not ever ", "").replace(" not currently", "");
+            assert_eq!(unfaithful(said, &out), Some("dropped \"not\"".into()), "{said}");
+        }
         assert_eq!(unfaithful("I can't believe it works", "I can't believe it doesn't work."), Some("added \"doesn't\"".into()));
     }
 
@@ -1026,6 +1057,12 @@ mod tests {
             ("I don't I don't know", "I don't know."),
             ("no no no that's wrong", "No, that's wrong."),
             ("the retry logic never backs off", "The retry logic never backs off."),
+            // Taken back, or said over without it.
+            ("I will not go I mean I will go", "I will go."),
+            ("the test is not passing wait it is passing", "The test is passing."),
+            ("it isn't good it's great", "It's great."),
+            ("the test is not passing the test is failing", "The test is failing."),
+            ("it's not at three it's at four", "It's at four."),
             // "No" as filler, where the dictation starts.
             ("yeah no I think it's fine", "I think it's fine."),
             ("um no so the plan is to ship", "The plan is to ship."),
