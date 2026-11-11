@@ -214,23 +214,42 @@ mod linux {
         if std::env::var_os("DISPLAY").is_some() { paste_x11(parts) } else { false }
     }
 
+    /// The focused window as Hyprland describes it (empty elsewhere).
+    fn active_hyprland_window() -> crate::target::Window {
+        if which("hyprctl").is_none() {
+            return crate::target::Window::default();
+        }
+        hyprland_window(&output(command("hyprctl").args(["activewindow", "-j"]), Duration::from_secs(2)))
+    }
+
+    /// Send X11 keys (xdotool) rather than Wayland ones: the window runs under
+    /// XWayland and xdotool can reach it.
+    fn x11_keys_for(window: &crate::target::Window) -> bool {
+        window.xwayland && std::env::var_os("DISPLAY").is_some() && which("xdotool").is_some()
+    }
+
     fn paste_wayland(parts: &[Part]) -> bool {
         let types = output(command("wl-paste").arg("--list-types"), Duration::from_secs(2));
         let old_type = types.lines().next().unwrap_or_default().to_string();
         let old = if old_type.is_empty() { vec![] } else { bytes(command("wl-paste").args(["--no-newline", "--type", &old_type])) };
-        let (mut class, mut tags) = (String::new(), vec![]);
-        if which("hyprctl").is_some() {
-            let w = hyprland_window(&output(command("hyprctl").args(["activewindow", "-j"]), Duration::from_secs(2)));
-            (class, tags) = (w.app, w.tags);
-        }
-        let keys = wayland_keys(&class, &tags);
+        let window = active_hyprland_window();
+        // An XWayland window gets X11 keys: wtype's keymap doesn't reach it,
+        // so its Ctrl+V arrives as another key and nothing is pasted.
+        let x11 = x11_keys_for(&window);
+        let keys = wayland_keys(&window.app, &window.tags);
+        let x_key = x11_key(&window.app);
         for (i, part) in parts.iter().enumerate() {
             match part {
                 Part::File(path) => feed(command("wl-copy").args(["--type", "text/uri-list"]), format!("{}\r\n", file_uri(path.as_ref())).as_bytes()),
                 Part::Text(text) => feed(&mut command("wl-copy"), text.as_bytes()),
             };
             sleep(50);
-            if !quiet(command("wtype").args(keys)) {
+            let sent = if x11 {
+                quiet(command("xdotool").args(["key", "--clearmodifiers", x_key]))
+            } else {
+                quiet(command("wtype").args(keys))
+            };
+            if !sent {
                 return false;
             }
             if i + 1 < parts.len() {
@@ -280,7 +299,9 @@ mod linux {
             Key::Enter => "Return",
             Key::Escape => "Escape",
         };
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() && which("wtype").is_some() {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() && x11_keys_for(&active_hyprland_window()) {
+            quiet(command("xdotool").args(["key", "--clearmodifiers", name]))
+        } else if std::env::var_os("WAYLAND_DISPLAY").is_some() && which("wtype").is_some() {
             quiet(command("wtype").args(["-k", name]))
         } else if std::env::var_os("DISPLAY").is_some() {
             quiet(command("xdotool").args(["key", "--clearmodifiers", name]))

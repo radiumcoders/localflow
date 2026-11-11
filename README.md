@@ -154,7 +154,9 @@ terminals (Ghostty, kitty, Alacritty, foot...) and Shift+Insert in VS
 Code-family editors (their chat panels ignore a synthetic Ctrl+V), restoring
 your clipboard after. Where the paste keys can't be sent
 (GNOME's Wayland session doesn't allow `wtype`), the text stays on the
-clipboard and the pill says so: press Ctrl+V (Ctrl+Shift+V in a terminal).
+clipboard and the pill says so: press Ctrl+V (Ctrl+Shift+V in a terminal). On Hyprland, X11 programs
+running under XWayland (Ghostex, for one) get the paste keys from `xdotool`:
+`wtype`'s keys reach them as other keys. Install `xdotool` for those.
 
 ## How it works
 

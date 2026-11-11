@@ -63,7 +63,7 @@ pub fn focused_window() -> Window {
             }
             CloseHandle(process);
         }
-        Window { app, title: String::from_utf16_lossy(&title[..n]), pid: Some(pid), tags: vec![] }
+        Window { app, title: String::from_utf16_lossy(&title[..n]), pid: Some(pid), tags: vec![], xwayland: false }
     }
 }
 
