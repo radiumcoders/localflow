@@ -24,6 +24,9 @@ pub struct Window {
     pub title: String,
     pub pid: Option<u32>,
     pub tags: Vec<String>,
+    /// An X11 program under XWayland (Hyprland says): synthetic Wayland keys
+    /// (wtype) reach it as the wrong keys, so it's sent X11 ones.
+    pub xwayland: bool,
 }
 
 /// The window you're typing in (empty where the desktop doesn't say: Wayland
@@ -48,7 +51,7 @@ fn linux_focused_window() -> Window {
             app: get("getwindowclassname"),
             title: get("getwindowname"),
             pid: get("getwindowpid").parse().ok(),
-            tags: vec![],
+            ..Window::default()
         };
     }
     Window::default()
@@ -63,6 +66,7 @@ pub fn hyprland_window(json: &str) -> Window {
         title: text("title"),
         pid: w["pid"].as_u64().map(|p| p as u32),
         tags: w["tags"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect(),
+        xwayland: w["xwayland"].as_bool().unwrap_or(false),
     }
 }
 
@@ -264,7 +268,8 @@ mod tests {
     #[test]
     fn hyprland_json() {
         let w = hyprland_window(r#"{"class": "kitty", "title": "~/p", "pid": 42, "tags": ["terminal*"]}"#);
-        assert_eq!(w, Window { app: "kitty".into(), title: "~/p".into(), pid: Some(42), tags: vec!["terminal*".into()] });
+        assert_eq!(w, Window { app: "kitty".into(), title: "~/p".into(), pid: Some(42), tags: vec!["terminal*".into()], xwayland: false });
+        assert!(hyprland_window(r#"{"class": "ghostex", "xwayland": true}"#).xwayland);
         assert_eq!(hyprland_window("{}"), Window::default());
     }
 }

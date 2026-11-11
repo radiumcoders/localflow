@@ -88,27 +88,55 @@ fn is_editor(class: &str) -> bool {
     ["cursor", "code", "code-oss", "codium", "vscodium", "windsurf"].contains(&class.to_lowercase().as_str())
 }
 
-/// wtype's arguments for the paste keys on Wayland: Shift+Insert in terminals
-/// (a Hyprland "terminal" tag, as Omarchy's universal paste checks) and
-/// editors, Ctrl+V elsewhere.
+/// Terminal window classes on Linux (Wayland app ids and X11 classes), matched
+/// whole so an app that merely contains "term" or "warp" isn't one.
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
-pub(crate) fn wayland_keys(class: &str, tags: &[String]) -> [&'static str; 6] {
-    if tags.iter().any(|t| t == "terminal" || t == "terminal*") || is_editor(class) {
-        ["-M", "shift", "-k", "Insert", "-m", "shift"]
+static TERMINAL_CLASS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)^(?:[\w-]+\.)*(?:ghostty|kitty|alacritty|foot|footclient|wezterm|wezterm-gui|konsole|tilix|terminator|xterm|urxvt|rxvt|st|st-256color|kgx|ptyxis|blackbox|terminology|(?:[\w]+-)?terminal(?:-server)?)$|^org\.gnome\.console$|^dev\.warp\.warp$",
+    )
+    .unwrap()
+});
+
+/// Apps Hyprland tags "terminal" whose text box takes Ctrl+V: Ghostex's
+/// message box ignores Ctrl+Shift+V (its terminal pane is the other way round,
+/// but the message box is where you talk to it).
+const NOT_TERMINALS: [&str; 1] = ["ghostex"];
+
+/// A terminal, by its class or Hyprland's "terminal" tag (dynamic tags carry
+/// a trailing "*").
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
+fn is_terminal(class: &str, tags: &[String]) -> bool {
+    if NOT_TERMINALS.iter().any(|a| a.eq_ignore_ascii_case(class)) {
+        return false;
+    }
+    TERMINAL_CLASS.is_match(class) || tags.iter().any(|t| t.trim_end_matches('*') == "terminal")
+}
+
+/// wtype's arguments for the paste keys on Wayland: Ctrl+Shift+V in
+/// terminals, Shift+Insert in editors, Ctrl+V elsewhere. Not Shift+Insert in
+/// terminals: Ghostty, kitty, Alacritty and foot paste the primary selection
+/// with it unless their config says otherwise, so the dictation was lost.
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
+pub(crate) fn wayland_keys(class: &str, tags: &[String]) -> &'static [&'static str] {
+    // An editor's own key first, even if a window rule tags it a terminal:
+    // Ctrl+Shift+V opens VS Code's Markdown preview.
+    if is_editor(class) {
+        &["-M", "shift", "-k", "Insert", "-m", "shift"]
+    } else if is_terminal(class, tags) {
+        &["-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
     } else {
-        ["-M", "ctrl", "-k", "v", "-m", "ctrl"]
+        &["-M", "ctrl", "-k", "v", "-m", "ctrl"]
     }
 }
 
 /// xdotool's paste key on X11: Ctrl+Shift+V in terminals.
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
-pub(crate) fn x11_key(class: &str) -> &'static str {
-    let terminal = regex::Regex::new("term|kitty|alacritty|ghostty|konsole|tilix|wezterm|foot|terminator").unwrap();
-    let class = class.to_lowercase();
-    if terminal.is_match(&class) {
-        "ctrl+shift+v"
-    } else if is_editor(&class) {
+pub(crate) fn x11_key(class: &str, tags: &[String]) -> &'static str {
+    if is_editor(class) {
         "shift+Insert"
+    } else if is_terminal(class, tags) {
+        "ctrl+shift+v"
     } else {
         "ctrl+v"
     }
@@ -194,23 +222,42 @@ mod linux {
         if std::env::var_os("DISPLAY").is_some() { paste_x11(parts) } else { false }
     }
 
+    /// The focused window as Hyprland describes it (empty elsewhere).
+    fn active_hyprland_window() -> crate::target::Window {
+        if which("hyprctl").is_none() {
+            return crate::target::Window::default();
+        }
+        hyprland_window(&output(command("hyprctl").args(["activewindow", "-j"]), Duration::from_secs(2)))
+    }
+
+    /// Send X11 keys (xdotool) rather than Wayland ones: the window runs under
+    /// XWayland and xdotool can reach it.
+    fn x11_keys_for(window: &crate::target::Window) -> bool {
+        window.xwayland && std::env::var_os("DISPLAY").is_some() && which("xdotool").is_some()
+    }
+
     fn paste_wayland(parts: &[Part]) -> bool {
         let types = output(command("wl-paste").arg("--list-types"), Duration::from_secs(2));
         let old_type = types.lines().next().unwrap_or_default().to_string();
         let old = if old_type.is_empty() { vec![] } else { bytes(command("wl-paste").args(["--no-newline", "--type", &old_type])) };
-        let (mut class, mut tags) = (String::new(), vec![]);
-        if which("hyprctl").is_some() {
-            let w = hyprland_window(&output(command("hyprctl").args(["activewindow", "-j"]), Duration::from_secs(2)));
-            (class, tags) = (w.app, w.tags);
-        }
-        let keys = wayland_keys(&class, &tags);
+        let window = active_hyprland_window();
+        // An XWayland window gets X11 keys: wtype's keymap doesn't reach it,
+        // so its Ctrl+V arrives as another key and nothing is pasted.
+        let x11 = x11_keys_for(&window);
+        let keys = wayland_keys(&window.app, &window.tags);
+        let x_key = x11_key(&window.app, &window.tags);
         for (i, part) in parts.iter().enumerate() {
             match part {
                 Part::File(path) => feed(command("wl-copy").args(["--type", "text/uri-list"]), format!("{}\r\n", file_uri(path.as_ref())).as_bytes()),
                 Part::Text(text) => feed(&mut command("wl-copy"), text.as_bytes()),
             };
             sleep(50);
-            if !quiet(command("wtype").args(keys)) {
+            let sent = if x11 {
+                quiet(command("xdotool").args(["key", "--clearmodifiers", x_key]))
+            } else {
+                quiet(command("wtype").args(keys))
+            };
+            if !sent {
                 return false;
             }
             if i + 1 < parts.len() {
@@ -235,7 +282,7 @@ mod linux {
         };
         let old = bytes(command(get[0]).args(&get[1..]));
         let class = output(command("xdotool").args(["getactivewindow", "getwindowclassname"]), Duration::from_secs(2));
-        let key = x11_key(class.trim());
+        let key = x11_key(class.trim(), &[]);
         for (i, part) in parts.iter().enumerate() {
             match part {
                 Part::File(path) if !copy_file.is_empty() => {
@@ -260,7 +307,9 @@ mod linux {
             Key::Enter => "Return",
             Key::Escape => "Escape",
         };
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() && which("wtype").is_some() {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() && x11_keys_for(&active_hyprland_window()) {
+            quiet(command("xdotool").args(["key", "--clearmodifiers", name]))
+        } else if std::env::var_os("WAYLAND_DISPLAY").is_some() && which("wtype").is_some() {
             quiet(command("wtype").args(["-k", name]))
         } else if std::env::var_os("DISPLAY").is_some() {
             quiet(command("xdotool").args(["key", "--clearmodifiers", name]))
@@ -328,13 +377,35 @@ mod tests {
     #[test]
     fn paste_keys_by_window() {
         let tags = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let ctrl_shift_v = ["-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"];
         assert_eq!(wayland_keys("brave-browser", &[]), ["-M", "ctrl", "-k", "v", "-m", "ctrl"]);
-        assert_eq!(wayland_keys("com.mitchellh.ghostty", &tags(&["terminal*"]))[3], "Insert");
-        assert_eq!(wayland_keys("whatever", &tags(&["terminal"]))[3], "Insert");
+        assert_eq!(wayland_keys("com.mitchellh.ghostty", &tags(&["terminal*"])), ctrl_shift_v);
+        // Without Omarchy's tag (another compositor setup), by the class.
+        assert_eq!(wayland_keys("com.mitchellh.ghostty", &[]), ctrl_shift_v);
+        assert_eq!(wayland_keys("kitty", &[]), ctrl_shift_v);
+        assert_eq!(wayland_keys("whatever", &tags(&["terminal"])), ctrl_shift_v);
         assert_eq!(wayland_keys("Cursor", &[])[3], "Insert");
         assert_eq!(wayland_keys("cursor-notes", &tags(&["terminals-not"]))[3], "v");
-        assert_eq!(x11_key("Alacritty"), "ctrl+shift+v");
-        assert_eq!(x11_key("Code"), "shift+Insert");
-        assert_eq!(x11_key("firefox"), "ctrl+v");
+        assert_eq!(x11_key("com.mitchellh.ghostty", &[]), "ctrl+shift+v");
+        // Editors keep their key even when tagged a terminal.
+        assert_eq!(wayland_keys("code", &tags(&["terminal*"]))[3], "Insert");
+        // Terminals by their whole class, not a word inside another app's.
+        for t in ["Alacritty", "foot", "org.wezfurlong.wezterm", "org.gnome.Terminal", "gnome-terminal-server",
+                  "xfce4-terminal", "org.kde.konsole", "org.gnome.Console", "org.gnome.Ptyxis", "dev.warp.Warp",
+                  "XTerm", "URxvt", "st-256color", "com.gexperts.Tilix"] {
+            assert_eq!(x11_key(t, &[]), "ctrl+shift+v", "{t}");
+        }
+        for app in ["app.drey.Warp", "Thermald-gui", "determination", "org.gnome.TextEditor", "steam"] {
+            assert_eq!(wayland_keys(app, &[])[3], "v", "{app}");
+        }
+        assert_eq!(x11_key("Alacritty", &[]), "ctrl+shift+v");
+        assert_eq!(x11_key("Code", &[]), "shift+Insert");
+        assert_eq!(x11_key("firefox", &[]), "ctrl+v");
+        // An XWayland terminal Hyprland tags, under a class we don't know.
+        assert_eq!(x11_key("my-term-app", &tags(&["terminal*"])), "ctrl+shift+v");
+        assert_eq!(x11_key("Code", &tags(&["terminal*"])), "shift+Insert");
+        // Ghostex is tagged a terminal, but its message box pastes with Ctrl+V.
+        assert_eq!(x11_key("ghostex", &tags(&["terminal*"])), "ctrl+v");
+        assert_eq!(wayland_keys("ghostex", &tags(&["terminal*"]))[3], "v");
     }
 }

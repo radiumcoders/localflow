@@ -118,7 +118,7 @@ pub fn focused_window() -> Window {
             }
             CFRelease(element);
         }
-        Window { app: ns_text(bundle as *const c_void), title, pid: Some(pid as u32), tags: vec![] }
+        Window { app: ns_text(bundle as *const c_void), title, pid: Some(pid as u32), tags: vec![], xwayland: false }
     }
 }
 
