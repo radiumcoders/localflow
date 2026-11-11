@@ -72,9 +72,40 @@ pub fn plausible(out: &str, text: &str, files: &[impl AsRef<str>]) -> bool {
 
 /// An answer of `<aside>` (nothing meant for the text) is believed only for a
 /// short dictation, or one said entirely under the speaker's breath: a model
-/// that drops half a minute of speech as an aside loses it for good.
+/// that drops half a minute of speech as an aside loses it for good. A reply
+/// ("yes", "ok") is never an aside, however short.
 pub fn believable_aside(text: &str) -> bool {
-    WORD.find_iter(&QUIET.replace_all(&text.to_lowercase(), " ")).count() <= 10
+    WORD.find_iter(&QUIET.replace_all(&text.to_lowercase(), " ")).count() <= 10 && !reply(text)
+}
+
+/// Words that are an answer on their own.
+const REPLIES: &str = "yes yeah yep yup no nope nah ok okay sure thanks please great cool nice good perfect fine \
+                       correct exactly absolutely definitely agreed done alright maybe";
+/// And answers of two words that aren't two of those.
+const REPLY_PHRASES: &[&str] = &["thank you", "got it", "sounds good", "of course", "not yet", "no problem", "all good", "go ahead"];
+
+/// A word or two that answer someone ("yes", "ok thanks"): little, but meant
+/// for the text. The cleanup model takes them for asides.
+fn reply(text: &str) -> bool {
+    let text = QUIET.replace_all(&text.to_lowercase(), " ").into_owned();
+    let said: Vec<&str> = WORD.find_iter(&text).map(|m| m.as_str()).collect();
+    matches!(said.len(), 1 | 2)
+        && (said.iter().all(|w| REPLIES.split_whitespace().any(|r| r == *w)) || REPLY_PHRASES.contains(&said.join(" ").as_str()))
+}
+
+/// A reply as a sentence, for when the model wouldn't write it: "yes" -> "Yes."
+fn reply_sentence(text: &str) -> String {
+    let said = as_heard(text);
+    let mut chars = said.chars();
+    let first = chars.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default();
+    let mut sentence = first + chars.as_str();
+    if sentence.get(..2).is_some_and(|ok| ok.eq_ignore_ascii_case("ok")) && !sentence[2..].starts_with(char::is_alphanumeric) {
+        sentence.replace_range(..2, "OK");
+    }
+    if !sentence.ends_with(['.', '!', '?']) {
+        sentence.push('.');
+    }
+    sentence
 }
 
 /// The transcript as heard, to paste when the cleanup can't be trusted.
@@ -335,6 +366,9 @@ impl Localflow {
             result.text = String::new();
             "aside".into()
         } else if out == ASIDE || !plausible(&out, text, files) {
+            if out == ASIDE && reply(text) {
+                result.text = reply_sentence(text); // "yes" is no aside: "Yes."
+            }
             "implausible".into() // keep what the speaker said
         } else if let Some(why) = (!by_haiku).then(|| unfaithful(text, &out)).flatten() {
             // Claude Haiku fixes misheard words the check can't tell from made-up ones.
@@ -413,6 +447,19 @@ mod tests {
         assert!(believable_aside("hang on, can you turn the music down"));
         assert!(believable_aside("<quiet>one sec I'm on a call, I'll call you right back after this meeting is done okay</quiet>"));
         assert!(!believable_aside("Much better, this is much better. Now we can add an SVG filter blob from bottom to top, 100 to 0%. Do it."));
+    }
+
+    #[test]
+    fn a_reply_is_never_an_aside() {
+        for said in ["yes", "Yes.", "ok", "Okay.", "yeah", "no", "sure", "thanks", "ok thanks", "Thank you."] {
+            assert!(reply(said) && !believable_aside(said), "{said}");
+        }
+        for said in ["hmm let me think", "hmm", "um okay", "one sec", "<quiet>yes</quiet>", "yes I think so", "wait"] {
+            assert!(!reply(said) && believable_aside(said), "{said}");
+        }
+        for (said, written) in [("yes", "Yes."), ("ok", "OK."), ("okay", "Okay."), ("Yes.", "Yes."), ("ok thanks", "OK thanks."), ("sure!", "Sure!")] {
+            assert_eq!(reply_sentence(said), written);
+        }
     }
 
     #[test]
