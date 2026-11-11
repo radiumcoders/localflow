@@ -220,6 +220,9 @@ impl Dictation {
                         if let Some(why) = &diagram.fallback {
                             warn(format_args!("{} didn't draw it ({why}): a model on this computer did", self.lf.cfg.diagram_model));
                         }
+                        for what in &diagram.left_out {
+                            warn(format_args!("not drawn: {what}"));
+                        }
                         self.ui.send(UiMsg::Hide);
                         std::thread::sleep(Duration::from_millis(100));
                         let pasted = paste_diagram(&diagram, &drawn, target.as_ref());

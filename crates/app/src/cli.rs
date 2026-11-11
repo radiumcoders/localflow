@@ -280,6 +280,9 @@ fn visualize_command(lf: &Localflow, args: &[String]) -> ExitCode {
             if let Some(why) = &d.fallback {
                 eprintln!("  {} didn't draw it ({why}): a model on this computer did", lf.cfg.diagram_model);
             }
+            for what in &d.left_out {
+                eprintln!("  not drawn: {what}");
+            }
             println!("{}", d.mermaid.trim_end());
             eprintln!("  a {} in {} ms: {}", d.kind.name(), start.elapsed().as_millis(), drawn.png.display());
             ExitCode::SUCCESS

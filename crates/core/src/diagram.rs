@@ -2,7 +2,7 @@
 //! we deploy: ...") becomes one. The model writes Mermaid, held by a grammar
 //! to the few forms localflow draws (a flowchart, a mind map, a sequence
 //! diagram), and `tidy` keeps what it meant: a small model that doesn't know
-//! when to stop goes round in circles, and the circles are cut off.
+//! when to stop goes round in circles, and what it repeats is drawn once.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -255,11 +255,14 @@ pub struct Diagram {
     /// Why the model in the settings didn't draw it, when another did
     /// (Claude couldn't be reached, so a model on this computer drew it).
     pub fallback: Option<String>,
+    /// What the model wrote that isn't in the drawing, and why: said (in the
+    /// terminal, in the log), never dropped quietly.
+    pub left_out: Vec<String>,
 }
 
 impl Diagram {
     pub fn new(kind: Kind, mermaid: String) -> Diagram {
-        Diagram { kind, mermaid, fallback: None }
+        Diagram { kind, mermaid, fallback: None, left_out: vec![] }
     }
 }
 
@@ -318,57 +321,81 @@ pub(crate) fn flowchart(direction: &str, labels: &[(String, Shape)], edges: &[(u
     Some(out)
 }
 
-/// The flowchart the model meant: each step once (a label written again is
-/// the same step), an id given a second label keeps its first, and the
-/// drawing stops where it starts going round (an edge drawn again, a step
-/// pointing at itself) or adds steps that are only loose ends.
-fn tidy_flowchart(lines: &[&str], direction: &str) -> Option<String> {
+/// The most steps a flowchart is drawn with.
+const MOST_STEPS: usize = 30;
+
+/// The flowchart the model meant, and what of its answer isn't in it. Each
+/// step once: a label written again is the same step (a decision and a step
+/// can share their words: "Add milk?" then "Add milk"), and an id given a
+/// second label keeps its first. A small model that doesn't know when to stop
+/// goes round: an arrow drawn again or a step pointing at itself is skipped,
+/// and the drawing goes on with what follows.
+fn tidy_flowchart(lines: &[&str], direction: &str) -> Option<(String, Vec<String>)> {
     let mut labels: Vec<(String, Shape)> = vec![]; // by node number
     let mut by_id: HashMap<String, usize> = HashMap::new();
-    let mut by_label: HashMap<String, usize> = HashMap::new();
+    let mut by_label: HashMap<(String, bool), usize> = HashMap::new();
     let mut edges: Vec<(usize, Option<String>, usize)> = vec![];
-    let mut seen: HashSet<(usize, usize)> = HashSet::new();
-    let mut node = |text: &str, labels: &mut Vec<(String, Shape)>| -> Option<usize> {
+    let mut left_out: Vec<String> = vec![];
+    // The node a line names: known by its id, else by its label, else new.
+    let mut node = |text: &str, labels: &mut Vec<(String, Shape)>, left_out: &mut Vec<String>| -> Option<usize> {
         let c = NODE.captures(text.trim())?;
         let id = c[1].to_string();
         let given = c.get(2).map(|m| (m.as_str(), Shape::Terminal))
             .or(c.get(3).map(|m| (m.as_str(), Shape::Step)))
             .or(c.get(4).map(|m| (m.as_str(), Shape::Decision)));
         if let Some(&n) = by_id.get(&id) {
-            return Some(n); // a new label on a known id is the model losing track: keep the first
-        }
-        let (label, shape) = given.map_or((id.clone(), Shape::Step), |(l, s)| (l.trim().to_string(), s));
-        if let Some(&n) = by_label.get(&key(&label)) {
-            by_id.insert(id, n);
+            // A new label on a known id is the model losing track: keep the first.
+            if let Some((label, _)) = given.filter(|(l, _)| key(l) != key(&labels[n].0)) {
+                left_out.push(format!("\"{}\": {id} is already \"{}\"", label.trim(), labels[n].0));
+            }
             return Some(n);
         }
-        by_label.insert(key(&label), labels.len());
-        by_id.insert(id, labels.len());
-        labels.push((label, shape));
-        let n = labels.len() - 1;
+        let (label, shape) = given.map_or((id.clone(), Shape::Step), |(l, s)| (l.trim().to_string(), s));
+        let n = *by_label.entry((key(&label), shape == Shape::Decision)).or_insert_with(|| {
+            labels.push((label, shape));
+            labels.len() - 1
+        });
+        by_id.insert(id, n);
         Some(n)
     };
-    for line in lines {
-        let line = line.trim();
-        if line.is_empty() {
+    let lines: Vec<&str> = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    for (i, line) in lines.iter().enumerate() {
+        let before = labels.len();
+        let arrow = EDGE.captures(line);
+        let ends = match &arrow {
+            Some(c) => node(&c[1], &mut labels, &mut left_out).zip(node(&c[3], &mut labels, &mut left_out)),
+            None => node(line, &mut labels, &mut left_out).map(|n| (n, n)),
+        };
+        if labels.len() > MOST_STEPS {
+            labels.truncate(before);
+            left_out.push(format!("what followed ({} lines): only {MOST_STEPS} steps are drawn", lines.len() - i));
+            break;
+        }
+        let Some((from, to)) = ends else {
+            left_out.push(format!("\"{line}\": not a step or an arrow"));
+            continue;
+        };
+        let Some(c) = arrow else { continue }; // a step on a line of its own
+        if from == to {
+            left_out.push(format!("\"{line}\": \"{}\" pointing at itself", labels[from].0));
             continue;
         }
-        let before = labels.len();
-        if let Some(c) = EDGE.captures(line) {
-            let (Some(from), Some(to)) = (node(&c[1], &mut labels), node(&c[3], &mut labels)) else { break };
-            if from == to || !seen.insert((from, to)) {
-                labels.truncate(before);
-                break; // going round
-            }
-            edges.push((from, c.get(2).map(|m| m.as_str().trim().to_string()), to));
-        } else if node(line, &mut labels).is_none() {
-            break;
-        }
-        if labels.len() > 30 {
-            break;
+        // The same arrow again (or again without its label) is the model going round.
+        let label = c.get(2).map(|m| m.as_str().trim().to_string()).filter(|l| !l.is_empty());
+        let again = |(a, l, b): &(usize, Option<String>, usize)| {
+            (*a, *b) == (from, to) && (label.is_none() || l.as_deref().map(key) == label.as_deref().map(key))
+        };
+        if !edges.iter().any(again) {
+            edges.push((from, label, to));
         }
     }
-    flowchart(direction, &labels, &edges)
+    let mermaid = flowchart(direction, &labels, &edges)?;
+    if !edges.is_empty() {
+        let used: HashSet<usize> = edges.iter().flat_map(|&(a, _, b)| [a, b]).collect();
+        let loose = labels.iter().enumerate().filter(|(n, _)| !used.contains(n));
+        left_out.extend(loose.map(|(_, (label, _))| format!("\"{label}\": no arrow to or from it")));
+    }
+    Some((mermaid, left_out))
 }
 
 /// The mind map, up to the first topic said again (where it goes round).
@@ -420,7 +447,8 @@ pub fn tidy(answer: &str) -> Option<Diagram> {
     let rest: Vec<&str> = lines.collect();
     if let Some(direction) = head.strip_prefix("flowchart ") {
         let direction = if direction.trim() == "LR" { "LR" } else { "TD" };
-        return tidy_flowchart(&rest, direction).map(|mermaid| Diagram::new(Kind::Flowchart, mermaid));
+        return tidy_flowchart(&rest, direction)
+            .map(|(mermaid, left_out)| Diagram { left_out, ..Diagram::new(Kind::Flowchart, mermaid) });
     }
     if head == "mindmap" {
         let (root, branches) = rest.split_first()?;
@@ -508,21 +536,66 @@ mod tests {
     }
 
     #[test]
-    fn flowchart_stops_going_round() {
+    fn flowchart_going_round_is_drawn_once() {
         let answer = "flowchart TD\n    A([Sign in]) --> B{Password right?}\n    B -->|Yes| C[Show dashboard]\n    \
                       B -->|No| D[Show error]\n    D --> A\n    C --> E[Show dashboard]\n    E --> F[Done]\n    \
                       A --> B\n    B --> C\n";
         let d = tidy(answer).unwrap();
         assert_eq!(d.kind, Kind::Flowchart);
+        // The step written again is the same step, the arrows drawn again are
+        // skipped, and "Done" after them is still drawn.
         assert_eq!(d.mermaid, "flowchart TD\n    N1([\"Sign in\"])\n    N2{\"Password right?\"}\n    \
-                               N3[\"Show dashboard\"]\n    N4[\"Show error\"]\n    N1 --> N2\n    \
-                               N2 -->|Yes| N3\n    N2 -->|No| N4\n    N4 --> N1\n");
+                               N3[\"Show dashboard\"]\n    N4[\"Show error\"]\n    N5[\"Done\"]\n    N1 --> N2\n    \
+                               N2 -->|Yes| N3\n    N2 -->|No| N4\n    N4 --> N1\n    N3 --> N5\n");
+        assert_eq!(d.left_out, ["\"C --> E[Show dashboard]\": \"Show dashboard\" pointing at itself"]);
         // An id given a new label keeps its first; the edge back to it is the loop.
         let answer = "flowchart LR\n    A[Open PR] --> B[Run tests]\n    B --> C[Merge]\n    C --> A[Something else]\n    \
                       A --> B\n";
-        assert_eq!(tidy(answer).unwrap().mermaid, "flowchart LR\n    N1[\"Open PR\"]\n    N2[\"Run tests\"]\n    \
-                                                    N3[\"Merge\"]\n    N1 --> N2\n    N2 --> N3\n    N3 --> N1\n");
+        let d = tidy(answer).unwrap();
+        assert_eq!(d.mermaid, "flowchart LR\n    N1[\"Open PR\"]\n    N2[\"Run tests\"]\n    \
+                               N3[\"Merge\"]\n    N1 --> N2\n    N2 --> N3\n    N3 --> N1\n");
+        assert_eq!(d.left_out, ["\"Something else\": A is already \"Open PR\""]);
         assert_eq!(tidy("flowchart TD\n    A[Only one]\n"), None);
+    }
+
+    #[test]
+    fn decision_and_step_with_the_same_words() {
+        // What Qwen3.5 2B drew for "making tea: boil water, add the tea bag,
+        // wait three minutes, remove the bag, add milk if you like". The
+        // decision "Add tea bag?" and the step "Add tea bag" were once one
+        // node, the arrow between them a loop, and the drawing ended there.
+        let answer = "flowchart TD\n    A[Start] --> B[Boil water]\n    B --> C{Add tea bag?}\n    \
+                      C -->|Yes| D[Add tea bag]\n    D --> E[Wait three minutes]\n    E --> F[Remove the bag]\n    \
+                      F --> G{Add milk?}\n    G -->|Yes| H[Add milk]\n    G -->|No| I[Done]\n    H --> I\n";
+        let d = tidy(answer).unwrap();
+        assert_eq!(d.mermaid, "flowchart TD\n    N1[\"Start\"]\n    N2[\"Boil water\"]\n    N3{\"Add tea bag?\"}\n    \
+                               N4[\"Add tea bag\"]\n    N5[\"Wait three minutes\"]\n    N6[\"Remove the bag\"]\n    \
+                               N7{\"Add milk?\"}\n    N8[\"Add milk\"]\n    N9[\"Done\"]\n    N1 --> N2\n    N2 --> N3\n    \
+                               N3 -->|Yes| N4\n    N4 --> N5\n    N5 --> N6\n    N6 --> N7\n    N7 -->|Yes| N8\n    \
+                               N7 -->|No| N9\n    N8 --> N9\n");
+        assert_eq!(d.left_out, [] as [&str; 0]);
+        // The same step under a new id is still one step (punctuation and case aside).
+        let d = tidy("flowchart TD\n    A[Boil water] --> B[Add milk]\n    C[boil water.] --> D[Stir]\n").unwrap();
+        assert_eq!(d.mermaid, "flowchart TD\n    N1[\"Boil water\"]\n    N2[\"Add milk\"]\n    N3[\"Stir\"]\n    \
+                               N1 --> N2\n    N1 --> N3\n");
+    }
+
+    #[test]
+    fn nothing_is_dropped_quietly() {
+        // A step pointing at itself, a line that isn't one, a step with no
+        // arrows: each skipped and said, and the lines after them drawn.
+        let answer = "flowchart TD\n    A[Wake up] --> A\n    A --> B[Shower]\n    B ==> C\n    Z[Nap]\n    \
+                      B -->|Late| D[Run]\n    B -->|Early| D\n    B --> D\n    B -->|late| D\n";
+        let d = tidy(answer).unwrap();
+        assert_eq!(d.mermaid, "flowchart TD\n    N1[\"Wake up\"]\n    N2[\"Shower\"]\n    N3[\"Run\"]\n    \
+                               N1 --> N2\n    N2 -->|Late| N3\n    N2 -->|Early| N3\n");
+        assert_eq!(d.left_out, ["\"A[Wake up] --> A\": \"Wake up\" pointing at itself",
+                                "\"B ==> C\": not a step or an arrow", "\"Nap\": no arrow to or from it"]);
+        // More steps than are drawn: the rest is said too.
+        let long: String = (0..40u8).map(|i| format!("    A{} --> {}{}\n", i % 10, (b'B' + i / 10) as char, i % 10)).collect();
+        let d = tidy(&format!("flowchart TD\n{long}")).unwrap();
+        assert_eq!(d.mermaid.matches(" --> ").count(), 20);
+        assert_eq!(d.left_out, ["what followed (20 lines): only 30 steps are drawn"]);
     }
 
     #[test]
