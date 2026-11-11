@@ -3,7 +3,7 @@
 //! models miss.
 
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::Instant;
 
@@ -28,6 +28,9 @@ static TITLE: LazyLock<Regex> = LazyLock::new(|| re(r"^[A-Z][\w'&/ -]{0,40}$"));
 static QUIET: LazyLock<Regex> = LazyLock::new(|| re(r"(?s)<quiet>.*?</quiet>"));
 static MARKER: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^\s*(?:\d+\.|[-*]|#+)\s"));
 static WORD: LazyLock<Regex> = LazyLock::new(|| re(r"[0-9]+(?:\.[0-9]+)?|[a-z0-9]+(?:'[a-z]+)?"));
+/// "2,000", and "31st" (already lowercase).
+static GROUPED: LazyLock<Regex> = LazyLock::new(|| re(r"[0-9]{1,3}(?:,[0-9]{3})+"));
+static ORDINAL: LazyLock<Regex> = LazyLock::new(|| re(r"([0-9])(?:st|nd|rd|th)\b"));
 
 /// The cleaned text, and how it got there (for logs and `--eval`).
 #[derive(Debug, Clone, PartialEq)]
@@ -123,28 +126,123 @@ const BIG_NUMBERS: &[(&str, u64)] = &[
 ];
 const SCALES: &[(&str, u64)] = &[("hundred", 100), ("thousand", 1_000), ("million", 1_000_000), ("billion", 1_000_000_000)];
 
-/// The numbers said in words, as digits: every run of number words, and each
-/// part of it ("five thirty" is 5, 30 and 35, for "5:30").
-fn spoken_numbers(said: &[String]) -> HashSet<String> {
-    let value = |w: &str| -> Option<(u64, bool)> {
-        // (value, is a scale); words() has already made zero to ten digits.
-        match w.parse::<u64>() {
-            Ok(n) if n <= 10 => Some((n, false)),
-            _ => BIG_NUMBERS.iter().chain(SCALES).find(|(name, _)| *name == w).map(|&(_, n)| (n, SCALES.iter().any(|(s, _)| *s == w))),
+/// The value of a number word: under a hundred, or a scale. Ordinals count
+/// ("thirty first" -> 31st), and so do the digits the speech model wrote itself.
+fn number(word: &str) -> Option<u64> {
+    if let Ok(n) = word.parse::<u64>() {
+        return (n < 100).then_some(n); // words() has made zero to ten digits
+    }
+    let cardinal = |w: &str| {
+        let small = NUMBERS.iter().position(|n| *n == w).map(|n| n as u64);
+        small.or_else(|| BIG_NUMBERS.iter().chain(SCALES).find(|(name, _)| *name == w).map(|&(_, n)| n))
+    };
+    cardinal(word).or_else(|| match word {
+        "first" => Some(1),
+        "second" => Some(2),
+        "third" => Some(3),
+        "fifth" => Some(5),
+        "eighth" => Some(8),
+        "ninth" => Some(9),
+        "twelfth" => Some(12),
+        // "twentieth", "sixth", "hundredth"
+        _ => word.strip_suffix("ieth").and_then(|w| cardinal(&format!("{w}y"))).or_else(|| cardinal(word.strip_suffix("th")?)),
+    })
+}
+
+/// Number words read out in a row, a unit joining the tens before it: "four
+/// oh four" is 404, "twenty twenty six" 2026, "five thirty" 530.
+#[derive(Default)]
+struct Row {
+    digits: String,
+    tens: bool,
+}
+
+impl Row {
+    /// False for what can't be read out this way: a scale, or too long to be a number.
+    fn push(&mut self, n: u64) -> bool {
+        if self.tens && (1..=9).contains(&n) {
+            self.digits.pop();
+        }
+        self.digits += &n.to_string();
+        self.tens = n >= 20 && n.is_multiple_of(10);
+        n < 100 && self.digits.len() <= 18
+    }
+}
+
+/// A number said in words is this many words at most ("nine hundred ninety
+/// nine million ..." is 14): a speech model stuck on "one one one" costs nothing.
+const RUN: usize = 20;
+
+/// What the numbers said in words may be written as, each with the words it
+/// stands for (from, to): every run of number words and each part of it,
+/// added up ("one hundred and twenty" is 120) and read out in a row ("five
+/// thirty" is 5, 30, 35 and 530, for "5:30"), a decimal ("two point five" is
+/// 2.5), and the minutes of "half past nine" (30).
+fn spoken_numbers(said: &[String]) -> HashMap<String, Vec<(usize, usize)>> {
+    let mut found: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+    let mut add = |written: String, from: usize, to: usize| {
+        let spans = found.entry(written).or_default();
+        if spans.last() != Some(&(from, to)) {
+            spans.push((from, to));
         }
     };
-    let mut found = HashSet::new();
+    let word = |i: usize| said.get(i).map_or("", String::as_str);
+    let zero = |w: &str| matches!(w, "oh" | "o");
     for start in 0..said.len() {
-        let (mut total, mut current) = (0u64, 0u64);
-        for word in &said[start..] {
-            let Some((n, scale)) = value(word) else { break };
-            match (scale, n) {
-                // A speech model stuck repeating "hundred" mustn't overflow.
-                (false, _) => current = current.saturating_add(n),
-                (true, 100) => current = current.max(1).saturating_mul(100),
-                (true, _) => (total, current) = (total.saturating_add(current.max(1).saturating_mul(n)), 0),
+        match (word(start), word(start + 1)) {
+            ("half", "past") => add("30".into(), start, start + 2),
+            ("quarter", "past") => add("15".into(), start, start + 2),
+            ("quarter", "to" | "till") => {
+                add("45".into(), start, start + 2);
+                if let Some(hour) = number(word(start + 2)).filter(|h| (1..=12).contains(h)) {
+                    add(((hour + 10) % 12 + 1).to_string(), start, start + 3); // the hour before
+                }
             }
-            found.insert(total.saturating_add(current).to_string());
+            ("o'clock", _) => add("00".into(), start, start + 1),
+            _ => {}
+        }
+        let (mut total, mut current) = (0u64, 0u64);
+        let mut row = Some(Row::default());
+        let mut i = start;
+        while i < said.len().min(start + RUN) {
+            let n = match number(word(i)) {
+                Some(n) => n,
+                None if i > start && zero(word(i)) => 0,
+                // "one hundred and twenty"
+                None if i > start && word(i) == "and" && number(word(i - 1)).is_some_and(|n| n >= 100) && number(word(i + 1)).is_some_and(|n| n < 100) => {
+                    i += 1;
+                    continue;
+                }
+                // "one and a half"
+                None if i > start && (word(i), word(i + 1), word(i + 2)) == ("and", "a", "half") => {
+                    add(format!("{}.5", total.saturating_add(current)), start, i + 3);
+                    break;
+                }
+                // "two point five", "point five": the whole of what follows, not "3.1" of "three point one four"
+                None if matches!(word(i), "point" | "dot") => {
+                    let (mut decimals, mut end) = (Row::default(), i + 1);
+                    while end < said.len().min(start + RUN) && number(word(end)).or(zero(word(end)).then_some(0)).is_some_and(|n| decimals.push(n)) {
+                        end += 1;
+                    }
+                    if end > i + 1 {
+                        add(format!("{}.{}", total.saturating_add(current), decimals.digits), start, end);
+                    }
+                    break;
+                }
+                None => break,
+            };
+            match n {
+                // A speech model stuck repeating "hundred" mustn't overflow.
+                100 => current = current.max(1).saturating_mul(100),
+                n if n > 100 => (total, current) = (total.saturating_add(current.max(1).saturating_mul(n)), 0),
+                n => current = current.saturating_add(n),
+            }
+            add(total.saturating_add(current).to_string(), start, i + 1);
+            row = row.filter(|_| n < 100).and_then(|mut row| row.push(n).then_some(row));
+            if let Some(row) = &row {
+                add(row.digits.clone(), start, i + 1);
+            }
+            i += 1;
         }
     }
     found
@@ -184,6 +282,8 @@ fn words(text: &str) -> Vec<String> {
     let text = QUIET.replace_all(text, " ");
     let text = MARKER.replace_all(&text, " ");
     let text = FILE_REF.replace_all(&text, " ").to_lowercase().replace('%', " percent").replace('\u{2019}', "'");
+    let text = GROUPED.replace_all(&text, |grouped: &regex::Captures| grouped[0].replace(',', ""));
+    let text = ORDINAL.replace_all(&text, "$1");
     WORD.find_iter(&text)
         .map(|m| NUMBERS.iter().position(|n| *n == m.as_str()).map_or(m.as_str().to_string(), |n| n.to_string()))
         .collect()
@@ -200,12 +300,12 @@ fn alike(a: &str, b: &str) -> f64 {
 /// respelled ("post gress" -> Postgres, "Claw" -> Claude), another form of it,
 /// or a small word for grammar. A number has to be one they said (in words,
 /// `numbers`, or digits).
-fn explained(word: &str, said: &[String], numbers: &HashSet<String>) -> bool {
+fn explained(word: &str, said: &[String], numbers: &HashMap<String, Vec<(usize, usize)>>) -> bool {
     if small(word) {
         return true;
     }
     if word.starts_with(|c: char| c.is_ascii_digit()) {
-        return said.iter().any(|w| w == word) || numbers.contains(word);
+        return said.iter().any(|w| w == word) || numbers.contains_key(word);
     }
     let stem = |w: &str| w.chars().take(4).collect::<String>();
     (0..said.len()).any(|i| {
@@ -228,7 +328,7 @@ pub fn unfaithful(text: &str, out: &str) -> Option<String> {
     let numbers = spoken_numbers(&said);
     let times = |words: &[String], word: &String| words.iter().filter(|w| *w == word).count();
     for op in SequenceMatcher::new(&said, &wrote).opcodes() {
-        let (gone, new) = (&said[op.i1..op.i2], &wrote[op.j1..op.j2]);
+        let new = &wrote[op.j1..op.j2];
         let near = &said[op.i1.saturating_sub(NEAR)..(op.i2 + NEAR).min(said.len())];
         if matches!(op.tag, Tag::Replace | Tag::Insert) {
             let made_up = |w: &&String| match negation(w) {
@@ -245,7 +345,12 @@ pub fn unfaithful(text: &str, out: &str) -> Option<String> {
             if let Some(not) = flipped(&said, op.i1, op.i2, new) {
                 return Some(format!("dropped {not:?}"));
             }
-            let lost: Vec<&str> = gone.iter().filter(|w| !small(w) && !kept.contains(w)).map(String::as_str).collect();
+            // Number words the cleanup wrote as digits aren't lost.
+            let digits: Vec<(usize, usize)> = new.iter().filter_map(|w| numbers.get(w)).flatten().copied().collect();
+            let lost: Vec<&str> = (op.i1..op.i2)
+                .filter(|i| !small(&said[*i]) && !kept.contains(&said[*i]) && !digits.iter().any(|(from, to)| (*from..*to).contains(i)))
+                .map(|i| said[i].as_str())
+                .collect();
             if lost.len() >= 3 && !near.iter().any(|w| cue(w)) {
                 return Some(format!("dropped {:?}", lost.join(" ")));
             }
@@ -465,6 +570,57 @@ mod tests {
     fn repeated_number_words_dont_overflow() {
         let said = format!("{} billion dollars", "hundred ".repeat(30));
         assert!(unfaithful(&said, &format!("{said}.")).is_none());
+        // Nor take long, nor panic, when a speech model is stuck on one.
+        for stuck in ["nine ", "ninety nine thousand ", "one hundred and ", "two point ", "half past quarter to ", "twentieth oh "] {
+            let said = stuck.repeat(300);
+            assert!(unfaithful(&said, &said).is_none());
+            assert!(unfaithful(&said, "9999999999999999999999999999999999999999 and 18446744073709551616.").is_some());
+        }
+    }
+
+    #[test]
+    fn numbers_written_as_digits_pass() {
+        for (said, out) in [
+            ("one hundred twenty", "120."),
+            ("it costs one hundred and twenty dollars", "It costs $120."),
+            ("three hundred sixty five days", "365 days."),
+            ("we have two thousand and five users", "We have 2,005 users."),
+            ("the ratio is two point five", "The ratio is 2.5."),
+            ("version three point one four", "Version 3.14."),
+            ("ninety nine point nine percent uptime", "99.9% uptime."),
+            ("it weighs point five kilos", "It weighs 0.5 kilos."),
+            ("it takes one and a half hours", "It takes 1.5 hours."),
+            ("the deadline is in twenty twenty six", "The deadline is in 2026."),
+            ("we launch in twenty twenty seven", "We launch in 2027."),
+            ("back in nineteen ninety nine", "Back in 1999."),
+            ("it's due on the thirty first", "It's due on the 31st."),
+            ("on the twenty fifth of March", "On the 25th of March."),
+            ("the page returns a four oh four", "The page returns a 404."),
+            ("room two oh four", "Room 204."),
+            ("call me at five five five one two three four", "Call me at 555-1234."),
+            ("my number is five five five one two three four", "My number is 555-1-234."),
+            ("let's meet at half past nine", "Let's meet at 9:30."),
+            ("see you at quarter to nine", "See you at 8:45."),
+            ("see you at nine o'clock", "See you at 9:00."),
+        ] {
+            assert_eq!(unfaithful(said, out), None, "{said}");
+        }
+    }
+
+    #[test]
+    fn wrong_digits_are_caught() {
+        // The first three are localflow-clean's own.
+        for (said, out) in [
+            ("two thousand and five", "2,050."),
+            ("call me at five five five one two three four", "Call me at 5:55."),
+            ("version three point one four", "Version 3.1.4."),
+            ("one hundred twenty", "130."),
+            ("the deadline is in twenty twenty six", "The deadline is in 2025."),
+            ("let's meet at half past nine", "Let's meet at 9:15."),
+            ("open ports eighty and four four three and eight thousand", "Open ports 80."),
+        ] {
+            assert!(unfaithful(said, out).is_some(), "{said}");
+        }
     }
 
     #[test]
