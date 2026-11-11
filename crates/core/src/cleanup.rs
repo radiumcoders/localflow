@@ -530,21 +530,23 @@ pub fn unfaithful(text: &str, out: &str, vocabulary: &[String]) -> Option<String
     let numbers = spoken_numbers(&said);
     let terms = terms(vocabulary);
     let misheard: Vec<(usize, usize)> = terms.iter().flat_map(|t| t.misheard(&said, &kept)).collect();
-    let times = |words: &[String], word: &String| words.iter().filter(|w| *w == word).count();
     let written = wrote.as_slice();
     for op in SequenceMatcher::new(&said, &wrote).opcodes() {
         let new = &wrote[op.j1..op.j2];
         let near = &said[op.i1.saturating_sub(NEAR)..(op.i2 + NEAR).min(said.len())];
         if matches!(op.tag, Tag::Replace | Tag::Insert) {
+            // As many negations as the speaker said here ("do not" -> "don't"): one more is made up,
+            // however near another is ("I can't believe it works" -> "... it doesn't work").
+            let said_here = said[op.i1..op.i2].iter().filter(|w| negation(w)).count();
+            let negations: Vec<usize> = (op.j1..op.j2).filter(|j| negation(&wrote[*j])).collect();
             // One word said, written as two or three ("nextjs" -> Next.js, "cannot" -> can not).
             let split = |j: usize| {
                 let around = |k: usize| (j.saturating_sub(k - 1)..=j).filter_map(move |from| written.get(from..from + k));
                 (2..=3).any(|k| around(k).any(|parts| near.contains(&parts.concat())))
             };
-            let made_up = |j: &usize| match negation(&wrote[*j]) {
-                // Only one the speaker said, here ("do not" -> "don't") or as often elsewhere.
-                true => !near.iter().any(|n| negation(n)) && times(&wrote, &wrote[*j]) > times(&said, &wrote[*j]),
-                false => !explained(&wrote[*j], &said, near, &numbers, &terms) && !split(*j),
+            let made_up = |j: &usize| match negations.iter().position(|n| n == j) {
+                Some(nth) => nth >= said_here,
+                None => !explained(&wrote[*j], &said, near, &numbers, &terms) && !split(*j),
             };
             let added: Vec<&str> = (op.j1..op.j2).filter(made_up).map(|j| wrote[j].as_str()).collect();
             if !added.is_empty() {
@@ -962,10 +964,15 @@ mod tests {
             ("the test is passing", "The test is not passing."),
             ("merge this", "Don't merge this."),
             ("it\u{2019}s ready so don\u{2019}t wait", "It's ready so wait."),
+            // Another negation nearby doesn't make this one said.
+            ("I can't believe it works", "I can't believe it doesn't work."),
+            ("it's not ready and it works", "It's not ready and it never works."),
+            ("I don't think it works", "I think it doesn't work."),
         ] {
             assert!(unfaithful(said, out).is_some(), "{said}");
         }
         assert_eq!(unfaithful("do not merge this", "Merge this."), Some("dropped \"not\"".into()));
+        assert_eq!(unfaithful("I can't believe it works", "I can't believe it doesn't work."), Some("added \"doesn't\"".into()));
     }
 
     #[test]
