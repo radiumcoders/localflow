@@ -370,9 +370,17 @@ fn cue(word: &str) -> bool {
     TAKE_BACK.contains(&word) || matches!(word, "no" | "not" | "hmm" | "think")
 }
 
-/// A word that turns what's said around.
+/// What "n't" goes on: "don't", "can't", "won't".
+const NOT_ON: &[&str] = &[
+    "do", "does", "did", "is", "are", "was", "were", "has", "have", "had", "ca", "wo", "sha", "ai", "could", "would",
+    "should", "must", "might", "need",
+];
+
+/// A word that turns what's said around. "Don't" is one however the speech
+/// model spelled it ("dont", "cant", "isnt").
 fn negation(word: &str) -> bool {
     word.ends_with("n't")
+        || word.strip_suffix("nt").is_some_and(|on| NOT_ON.contains(&on))
         || matches!(word, "not" | "no" | "never" | "cannot" | "without" | "nor" | "neither" | "none" | "nothing" | "nobody" | "nowhere" | "nope")
 }
 
@@ -968,6 +976,9 @@ mod tests {
             ("I can't believe it works", "I can't believe it doesn't work."),
             ("it's not ready and it works", "It's not ready and it never works."),
             ("I don't think it works", "I think it doesn't work."),
+            ("I dont know what happened", "I know what happened."),
+            ("it wont start", "It will start."),
+            ("I want to merge it", "I don't want to merge it."),
         ] {
             assert!(unfaithful(said, out).is_some(), "{said}");
         }
@@ -992,6 +1003,16 @@ mod tests {
             ("I don't I don't know", "I don't know."),
             ("no no no that's wrong", "No, that's wrong."),
             ("the retry logic never backs off", "The retry logic never backs off."),
+            // The same negation, however it was spelled or split.
+            ("I dont know what happened", "I don't know what happened."),
+            ("I cant make it on Friday", "I can't make it on Friday."),
+            ("it wont start", "It won't start."),
+            ("that isnt right", "That isn't right."),
+            ("it doesnt work", "It doesn't work."),
+            ("it does not work", "It doesn't work."),
+            ("I can not make it", "I cannot make it."),
+            ("I can't make it", "I cannot make it."),
+            ("it isn't ready", "It is not ready."),
         ] {
             assert_eq!(unfaithful(said, out), None, "{said}");
         }
