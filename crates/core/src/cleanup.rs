@@ -625,8 +625,9 @@ fn flipped<'a>(said: &'a [String], i1: usize, i2: usize, new: &[String], wrote: 
     if repeated {
         return None;
     }
-    // A word that takes something back, which the cleanup took out with it ("don't wait" has none).
-    let cue = |w: &String| TAKE_BACK.contains(&w.as_str()) && w != "oh" && !wrote.contains(w);
+    // A word that takes something back, which the cleanup took out with it: "don't wait" has
+    // none, nor "that does not mean it works" -> "That means it works."
+    let cue = |w: &String| TAKE_BACK.contains(&w.as_str()) && w != "oh" && !wrote.iter().any(|kept| same_word(w, kept));
     let content = |w: &String| !small(w) && !negation(w);
     let taken_back = |k: usize| {
         let not = said[k].as_str();
@@ -1061,6 +1062,8 @@ mod tests {
             ("oh there are no errors in the build", "There are errors in the build."),
             ("actually there are no errors in the build", "There are errors in the build."),
             ("it's not working oh and call mom", "It's working and call mom."),
+            ("that does not mean it works", "That means it works."),
+            ("I'm not waiting for the build", "I'm waiting for the build."),
             ("actually it's not passing", "It's passing."),
             // None of something isn't filler, nor is a filler "no" a negation to write somewhere else.
             ("no errors so far", "Errors so far."),
