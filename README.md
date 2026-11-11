@@ -42,10 +42,14 @@ Download `localflow-<version>-x64.msi` from
 [Releases](https://github.com/radiumcoders/localflow/releases) and open it. It
 installs localflow to Program Files, adds it to the Start menu and starts it
 when you sign in. Open localflow from the Start menu: the first time, the
-onboarding opens. Pick a speech model (it downloads while you go on), and
-localflow downloads its own cleanup model (351 MB) too and runs it itself:
-there's nothing else to install. Then try a dictation in the window. Open it
-from the Start menu again to change the settings. Uninstall it from Settings > Apps;
+onboarding opens. Pick a speech model (it downloads while you go on), then
+what cleans up: Claude Haiku 5.5 with your own Anthropic API key (recommended:
+it's more accurate, and what you say is sent to Anthropic to be cleaned up),
+or localflow's own model, which runs on your computer so nothing leaves it.
+localflow downloads its own cleanup model (351 MB) either way and runs it
+itself, also when Claude can't be reached: there's nothing else to install.
+Then try a dictation in the window. Open it from the Start menu again to
+change the settings. Uninstall it from Settings > Apps;
 that leaves your settings and vocabulary in `%APPDATA%\localflow` and the
 models in `%LOCALAPPDATA%\localflow`, which you can delete.
 
@@ -91,7 +95,8 @@ chmod +x localflow-*-x86_64.AppImage
 ./localflow-*-x86_64.AppImage
 ```
 
-The onboarding opens. Once you've picked a speech model, it copies
+The onboarding opens. Once you've picked a speech model and what cleans up
+(Claude Haiku 5.5 with your API key, or localflow's own model), it copies
 localflow to `~/.local/share/localflow/app` (your key bindings run it from
 there, so the AppImage can go anywhere, or away) and adds it to your app
 launcher; then it shows the key bindings to add, with a Copy button, and lets
@@ -171,9 +176,10 @@ of ~6 MB waits for the hotkey and starts it; on Linux your key bindings do.
 2. **Cleanup**: localflow's own model, `localflow-clean`, cleans and formats
    the transcript, with the spellings in your `words.txt`. It learned the
    rules from examples, so it gets no long prompt: it loads while you speak
-   and answers in ~0.06 s on a GPU. Or, in Settings > Cleanup, Claude Haiku
-   5.5 with your Anthropic API key: better, at ~1 s and the transcript sent to
-   Anthropic. When Claude can't be reached, localflow-clean steps in.
+   and answers in ~0.06 s on a GPU. Or Claude Haiku 5.5 with your Anthropic
+   API key, which the onboarding recommends (Settings > Cleanup changes it):
+   more accurate, at ~1 s and the transcript sent to Anthropic. When Claude
+   can't be reached, localflow-clean steps in.
 
 If the cleanup model can't run, answers with something much longer than you
 said, adds words you never said ("root 2" becoming "1.5") or leaves out a
