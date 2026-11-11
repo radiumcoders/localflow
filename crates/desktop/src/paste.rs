@@ -88,26 +88,34 @@ fn is_editor(class: &str) -> bool {
     ["cursor", "code", "code-oss", "codium", "vscodium", "windsurf"].contains(&class.to_lowercase().as_str())
 }
 
-/// wtype's arguments for the paste keys on Wayland: Shift+Insert in terminals
-/// (a Hyprland "terminal" tag, as Omarchy's universal paste checks) and
-/// editors, Ctrl+V elsewhere.
+/// A terminal, by its class or Hyprland's "terminal" tag (dynamic tags carry
+/// a trailing "*").
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
-pub(crate) fn wayland_keys(class: &str, tags: &[String]) -> [&'static str; 6] {
-    if tags.iter().any(|t| t == "terminal" || t == "terminal*") || is_editor(class) {
-        ["-M", "shift", "-k", "Insert", "-m", "shift"]
+fn is_terminal(class: &str, tags: &[String]) -> bool {
+    crate::target::TERMINALS.is_match(class) || tags.iter().any(|t| t.trim_end_matches('*') == "terminal")
+}
+
+/// wtype's arguments for the paste keys on Wayland: Ctrl+Shift+V in
+/// terminals, Shift+Insert in editors, Ctrl+V elsewhere. Not Shift+Insert in
+/// terminals: Ghostty, kitty, Alacritty and foot paste the primary selection
+/// with it unless their config says otherwise, so the dictation was lost.
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
+pub(crate) fn wayland_keys(class: &str, tags: &[String]) -> &'static [&'static str] {
+    if is_terminal(class, tags) {
+        &["-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
+    } else if is_editor(class) {
+        &["-M", "shift", "-k", "Insert", "-m", "shift"]
     } else {
-        ["-M", "ctrl", "-k", "v", "-m", "ctrl"]
+        &["-M", "ctrl", "-k", "v", "-m", "ctrl"]
     }
 }
 
 /// xdotool's paste key on X11: Ctrl+Shift+V in terminals.
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 pub(crate) fn x11_key(class: &str) -> &'static str {
-    let terminal = regex::Regex::new("term|kitty|alacritty|ghostty|konsole|tilix|wezterm|foot|terminator").unwrap();
-    let class = class.to_lowercase();
-    if terminal.is_match(&class) {
+    if is_terminal(class, &[]) {
         "ctrl+shift+v"
-    } else if is_editor(&class) {
+    } else if is_editor(class) {
         "shift+Insert"
     } else {
         "ctrl+v"
@@ -328,11 +336,16 @@ mod tests {
     #[test]
     fn paste_keys_by_window() {
         let tags = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let ctrl_shift_v = ["-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"];
         assert_eq!(wayland_keys("brave-browser", &[]), ["-M", "ctrl", "-k", "v", "-m", "ctrl"]);
-        assert_eq!(wayland_keys("com.mitchellh.ghostty", &tags(&["terminal*"]))[3], "Insert");
-        assert_eq!(wayland_keys("whatever", &tags(&["terminal"]))[3], "Insert");
+        assert_eq!(wayland_keys("com.mitchellh.ghostty", &tags(&["terminal*"])), ctrl_shift_v);
+        // Without Omarchy's tag (another compositor setup), by the class.
+        assert_eq!(wayland_keys("com.mitchellh.ghostty", &[]), ctrl_shift_v);
+        assert_eq!(wayland_keys("kitty", &[]), ctrl_shift_v);
+        assert_eq!(wayland_keys("whatever", &tags(&["terminal"])), ctrl_shift_v);
         assert_eq!(wayland_keys("Cursor", &[])[3], "Insert");
         assert_eq!(wayland_keys("cursor-notes", &tags(&["terminals-not"]))[3], "v");
+        assert_eq!(x11_key("com.mitchellh.ghostty"), "ctrl+shift+v");
         assert_eq!(x11_key("Alacritty"), "ctrl+shift+v");
         assert_eq!(x11_key("Code"), "shift+Insert");
         assert_eq!(x11_key("firefox"), "ctrl+v");
