@@ -264,6 +264,28 @@ impl Diagram {
     pub fn new(kind: Kind, mermaid: String) -> Diagram {
         Diagram { kind, mermaid, fallback: None, left_out: vec![] }
     }
+
+    /// A flowchart laid out the way the speaker asked for: left to right when
+    /// they said so. Their words decide, not whether the model caught them
+    /// (the local one draws top-down whatever is said).
+    pub(crate) fn laid_out_for(mut self, request: &Request) -> Diagram {
+        if self.kind == Kind::Flowchart
+            && left_to_right(&request.about)
+            && let Some(rest) = self.mermaid.strip_prefix("flowchart TD\n")
+        {
+            self.mermaid = format!("flowchart LR\n{rest}");
+        }
+        self
+    }
+}
+
+/// "Left to right", "horizontal": the flowchart is asked to go across.
+static ACROSS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(?:left[\s-]+to[\s-]+right|horizontal(?:ly)?)\b").unwrap());
+
+/// The dictation asks for a flowchart that goes from left to right.
+pub fn left_to_right(about: &str) -> bool {
+    ACROSS.is_match(about)
 }
 
 /// A label for Mermaid: in quotes, so its punctuation is only text.
@@ -495,7 +517,7 @@ impl Localflow {
         // Cut off at the limit is fine: tidy keeps what came before the circles.
         let (answer, _) =
             engine.as_mut().unwrap().complete_with(&prompt(request), Some(&grammar(request.kind)), 900).map_err(Error)?;
-        tidy(&answer).ok_or_else(|| Error("couldn't draw that".into()))
+        tidy(&answer).map(|d| d.laid_out_for(request)).ok_or_else(|| Error("couldn't draw that".into()))
     }
 }
 
@@ -602,6 +624,27 @@ mod tests {
         let d = tidy(&format!("flowchart TD\n{long}")).unwrap();
         assert_eq!(d.mermaid.matches(" --> ").count(), 20);
         assert_eq!(d.left_out, ["what followed (20 lines): only 30 steps are drawn"]);
+    }
+
+    #[test]
+    fn left_to_right_when_said() {
+        let ask = |said: &str| request(said).unwrap();
+        let drawn = |said: &str, answer: &str| tidy(answer).unwrap().laid_out_for(&ask(said)).mermaid;
+        let top_down = "flowchart TD\n    A[Write code] --> B[Open a pull request]\n    B --> C[Merge]\n";
+        // The model drew it top-down; the speaker said left to right.
+        for said in ["Visualize a flowchart left to right: write code, open a pull request, merge",
+                     "Draw a flowchart of the release, from left-to-right: write code, open a pull request, merge",
+                     "Visualize the release as a horizontal flowchart: write code, open a pull request, merge",
+                     "Flowchart: write code, open a pull request, merge, laid out horizontally"] {
+            assert!(drawn(said, top_down).starts_with("flowchart LR\n    N1[\"Write code\"]\n"), "{said}");
+        }
+        // Not said: as the model drew it, either way.
+        let plain = "Visualize the release: write code, open a pull request, then merge right away";
+        assert!(drawn(plain, top_down).starts_with("flowchart TD\n"));
+        assert!(drawn(plain, &top_down.replace(" TD", " LR")).starts_with("flowchart LR\n"));
+        // Only a flowchart has a direction.
+        let mindmap = "mindmap\n  root((Layout))\n    Left to right\n    Top down\n";
+        assert_eq!(drawn("Mind map of layouts: left to right, and top down", mindmap), mindmap);
     }
 
     #[test]
