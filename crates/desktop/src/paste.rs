@@ -98,10 +98,18 @@ static TERMINAL_CLASS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
     .unwrap()
 });
 
+/// Apps Hyprland tags "terminal" whose text box takes Ctrl+V: Ghostex's
+/// message box ignores Ctrl+Shift+V (its terminal pane is the other way round,
+/// but the message box is where you talk to it).
+const NOT_TERMINALS: [&str; 1] = ["ghostex"];
+
 /// A terminal, by its class or Hyprland's "terminal" tag (dynamic tags carry
 /// a trailing "*").
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 fn is_terminal(class: &str, tags: &[String]) -> bool {
+    if NOT_TERMINALS.iter().any(|a| a.eq_ignore_ascii_case(class)) {
+        return false;
+    }
     TERMINAL_CLASS.is_match(class) || tags.iter().any(|t| t.trim_end_matches('*') == "terminal")
 }
 
@@ -124,10 +132,10 @@ pub(crate) fn wayland_keys(class: &str, tags: &[String]) -> &'static [&'static s
 
 /// xdotool's paste key on X11: Ctrl+Shift+V in terminals.
 #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
-pub(crate) fn x11_key(class: &str) -> &'static str {
+pub(crate) fn x11_key(class: &str, tags: &[String]) -> &'static str {
     if is_editor(class) {
         "shift+Insert"
-    } else if is_terminal(class, &[]) {
+    } else if is_terminal(class, tags) {
         "ctrl+shift+v"
     } else {
         "ctrl+v"
@@ -237,7 +245,7 @@ mod linux {
         // so its Ctrl+V arrives as another key and nothing is pasted.
         let x11 = x11_keys_for(&window);
         let keys = wayland_keys(&window.app, &window.tags);
-        let x_key = x11_key(&window.app);
+        let x_key = x11_key(&window.app, &window.tags);
         for (i, part) in parts.iter().enumerate() {
             match part {
                 Part::File(path) => feed(command("wl-copy").args(["--type", "text/uri-list"]), format!("{}\r\n", file_uri(path.as_ref())).as_bytes()),
@@ -274,7 +282,7 @@ mod linux {
         };
         let old = bytes(command(get[0]).args(&get[1..]));
         let class = output(command("xdotool").args(["getactivewindow", "getwindowclassname"]), Duration::from_secs(2));
-        let key = x11_key(class.trim());
+        let key = x11_key(class.trim(), &[]);
         for (i, part) in parts.iter().enumerate() {
             match part {
                 Part::File(path) if !copy_file.is_empty() => {
@@ -378,20 +386,26 @@ mod tests {
         assert_eq!(wayland_keys("whatever", &tags(&["terminal"])), ctrl_shift_v);
         assert_eq!(wayland_keys("Cursor", &[])[3], "Insert");
         assert_eq!(wayland_keys("cursor-notes", &tags(&["terminals-not"]))[3], "v");
-        assert_eq!(x11_key("com.mitchellh.ghostty"), "ctrl+shift+v");
+        assert_eq!(x11_key("com.mitchellh.ghostty", &[]), "ctrl+shift+v");
         // Editors keep their key even when tagged a terminal.
         assert_eq!(wayland_keys("code", &tags(&["terminal*"]))[3], "Insert");
         // Terminals by their whole class, not a word inside another app's.
         for t in ["Alacritty", "foot", "org.wezfurlong.wezterm", "org.gnome.Terminal", "gnome-terminal-server",
                   "xfce4-terminal", "org.kde.konsole", "org.gnome.Console", "org.gnome.Ptyxis", "dev.warp.Warp",
                   "XTerm", "URxvt", "st-256color", "com.gexperts.Tilix"] {
-            assert_eq!(x11_key(t), "ctrl+shift+v", "{t}");
+            assert_eq!(x11_key(t, &[]), "ctrl+shift+v", "{t}");
         }
         for app in ["app.drey.Warp", "Thermald-gui", "determination", "org.gnome.TextEditor", "steam"] {
             assert_eq!(wayland_keys(app, &[])[3], "v", "{app}");
         }
-        assert_eq!(x11_key("Alacritty"), "ctrl+shift+v");
-        assert_eq!(x11_key("Code"), "shift+Insert");
-        assert_eq!(x11_key("firefox"), "ctrl+v");
+        assert_eq!(x11_key("Alacritty", &[]), "ctrl+shift+v");
+        assert_eq!(x11_key("Code", &[]), "shift+Insert");
+        assert_eq!(x11_key("firefox", &[]), "ctrl+v");
+        // An XWayland terminal Hyprland tags, under a class we don't know.
+        assert_eq!(x11_key("my-term-app", &tags(&["terminal*"])), "ctrl+shift+v");
+        assert_eq!(x11_key("Code", &tags(&["terminal*"])), "shift+Insert");
+        // Ghostex is tagged a terminal, but its message box pastes with Ctrl+V.
+        assert_eq!(x11_key("ghostex", &tags(&["terminal*"])), "ctrl+v");
+        assert_eq!(wayland_keys("ghostex", &tags(&["terminal*"]))[3], "v");
     }
 }
