@@ -34,7 +34,7 @@ const USAGE: &str = "localflow: talk, and get clean text where you type
     localflow transcribe FILE.wav    # a 16-bit WAV through the speech model and the cleanup
     localflow record SECONDS FILE.wav
     echo \"meet at 3 wait at 2\" | localflow -
-    localflow --check                # does the cleanup model load?
+    localflow --check                # does the cleanup work: the model loads, Claude Haiku answers
     localflow --eval                 # run cases.txt through the cleanup model
     localflow --selftest             # check each piece that doesn't need a person
     localflow --version";
@@ -48,10 +48,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let lf = Localflow::new(Config::from_env());
     let arg = |i: usize| args.get(i).map(String::as_str);
     match arg(0).unwrap_or_default() {
-        "--check" => match lf.warm() {
-            Ok(()) => println!("ok: {}", lf.cfg.model),
-            Err(e) => return fail(format!("{}: {e}", lf.cfg.model)),
-        },
+        "--check" => return check_command(&lf),
         "--eval" => {
             if let Err(e) = eval::run(&lf) {
                 return fail(e);
@@ -116,6 +113,35 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Does the cleanup work? What's chosen is tried: Claude Haiku with one tiny
+/// request, the model on this computer by loading it. With Haiku, the local
+/// model is checked too: it cleans up when Claude can't be reached. The exit
+/// status is the chosen one's.
+fn check_command(lf: &Localflow) -> ExitCode {
+    let local = lf.check_local();
+    if !lf.cfg.cleanup_haiku {
+        return match local {
+            Ok(()) => {
+                println!("ok: {}", lf.cfg.model);
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(format!("{}: {e}", lf.cfg.model)),
+        };
+    }
+    let haiku = lf.check_haiku();
+    match &haiku {
+        Ok(()) => println!("ok: {}", diagram::HAIKU),
+        Err(e) => eprintln!("localflow: {}: {e}", diagram::HAIKU),
+    }
+    let role = if haiku.is_ok() { "steps in when Claude can't be reached" } else { "cleans up instead" };
+    match local {
+        Ok(()) => println!("ok: {} ({role})", lf.cfg.model),
+        Err(e) if haiku.is_ok() => eprintln!("localflow: {}: {e} (nothing steps in when Claude can't be reached)", lf.cfg.model),
+        Err(e) => eprintln!("localflow: {}: {e}", lf.cfg.model),
+    }
+    if haiku.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
 fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         None | Some("list") => {
@@ -125,9 +151,19 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
                 let chosen = if m.id == current { "  (in use)" } else { "" };
                 println!("{mark} {:<24} {:>5} MB  {}{chosen}\n    {}", m.id, m.size_mb(), m.name, m.note);
             }
-            let mark = if cfg.local_model_installed() { "✓" } else { " " };
-            let chosen = if cfg.model == MODEL.id { "  (in use)" } else { "" };
+            // With Claude Haiku, the local model is what steps in when Claude can't.
+            let local = if cfg.cleanup_haiku { "  (when Claude can't be reached)" } else { "  (in use)" };
+            let ours = Config { model: MODEL.id.into(), ..cfg.clone() };
+            let mark = if ours.local_model_installed() { "✓" } else { " " };
+            let chosen = if cfg.model == MODEL.id { local } else { "" };
             println!("\ncleanup:\n{mark} {:<24} {:>5} MB  {}{chosen}", MODEL.id, MODEL.size_mb(), MODEL.name);
+            if cfg.model != MODEL.id {
+                let mark = if cfg.local_model_installed() { "✓" } else { " " };
+                println!("{mark} {}  your file{local}", cfg.model);
+            }
+            let key = if cfg.anthropic_key.is_some() { "✓" } else { " " };
+            let chosen = if cfg.cleanup_haiku { "  (in use)" } else { "" };
+            println!("{key} {:<24} {:>8}  Claude Haiku 5.5, your Anthropic API key{chosen}", diagram::HAIKU, "API");
             println!("\ndiagrams (\"visualize ...\"):");
             for m in &diagram::MODELS {
                 let here = Config { diagram_model: m.id.into(), ..cfg.clone() }.diagram_model_installed();

@@ -41,6 +41,15 @@ fn local_model_not_downloaded_says_so() {
 }
 
 #[test]
+fn check_asks_claude_when_haiku_cleans_up() {
+    // `localflow --check` with Claude Haiku chosen: Claude is asked (here
+    // there's no key, and it says so) instead of the local model answering "ok".
+    let lf = Localflow::new(config(&[("LOCALFLOW_CLEANUP", "claude-haiku-5-5")], temp_dir("check-haiku")));
+    assert!(lf.cfg.cleanup_haiku && lf.cfg.anthropic_key.is_none());
+    assert_eq!(lf.check_haiku().unwrap_err().0, "no Anthropic API key (Settings > Cleanup)");
+}
+
+#[test]
 fn env_file() {
     let dir = temp_dir("envfile");
     std::fs::write(dir.join("env"), "LOCALFLOW_MODEL=/m/mine.gguf\nNOT_OURS=1\n").unwrap();

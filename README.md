@@ -458,7 +458,7 @@ localflow visualize "a flowchart of how we deploy: …"   # Mermaid on stdout, t
 localflow listen 5                   # record 5 s, transcribe, clean up, print (segments and levels on stderr)
 localflow transcribe talk.wav        # the same from a WAV file
 echo "call mom tomorrow actually tonight" | localflow -
-localflow --check                    # does the cleanup model load?
+localflow --check                    # does the cleanup work: the model loads, Claude Haiku answers
 localflow --eval                     # cases.txt against the cleanup model
 localflow --selftest                 # each piece that doesn't need a person
 localflow quit                       # stop the background app (macOS, Windows)

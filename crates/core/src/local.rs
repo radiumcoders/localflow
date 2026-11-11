@@ -126,13 +126,18 @@ impl Localflow {
     }
 
     /// Load the model while the speaker is still talking, so it's ready when
-    /// the dictation arrives. Also how the settings check the model works.
-    /// Nothing to load when Claude Haiku cleans up (the local model loads
-    /// only when Claude can't be reached).
+    /// the dictation arrives. Nothing to load when Claude Haiku cleans up
+    /// (the local model loads only when Claude can't be reached).
     pub fn warm(&self) -> Result<()> {
         if self.cfg.cleanup_haiku && self.cfg.anthropic_key.is_some() {
             return Ok(());
         }
+        self.load_local()
+    }
+
+    /// Does the cleanup model on this computer load? For `localflow --check`,
+    /// also when Claude Haiku cleans up: it's what steps in when Claude can't.
+    pub fn check_local(&self) -> Result<()> {
         self.load_local()
     }
 }
