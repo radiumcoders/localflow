@@ -114,10 +114,28 @@ fn app(exe: &Path, args: &[&str], env: &[(&str, String)]) -> Result<String, Stri
 /// The sentence as 16 kHz mono 16-bit speech, from the OS's text-to-speech.
 fn speak(dir: &Path) -> Result<(PathBuf, f32), String> {
     let wav = dir.join("speech.wav");
+    let seconds = |wav: &Path| std::fs::read(wav).map_or(0.0, |b| b.len().saturating_sub(44) as f32 / 32000.0);
     if cfg!(target_os = "macos") {
+        // The default voice can be one that isn't downloaded (the Apple
+        // Silicon runners' since November 2026): `say` then writes a near-empty
+        // file. Fall back to voices that ship with macOS.
         let aiff = dir.join("speech.aiff");
-        run("say", &["-o", &s(&aiff), SENTENCE])?;
-        run("afconvert", &["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", &s(&aiff), &s(&wav)])?;
+        for voice in ["", "Samantha", "Alex", "Daniel", "Fred"] {
+            let mut args = vec!["-o".to_string(), s(&aiff)];
+            if !voice.is_empty() {
+                args.extend(["-v".to_string(), voice.to_string()]);
+            }
+            args.push(SENTENCE.to_string());
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            if run("say", &args).is_err() {
+                continue;
+            }
+            run("afconvert", &["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", &s(&aiff), &s(&wav)])?;
+            if seconds(&wav) >= 1.0 {
+                break;
+            }
+            println!("say{}: only {:.1}s of speech", if voice.is_empty() { String::new() } else { format!(" -v {voice}") }, seconds(&wav));
+        }
     } else if cfg!(windows) {
         let ps = format!(
             "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
@@ -132,9 +150,11 @@ fn speak(dir: &Path) -> Result<(PathBuf, f32), String> {
         run("espeak-ng", &["-w", &s(&raw), SENTENCE])?;
         run("ffmpeg", &["-loglevel", "error", "-y", "-i", &s(&raw), "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", &s(&wav)])?;
     }
-    let bytes = std::fs::read(&wav).map_err(|e| e.to_string())?;
-    let seconds = bytes.len().saturating_sub(44) as f32 / 32000.0;
-    Ok((wav, seconds))
+    let secs = seconds(&wav);
+    if secs < 1.0 {
+        return Err(format!("text-to-speech made only {secs:.1}s of speech"));
+    }
+    Ok((wav, secs))
 }
 
 fn setup(exe: &Path, start: bool) -> Result<String, String> {
