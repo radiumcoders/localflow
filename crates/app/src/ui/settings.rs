@@ -3,6 +3,7 @@
 //! ("visualize …"), dictation, and the keys to dictate with. Saves to the env file the rest of localflow reads
 //! (`localflow_core::Config`).
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -184,10 +185,7 @@ impl SettingsView {
             check: Job::Idle,
             diagram_model: cfg.diagram_model.clone(),
             drawn: Job::Idle,
-            anthropic_key: cx.new(|cx| {
-                let hint = if cfg.anthropic_key.is_some() { "saved (type to replace)" } else { "sk-ant-…" };
-                InputState::new(window, cx).placeholder(hint).masked(true)
-            }),
+            anthropic_key: cx.new(|cx| key_input(cfg.anthropic_key.is_some(), window, cx)),
             has_key: cfg.anthropic_key.is_some(),
             submit: pick(SUBMIT, submit),
             history: cfg.history,
@@ -381,35 +379,47 @@ impl SettingsView {
         let lf = self.engine(cx);
         self.job(
             cx,
-            move |_| {
-                let start = std::time::Instant::now();
-                let cleaned = lf.clean_detailed("um so testing one two three", localflow_core::NO_FILES).map_err(|e| e.0)?;
-                // Claude couldn't clean up: say why, not "works".
-                match cleaned.verdict.split_once("Claude Haiku: ") {
-                    Some((_, why)) => Err(why.split("; ").next().unwrap_or(why).to_string()),
-                    None if lf.cfg.cleanup_haiku => Ok(format!("Works: Claude Haiku 5.5 in {:.1} s", start.elapsed().as_secs_f32())),
-                    None => Ok(format!("Works: {}", lf.cfg.model)),
-                }
-            },
+            move |_| check_cleanup(&lf),
             |this, job| this.check = job,
             |ok| ok,
         );
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        let changes = self.changes(cx);
-        let dir = self.cfg.config_dir.clone();
-        let pairs: Vec<(&str, Option<&str>)> = changes.iter().map(|(k, v)| (*k, v.as_deref())).collect();
         let key = self.typed_key(cx);
-        let saved = save_settings(&dir, &pairs)
-            .and_then(|_| key.as_deref().map_or(Ok(()), |k| save_anthropic_key(&dir, k)))
-            .map_err(|e| e.to_string());
+        let saved = write_settings(&self.cfg.config_dir, &self.changes(cx), key.as_deref());
         self.has_key |= key.is_some() && saved.is_ok();
         self.saved = match saved.and_then(|_| after_save()) {
             Ok(()) => Job::Done("Saved".into()),
             Err(e) => Job::Failed(format!("Couldn't save: {e}")),
         };
         cx.notify();
+    }
+}
+
+/// The field your Anthropic API key is typed in, hidden as you type. `saved`:
+/// there's a key already, and typing one replaces it.
+pub(super) fn key_input(saved: bool, window: &mut Window, cx: &mut Context<InputState>) -> InputState {
+    let hint = if saved { "saved (type to replace)" } else { "sk-ant-…" };
+    InputState::new(window, cx).placeholder(hint).masked(true)
+}
+
+/// Save the env-file changes in `dir` and, when one was typed, your API key
+/// next to it.
+pub(super) fn write_settings(dir: &Path, changes: &[(&'static str, Option<String>)], key: Option<&str>) -> Result<(), String> {
+    let pairs: Vec<(&str, Option<&str>)> = changes.iter().map(|(k, v)| (*k, v.as_deref())).collect();
+    save_settings(dir, &pairs).and_then(|_| key.map_or(Ok(()), |k| save_anthropic_key(dir, k))).map_err(|e| e.to_string())
+}
+
+/// Clean up a few words with `lf`: what cleaned them up, or why Claude couldn't.
+pub(super) fn check_cleanup(lf: &Localflow) -> Result<String, String> {
+    let start = std::time::Instant::now();
+    let cleaned = lf.clean_detailed("um so testing one two three", localflow_core::NO_FILES).map_err(|e| e.0)?;
+    // Claude couldn't clean up: say why, not "works".
+    match cleaned.verdict.split_once("Claude Haiku: ") {
+        Some((_, why)) => Err(why.split("; ").next().unwrap_or(why).to_string()),
+        None if lf.cfg.cleanup_haiku => Ok(format!("Works: Claude Haiku 5.5 in {:.1} s", start.elapsed().as_secs_f32())),
+        None => Ok(format!("Works: {}", lf.cfg.model)),
     }
 }
 
@@ -440,6 +450,38 @@ fn percent((done, total): (u64, u64)) -> f32 {
 
 fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg().path(SharedString::from(format!("icons/{name}.svg"))).size(px(size)).flex_none().text_color(color)
+}
+
+/// The Anthropic API key's field: its label, and where the key is typed.
+pub(super) fn key_row(key: &Entity<InputState>, p: &Palette) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .child(div().w(px(64.)).flex_none().text_size(px(13.)).text_color(p.dim).child("API key"))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(px(36.))
+                .flex()
+                .items_center()
+                .px(px(16.))
+                .rounded_full()
+                .bg(p.muted)
+                .text_size(px(14.))
+                .child(Input::new(key).appearance(false).mask_toggle()),
+        )
+}
+
+/// The small print under the API key's field.
+pub(super) fn key_note(note: &'static str, p: &Palette) -> Div {
+    div().text_size(px(12.)).line_height(px(17.)).text_color(p.dim).child(note)
+}
+
+/// The Anthropic API key's field, with a note on what it's used for.
+fn key_field(key: &Entity<InputState>, note: &'static str, p: &Palette) -> Div {
+    div().flex().flex_col().gap(px(8.)).child(key_row(key, p)).child(key_note(note, p))
 }
 
 /// Rows between dashed lines, with a dashed line between each.
@@ -682,7 +724,8 @@ impl SettingsView {
             })
             .collect();
         let key = self.cleanup_haiku.then(|| {
-            self.key_field(
+            key_field(
+                &self.anthropic_key,
                 "From console.anthropic.com, kept on this computer, readable only by you. Each dictation's transcript \
                  is sent to Anthropic; without a connection, localflow's model cleans it up here.",
                 p,
@@ -720,35 +763,6 @@ impl SettingsView {
                     .child(self.local_settings(p, cx))
                     .child(test),
             )
-    }
-
-    /// The Anthropic API key's field, with a note on what it's used for.
-    fn key_field(&self, note: &'static str, p: &Palette) -> Div {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(16.))
-                    .child(div().w(px(64.)).flex_none().text_size(px(13.)).text_color(p.dim).child("API key"))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h(px(36.))
-                            .flex()
-                            .items_center()
-                            .px(px(16.))
-                            .rounded_full()
-                            .bg(p.muted)
-                            .text_size(px(14.))
-                            .child(Input::new(&self.anthropic_key).appearance(false).mask_toggle()),
-                    ),
-            )
-            .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.dim).child(note))
     }
 
     fn local_settings(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
@@ -912,7 +926,8 @@ impl SettingsView {
         let custom = (self.diagram_model != "off" && !haiku && !diagram::MODELS.iter().any(|m| m.id == self.diagram_model))
             .then(|| mono(format!("Using {}", self.diagram_model), p));
         let key = haiku.then(|| {
-            self.key_field(
+            key_field(
+                &self.anthropic_key,
                 "From console.anthropic.com, kept on this computer, readable only by you. Only a dictation that asks \
                  for a diagram is sent; without a connection, a model downloaded here draws it.",
                 p,
