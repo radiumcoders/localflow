@@ -27,9 +27,22 @@ fn entries(text: &str) -> impl Iterator<Item = String> + '_ {
     text.lines().map(str::trim).filter(|w| !w.is_empty() && !w.starts_with('#')).map(String::from)
 }
 
+/// A vocabulary line's term and the ways it's misheard: 'Claude: the AI
+/// assistant, often heard as "Claw" or "clawed"' is ("Claude", ["Claw", "clawed"]).
+pub(crate) fn term(line: &str) -> Hint {
+    let (term, hint) = line.split_once(':').unwrap_or((line, ""));
+    let heard = hint.split_once("heard as").map(|(_, heard)| QUOTED.captures_iter(heard).map(|c| c[1].to_string()).collect());
+    (term.trim().to_string(), heard.unwrap_or_default())
+}
+
+/// The vocabulary localflow ships with (words.txt).
+pub(crate) fn shipped() -> Vec<String> {
+    entries(WORDS).collect()
+}
+
 impl Localflow {
     pub fn vocabulary(&self) -> Vec<String> {
-        let mut words: Vec<String> = entries(WORDS).collect();
+        let mut words = shipped();
         if let Ok(mine) = std::fs::read_to_string(self.cfg.user_words()) {
             words.extend(entries(&mine));
         }
@@ -39,14 +52,7 @@ impl Localflow {
     /// (term, [ways it gets misheard]) from words.txt lines like
     /// 'Pine Script: TradingView's language, often heard as "Py script"'.
     pub fn misheard_hints(&self) -> Vec<Hint> {
-        self.vocabulary()
-            .iter()
-            .filter_map(|w| {
-                let (term, hint) = w.split_once(':')?;
-                let (_, heard) = hint.split_once("heard as")?;
-                Some((term.trim().to_string(), QUOTED.captures_iter(heard).map(|c| c[1].to_string()).collect()))
-            })
-            .collect()
+        self.vocabulary().iter().filter(|w| w.split_once(':').is_some_and(|(_, hint)| hint.contains("heard as"))).map(|w| term(w)).collect()
     }
 
     /// Add corrections to your vocabulary as 'Claude: often heard as "Claw"'
