@@ -149,9 +149,10 @@ o.bind("F8", "Learn from a dictation correction", "~/.local/share/localflow/app/
 
 Raw dictation pastes the transcript as heard, without cleanup. On other
 desktops, add custom shortcuts running `localflow toggle` (or `start` on
-press and `stop` on release). It pastes with Ctrl+V in apps, Shift+Insert in
-terminals and VS Code-family editors (their chat panels ignore a synthetic
-Ctrl+V), restoring your clipboard after. Where the paste keys can't be sent
+press and `stop` on release). It pastes with Ctrl+V in apps, Ctrl+Shift+V in
+terminals (Ghostty, kitty, Alacritty, foot...) and Shift+Insert in VS
+Code-family editors (their chat panels ignore a synthetic Ctrl+V), restoring
+your clipboard after. Where the paste keys can't be sent
 (GNOME's Wayland session doesn't allow `wtype`), the text stays on the
 clipboard and the pill says so: press Ctrl+V.
 
@@ -501,7 +502,7 @@ what `localflow --selftest` checks on yours.
 - Only text on the clipboard is put back after a paste; a copied image or
   file is gone.
 - On Wayland desktops other than Hyprland, localflow can't see which window
-  has focus, so terminals there get Ctrl+V (not Shift+Insert) and coding
+  has focus, so terminals there get Ctrl+V (not Ctrl+Shift+V) and coding
   agents aren't recognised.
 
 ## Layout
