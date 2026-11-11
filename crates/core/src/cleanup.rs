@@ -22,6 +22,8 @@ fn re(pattern: &str) -> Regex {
 
 static DICTATION_TAG: LazyLock<Regex> = LazyLock::new(|| re(r"</?(?:dictation|quiet)>"));
 static FILE_REF: LazyLock<Regex> = LazyLock::new(|| re(r"@(\S+)"));
+/// An email address: its @ is the word "at", not a file reference.
+static EMAIL: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)([a-z0-9._%+-]+)@([a-z0-9-]+(?:\.[a-z0-9-]+)+)"));
 static SECTION_LEADIN: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)^(?:on|for|about|regarding) (?:the )?([\w'&/ -]{1,30}?)(?: side| front)?:$"));
 static TITLE: LazyLock<Regex> = LazyLock::new(|| re(r"^[A-Z][\w'&/ -]{0,40}$"));
@@ -254,6 +256,10 @@ const FILLER: &str = "um uh er ah hmm like so okay ok yeah you know mean actuall
 /// Small words the cleanup may add, drop or swap for grammar.
 const GRAMMAR: &str = "a an the and or but to of in on for at is are was be it this that these those with as i we you \
                        they he she my our your their make do does have has will would should can there here what";
+/// Symbols said as words, which the cleanup writes as the symbol
+/// ("example dot com slash docs" -> example.com/docs).
+const SYMBOLS: &[&str] = &["dot", "slash", "colon", "dash", "hyphen", "underscore"];
+
 /// Words that take back what was said before them.
 const TAKE_BACK: &[&str] = &["wait", "sorry", "actually", "mean", "scratch", "rather", "instead", "oh"];
 
@@ -276,11 +282,12 @@ fn small(word: &str) -> bool {
 const NEAR: usize = 3;
 
 /// Lowercase words, with what the cleanup legitimately adds or removes (list
-/// markers, @file references, muttered parts) left out, and number words as
-/// digits.
+/// markers, @file references, muttered parts) left out, number words as
+/// digits, and the @ of an email address as the "at" that was said.
 fn words(text: &str) -> Vec<String> {
     let text = QUIET.replace_all(text, " ");
     let text = MARKER.replace_all(&text, " ");
+    let text = EMAIL.replace_all(&text, "$1 at $2");
     let text = FILE_REF.replace_all(&text, " ").to_lowercase().replace('%', " percent").replace('\u{2019}', "'");
     let text = GROUPED.replace_all(&text, |grouped: &regex::Captures| grouped[0].replace(',', ""));
     let text = ORDINAL.replace_all(&text, "$1");
@@ -348,7 +355,8 @@ pub fn unfaithful(text: &str, out: &str) -> Option<String> {
             // Number words the cleanup wrote as digits aren't lost.
             let digits: Vec<(usize, usize)> = new.iter().filter_map(|w| numbers.get(w)).flatten().copied().collect();
             let lost: Vec<&str> = (op.i1..op.i2)
-                .filter(|i| !small(&said[*i]) && !kept.contains(&said[*i]) && !digits.iter().any(|(from, to)| (*from..*to).contains(i)))
+                .filter(|i| !small(&said[*i]) && !SYMBOLS.contains(&said[*i].as_str()) && !kept.contains(&said[*i]))
+                .filter(|i| !digits.iter().any(|(from, to)| (*from..*to).contains(i)))
                 .map(|i| said[i].as_str())
                 .collect();
             if lost.len() >= 3 && !near.iter().any(|w| cue(w)) {
@@ -672,6 +680,23 @@ mod tests {
         ] {
             assert_eq!(unfaithful(said, out), None, "{said}");
         }
+    }
+
+    #[test]
+    fn spoken_addresses_are_the_written_ones() {
+        for (said, out) in [
+            ("send it to jay at example dot com", "Send it to jay@example.com."),
+            ("email me at jay dot smith at example dot com", "Email me at jay.smith@example.com."),
+            ("send it to jay@example.com today", "Send it to jay@example.com today."),
+            ("go to example dot com slash docs", "Go to example.com/docs."),
+            ("it's at https colon slash slash example dot com", "It's at https://example.com."),
+        ] {
+            assert_eq!(unfaithful(said, out), None, "{said}");
+        }
+        assert!(unfaithful("send it to jay at example dot com", "Send it to jay@gmail.com.").is_some());
+        assert!(unfaithful("send it to jay", "Send it to jay@example.com.").is_some());
+        // A file reference is still no word of the speaker's.
+        assert_eq!(words("check @src/settings.py and jay@example.com"), ["check", "and", "jay", "at", "example", "com"]);
     }
 
     #[test]
