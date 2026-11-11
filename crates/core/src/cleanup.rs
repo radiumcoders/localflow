@@ -156,8 +156,26 @@ const FILLER: &str = "um uh er ah hmm like so okay ok yeah you know mean actuall
 /// Small words the cleanup may add, drop or swap for grammar.
 const GRAMMAR: &str = "a an the and or but to of in on for at is are was be it this that these those with as i we you \
                        they he she my our your their make do does have has will would should can there here what";
-/// Words near a dropped stretch that say it was replaced or set aside.
-const CUES: &[&str] = &["wait", "no", "sorry", "actually", "mean", "scratch", "rather", "instead", "oh", "not", "hmm", "think"];
+/// Words that take back what was said before them.
+const TAKE_BACK: &[&str] = &["wait", "sorry", "actually", "mean", "scratch", "rather", "instead", "oh"];
+
+/// A word near a dropped stretch that says it was replaced or set aside.
+fn cue(word: &str) -> bool {
+    TAKE_BACK.contains(&word) || matches!(word, "no" | "not" | "hmm" | "think")
+}
+
+/// A word that turns what's said around.
+fn negation(word: &str) -> bool {
+    word.ends_with("n't")
+        || matches!(word, "not" | "no" | "never" | "cannot" | "without" | "nor" | "neither" | "none" | "nothing" | "nobody" | "nowhere" | "nope")
+}
+
+fn small(word: &str) -> bool {
+    FILLER.split(' ').chain(GRAMMAR.split(' ')).any(|w| w == word)
+}
+
+/// How many words either side of a change count as near it.
+const NEAR: usize = 3;
 
 /// Lowercase words, with what the cleanup legitimately adds or removes (list
 /// markers, @file references, muttered parts) left out, and number words as
@@ -165,7 +183,7 @@ const CUES: &[&str] = &["wait", "no", "sorry", "actually", "mean", "scratch", "r
 fn words(text: &str) -> Vec<String> {
     let text = QUIET.replace_all(text, " ");
     let text = MARKER.replace_all(&text, " ");
-    let text = FILE_REF.replace_all(&text, " ").to_lowercase().replace('%', " percent");
+    let text = FILE_REF.replace_all(&text, " ").to_lowercase().replace('%', " percent").replace('\u{2019}', "'");
     WORD.find_iter(&text)
         .map(|m| NUMBERS.iter().position(|n| *n == m.as_str()).map_or(m.as_str().to_string(), |n| n.to_string()))
         .collect()
@@ -183,7 +201,7 @@ fn alike(a: &str, b: &str) -> f64 {
 /// or a small word for grammar. A number has to be one they said (in words,
 /// `numbers`, or digits).
 fn explained(word: &str, said: &[String], numbers: &HashSet<String>) -> bool {
-    if FILLER.split(' ').chain(GRAMMAR.split(' ')).any(|w| w == word) {
+    if small(word) {
         return true;
     }
     if word.starts_with(|c: char| c.is_ascii_digit()) {
@@ -202,28 +220,63 @@ fn explained(word: &str, said: &[String], numbers: &HashSet<String>) -> bool {
 /// stretch of what they said left out, with no correction near it ("Do it
 /// fast. I need it done fast." gone). Small models do both; the transcript as
 /// heard is better than either.
+/// A negation left out, or put in, turns the sentence around however little
+/// else changed ("the test is not passing" -> "The test is passing.").
 pub fn unfaithful(text: &str, out: &str) -> Option<String> {
     let (said, wrote) = (words(text), words(out));
     let kept: HashSet<&String> = wrote.iter().collect();
     let numbers = spoken_numbers(&said);
-    let small = |w: &String| FILLER.split(' ').chain(GRAMMAR.split(' ')).any(|f| f == w);
+    let times = |words: &[String], word: &String| words.iter().filter(|w| *w == word).count();
     for op in SequenceMatcher::new(&said, &wrote).opcodes() {
+        let (gone, new) = (&said[op.i1..op.i2], &wrote[op.j1..op.j2]);
+        let near = &said[op.i1.saturating_sub(NEAR)..(op.i2 + NEAR).min(said.len())];
         if matches!(op.tag, Tag::Replace | Tag::Insert) {
-            let new: Vec<&str> = wrote[op.j1..op.j2].iter().filter(|w| !explained(w, &said, &numbers)).map(String::as_str).collect();
-            if !new.is_empty() {
-                return Some(format!("added {:?}", new.join(" ")));
+            let made_up = |w: &&String| match negation(w) {
+                // Only one the speaker said, here ("do not" -> "don't") or as often elsewhere.
+                true => !near.iter().any(|n| negation(n)) && times(&wrote, w) > times(&said, w),
+                false => !explained(w, &said, &numbers),
+            };
+            let added: Vec<&str> = new.iter().filter(made_up).map(String::as_str).collect();
+            if !added.is_empty() {
+                return Some(format!("added {:?}", added.join(" ")));
             }
         }
         if matches!(op.tag, Tag::Replace | Tag::Delete) {
-            let lost: Vec<&str> =
-                said[op.i1..op.i2].iter().filter(|w| !small(w) && !kept.contains(w)).map(String::as_str).collect();
-            let near = &said[op.i1.saturating_sub(3)..(op.i2 + 3).min(said.len())];
-            if lost.len() >= 3 && !near.iter().any(|w| CUES.contains(&w.as_str())) {
+            if let Some(not) = flipped(&said, op.i1, op.i2, new) {
+                return Some(format!("dropped {not:?}"));
+            }
+            let lost: Vec<&str> = gone.iter().filter(|w| !small(w) && !kept.contains(w)).map(String::as_str).collect();
+            if lost.len() >= 3 && !near.iter().any(|w| cue(w)) {
                 return Some(format!("dropped {:?}", lost.join(" ")));
             }
         }
     }
     None
+}
+
+/// The negation the cleanup left out of said[i1..i2] (which it wrote as
+/// `new`), if that turns the sentence around. It doesn't when what was
+/// negated went with it ("it's not good, it's great" -> "It's great."), when
+/// it was said twice, or when "no" takes back what came before it ("at
+/// three, no, four").
+fn flipped<'a>(said: &'a [String], i1: usize, i2: usize, new: &[String]) -> Option<&'a str> {
+    let gone = &said[i1..i2];
+    let negations = |words: &[String]| words.iter().filter(|w| negation(w)).count();
+    let (before, after) = (&said[..i1], &said[i2..]);
+    let repeated = after.starts_with(gone)
+        || before.ends_with(gone)
+        || gone.iter().all(|w| after.first() == Some(w) || before.last() == Some(w));
+    if negations(gone) <= negations(new) || repeated {
+        return None;
+    }
+    let near = &said[i1.saturating_sub(NEAR)..(i2 + NEAR).min(said.len())];
+    let taken_back = near.iter().any(|w| TAKE_BACK.contains(&w.as_str()));
+    let content = |w: &String| !small(w) && !negation(w);
+    (0..gone.len()).filter(|&k| negation(&gone[k])).map(|k| (k, gone[k].as_str())).find_map(|(k, not)| {
+        let went_with_it = gone[k + 1..].iter().any(content);
+        let takes_back = not == "no" && (taken_back || gone[..k].iter().any(content));
+        (!went_with_it && !takes_back).then_some(not)
+    })
 }
 
 /// Claude Haiku's request: the rules, the examples as turns (cached: they're
@@ -421,6 +474,48 @@ mod tests {
         let said = "So a few things, we don't have the graph for the usage, and I need to sign in again after a restart. \
                     At least six stat and the rename thing is not working.";
         assert!(unfaithful(said, "At least six stat and the rename thing is not working.").is_some());
+    }
+
+    #[test]
+    fn a_negation_left_out_or_put_in_is_caught() {
+        for (said, out) in [
+            ("the test is not passing", "The test is passing."),
+            ("do not merge this", "Merge this."),
+            ("actually the test is not passing", "The test is passing."),
+            ("I can't make it on Friday", "I can make it on Friday."),
+            ("there are no errors in the build", "There are errors in the build."),
+            ("we never deploy on Fridays", "We deploy on Fridays."),
+            ("it works without the flag", "It works with the flag."),
+            ("the test is not um passing", "The test is passing."),
+            ("the test is passing", "The test is not passing."),
+            ("merge this", "Don't merge this."),
+            ("it\u{2019}s ready so don\u{2019}t wait", "It's ready so wait."),
+        ] {
+            assert!(unfaithful(said, out).is_some(), "{said}");
+        }
+        assert_eq!(unfaithful("do not merge this", "Merge this."), Some("dropped \"not\"".into()));
+    }
+
+    #[test]
+    fn a_negation_corrected_or_reworded_passes() {
+        for (said, out) in [
+            ("let's meet at three, no, four", "Let's meet at four."),
+            ("at three no four", "At four."),
+            ("send the invoice on monday no tuesday", "Send the invoice on Tuesday."),
+            ("It costs 20 dollars. No wait, 25 dollars.", "It costs 25 dollars."),
+            ("Buy apples, bananas, and oranges. Scratch that, no bananas.", "Buy apples and oranges."),
+            ("the demo is not good it is great", "The demo is great."),
+            ("it's not on monday it's on tuesday", "It's on Tuesday."),
+            ("the food here is decent actually this is not decent this is amazing", "The food here is amazing."),
+            ("do not merge this", "Don't merge this."),
+            ("I cannot make it", "I can't make it."),
+            ("it is not not ready", "It is not ready."),
+            ("I don't I don't know", "I don't know."),
+            ("no no no that's wrong", "No, that's wrong."),
+            ("the retry logic never backs off", "The retry logic never backs off."),
+        ] {
+            assert_eq!(unfaithful(said, out), None, "{said}");
+        }
     }
 
     #[test]
