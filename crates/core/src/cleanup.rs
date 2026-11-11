@@ -160,14 +160,20 @@ struct Row {
 }
 
 impl Row {
-    /// False for what can't be read out this way: a scale, or too long to be a number.
+    /// False, and nothing read, for what can't be read out this way: a scale
+    /// ("point five million" is .5, then a million), or too long to be a number.
     fn push(&mut self, n: u64) -> bool {
-        if self.tens && (1..=9).contains(&n) {
+        let joins = self.tens && (1..=9).contains(&n);
+        let digits = n.to_string();
+        if n >= 100 || self.digits.len() - joins as usize + digits.len() > 18 {
+            return false;
+        }
+        if joins {
             self.digits.pop();
         }
-        self.digits += &n.to_string();
+        self.digits += &digits;
         self.tens = n >= 20 && n.is_multiple_of(10);
-        n < 100 && self.digits.len() <= 18
+        true
     }
 }
 
@@ -792,6 +798,9 @@ mod tests {
             ("let's meet at half past nine", "Let's meet at 9:30."),
             ("see you at quarter to nine", "See you at 8:45."),
             ("see you at nine o'clock", "See you at 9:00."),
+            // The scale after a decimal is no part of it.
+            ("it grew by one point five million", "It grew by 1.5 million."),
+            ("about two point five thousand users", "About 2.5 thousand users."),
         ] {
             assert_eq!(unfaithful(said, out), None, "{said}");
         }
