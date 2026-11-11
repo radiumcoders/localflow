@@ -426,28 +426,37 @@ fn tidy_flowchart(lines: &[&str], direction: &str) -> Option<(String, Vec<String
     Some((mermaid, left_out))
 }
 
-/// The mind map, up to the first topic said again (where it goes round).
-fn tidy_mindmap(root: &str, lines: &[&str]) -> Option<String> {
-    let mut seen: HashSet<String> = HashSet::from([key(root)]);
+/// The mind map, up to the first topic said again under the same parent
+/// (where it goes round), and what was left out there. The same words under
+/// another parent are another topic: "Pros" and "Cons" under each laptop.
+fn tidy_mindmap(root: &str, lines: &[&str]) -> Option<(String, Vec<String>)> {
+    let mut seen: HashSet<Vec<String>> = HashSet::new(); // each topic by its path from the root
+    let mut path: Vec<String> = vec![]; // the branch being written
     let mut out = format!("mindmap\n  root(({}))\n", root.trim());
+    let mut left_out = vec![];
     let mut count = 0;
-    let mut depth_above = 0; // a branch can only go one level deeper than the line before
-    for line in lines {
+    let lines: Vec<&str> = lines.iter().copied().filter(|l| !l.trim().is_empty()).collect();
+    for (i, line) in lines.iter().enumerate() {
         let text = line.trim();
-        if text.is_empty() {
-            continue;
-        }
-        if !seen.insert(key(text)) {
+        let indent = line.len() - line.trim_start().len();
+        // A branch can only go one level deeper than the line before.
+        let depth = ((indent.max(4) - 4) / 2 + 1).min(path.len() + 1);
+        path.truncate(depth - 1);
+        path.push(key(text));
+        if key(text) == key(root) || !seen.insert(path.clone()) {
+            let after = match lines.len() - i - 1 {
+                0 => String::new(),
+                1 => ", and the line after it".to_string(),
+                n => format!(", and the {n} lines after it"),
+            };
+            left_out.push(format!("\"{text}\" said again{after}"));
             break;
         }
-        let indent = line.len() - line.trim_start().len();
-        let depth = ((indent.max(4) - 4) / 2 + 1).min(depth_above + 1);
-        depth_above = depth;
         let text = NUMBERED.replace(text, "");
         out += &format!("{}{}\n", "  ".repeat(depth + 1), text.trim_end_matches(':'));
         count += 1;
     }
-    (count >= 1).then_some(out)
+    (count >= 1).then_some((out, left_out))
 }
 
 /// The sequence, up to the first message sent again.
@@ -481,7 +490,8 @@ pub fn tidy(answer: &str) -> Option<Diagram> {
     if head == "mindmap" {
         let (root, branches) = rest.split_first()?;
         let root = root.trim().strip_prefix("root((")?.strip_suffix("))")?;
-        return tidy_mindmap(root, branches).map(|mermaid| Diagram::new(Kind::Mindmap, mermaid));
+        return tidy_mindmap(root, branches)
+            .map(|(mermaid, left_out)| Diagram { left_out, ..Diagram::new(Kind::Mindmap, mermaid) });
     }
     if head == "sequenceDiagram" {
         return tidy_sequence(&rest).map(|mermaid| Diagram::new(Kind::Sequence, mermaid));
@@ -663,6 +673,12 @@ mod tests {
         let d = tidy("mindmap\n  root((Japan))\n    1. Tokyo\n      Shibuya\n    Kyoto\n        Temples\n    Osaka\n    \
                       Kyoto\n    Osaka\n").unwrap();
         assert_eq!(d.mermaid, "mindmap\n  root((Japan))\n    Tokyo\n      Shibuya\n    Kyoto\n      Temples\n    Osaka\n");
+        assert_eq!(d.left_out, ["\"Kyoto\" said again, and the line after it"]);
+        // The same words under another parent are another topic, not the map going round.
+        let laptops = "mindmap\n  root((Laptops))\n    MacBook\n      Pros\n        Battery\n      Cons\n        Price\n    \
+                       ThinkPad\n      Pros\n        Keyboard\n      Cons\n        Screen\n";
+        let d = tidy(laptops).unwrap();
+        assert_eq!((d.mermaid.as_str(), d.left_out.len()), (laptops, 0));
         let d = tidy("sequenceDiagram\n    App->>API: Get user\n    API-->>App: User\n    App->>API: Get user\n").unwrap();
         assert_eq!(d.mermaid, "sequenceDiagram\n    App->>API: Get user\n    API-->>App: User\n");
         assert_eq!(tidy("Here is your diagram"), None);
