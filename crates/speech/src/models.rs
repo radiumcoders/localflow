@@ -164,6 +164,12 @@ pub fn resolve(setting: Option<&str>) -> &'static Model {
     setting.map(str::trim).and_then(|id| MODELS.iter().find(|m| m.id == id)).unwrap_or_else(default_model)
 }
 
+/// A setting that names none of our models, which `resolve` reads as the
+/// default: the name, for saying so.
+pub fn unknown(setting: Option<&str>) -> Option<&str> {
+    setting.map(str::trim).filter(|id| !id.is_empty() && !MODELS.iter().any(|m| m.id == *id))
+}
+
 /// Download a model (or the VAD) into models_dir(), unless it's already there.
 /// `progress(done, total)` is called as bytes arrive; setting `cancel` stops
 /// it (an error). A partial download resumes where it stopped.

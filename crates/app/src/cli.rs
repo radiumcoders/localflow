@@ -155,6 +155,10 @@ fn models_command(cfg: &Config, args: &[String]) -> ExitCode {
                 let chosen = if m.id == current { "  (in use)" } else { "" };
                 println!("{mark} {:<24} {:>5} MB  {}{chosen}\n    {}", m.id, m.size_mb(), m.name, m.note);
             }
+            let speech = localflow_speech::SpeechConfig { model: cfg.speech_model.clone(), ..Default::default() };
+            if let Some((name, used)) = speech.unknown_model() {
+                println!("\nLOCALFLOW_SPEECH_MODEL is {name}, which isn't one of these: {} is used", used.id);
+            }
             // With Claude Haiku, the local model is what steps in when Claude can't.
             let local = if cfg.cleanup_haiku { "  (when Claude can't be reached)" } else { "  (in use)" };
             let ours = Config { model: MODEL.id.into(), ..cfg.clone() };
